@@ -2,6 +2,10 @@
 
 기존 TravelMate 프로젝트를 현대적인 풀스택 아키텍처와 검증 가능한 추천 시스템으로 재설계하는 프로젝트입니다.
 
+## Documents
+
+- [PRD (Draft)](docs/PRD.md)
+
 ## Goals
 
 - 기존 TravelMate의 핵심 기능과 도메인을 보존하면서 구조를 재설계합니다.
