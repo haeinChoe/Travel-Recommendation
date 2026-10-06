@@ -1,0 +1,37 @@
+# AI Hub 원본·중간 데이터·전처리 결과는 저장소에 포함하지 않는다.
+# 안전한 합성 테스트 fixture는 tests/fixtures/ 아래에서 관리한다.
+/data/
+/results/
+/mlruns/
+
+# 자격 증명과 로컬 환경 설정
+.env
+.env.*
+!.env.example
+
+# AI Hub 자격 증명은 저장소 밖에 둔다. 아래는 실수 방지용 제외 규칙이다.
+.aihub/
+.secrets/
+/aihub-api-key*
+
+# Python bytecode and virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+
+# Python build and test artifacts
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Notebook runtime artifacts
+.ipynb_checkpoints/

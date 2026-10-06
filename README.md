@@ -4,7 +4,8 @@
 
 ## Documents
 
-- [PRD (Draft)](docs/PRD.md)
+- [Repository and agent workflow](docs/README.md)
+- [PRD](docs/PRD.md)
 
 ## Goals
 
