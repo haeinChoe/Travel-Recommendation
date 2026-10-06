@@ -1,0 +1,78 @@
+name: 결정 요청
+description: 구현 전에 데이터·추천·아키텍처 선택을 근거와 함께 결정합니다.
+title: "[Decision] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        이 Issue는 조사와 결정 기록을 위한 것입니다. Decision Issue 자체는 구현 권한을 부여하지 않습니다. 실제 데이터 접근이 필요하면 데이터 접근 범위와 근거를 명시하고 사용자 지시를 받으세요.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: 결정할 질문
+      description: 결론이 필요한 한 가지 질문을 적어주세요.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 배경과 근거
+      description: 실제 코드·데이터·문서에서 확인한 사실을 출처와 함께 적고, 가정과 미결정 사항을 구분해 주세요.
+    validations:
+      required: true
+
+  - type: textarea
+    id: options
+    attributes:
+      label: 선택지
+      description: 각 선택지의 장점, 비용, 위험, 되돌리기 어려운 점을 같은 기준으로 비교합니다.
+      placeholder: |
+        1. 선택지 A:
+        2. 선택지 B:
+        3. 선택지 C:
+    validations:
+      required: true
+
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: 권고안과 이유
+      description: 근거가 충분할 때만 권고합니다. 판단에 필요한 미확인 사항도 기록하세요.
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: 영향과 후속 작업
+      description: 데이터 계약, 재현성, 모델 평가, 저장소 구조에 미칠 영향과 필요한 구현 Issue를 적습니다.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: data_permission
+    attributes:
+      label: 조사 중 데이터 접근 권한
+      options:
+        - 실제 데이터 접근 없음 — 문서·스키마·메타데이터만
+        - 승인된 로컬 AI Hub 원본 읽기만
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: no_implementation
+    attributes:
+      label: 작업 경계
+      options:
+        - label: 이 Issue에서는 제품 코드·전처리 산출물을 구현하지 않고 결정과 근거를 기록합니다.
+          required: true
+
+  - type: textarea
+    id: unresolved
+    attributes:
+      label: 미해결 사항
+      description: 없으면 "없음"으로 적으세요.
+    validations:
+      required: true

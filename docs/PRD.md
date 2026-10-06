@@ -1,6 +1,5 @@
-# Travel Recommendation PRD (Draft)
+# Travel Recommendation PRD
 
-> Status: Draft
 > 
 > Last updated: 2026-09-09
 
@@ -405,7 +404,7 @@ request
 
 ---
 
-## 12. System Architecture (Draft)
+## 12. System Architecture
 
 ```text
 Browser
@@ -617,7 +616,7 @@ AI Hub / Product interactions / TourAPI catalog
 
 ## 19. PRD Change Policy
 
-이 문서는 초안이며, 다음 과정에서 계속 수정한다.
+이 문서는 제품 요구사항과 기술 방향의 기준을 정리한다. 요구사항과 기술 선택은 기존 시스템 분석, 데이터셋 스키마 확인, 추천 baseline 실험, 기술·아키텍처 결정의 근거가 추가될 때 갱신한다.
 
 1. 기존 시스템 분석
 2. 데이터셋 스키마 확인
