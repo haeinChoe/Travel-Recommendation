@@ -64,8 +64,12 @@ Issue #12의 EDA 파이프라인과 보고 양식이다. 이 문서에는 안전
 ## 실행 환경
 
 - Python 3.12 (`.python-version`), `uv`, 의존성: `duckdb`, `pandas`, `matplotlib`, `seaborn` (`uv.lock`으로 고정)
-- 환경 재현 명령: `uv sync --locked`를 Agy가 시도했다. 성공 여부는 확인되지 않았다.
-- CLI 도움말: Agy가 `profile_travel_log.py --help`와 `compare_regions.py --help`를 각각 시도했다. 성공 여부는 확인되지 않았다. 재시도하지 않음.
+- **[현재 HEAD 검증, 2026-10-07]** 요청된 literal `uv sync --locked`는 exit 2로 실패했다. 기본 uv cache 아래 임시 파일을 만들 수 없다는 읽기 전용 파일시스템 오류였다. 별도 workaround `UV_CACHE_DIR=/tmp/uv-cache uv sync --locked`는 성공해 16개 패키지를 resolve하고 14개를 확인했으며 lock 변경은 없었다. 이 workaround 결과는 literal 명령의 성공으로 간주하지 않는다.
+- **[현재 HEAD 검증]** 요청된 literal `uv run ruff check scripts/eda`도 uv cache 잠금용 임시 파일 생성 실패로 exit 2였다. `UV_CACHE_DIR=/tmp/uv-cache uv run ruff check scripts/eda`는 프로젝트 환경에 Ruff 실행 파일이 없어 실패했고, 오프라인 임시 도구 확인(`UV_CACHE_DIR=/tmp/uv-cache uv run --offline --with ruff ruff check scripts/eda`)은 Ruff 패키지가 cache에 없어 실패했다. 네트워크 설치는 하지 않았다. 따라서 Ruff lint는 미검증이다. 최소한의 재현 가능한 해결은 Ruff를 프로젝트 개발 도구로 선언하고 lock에 고정하는 것이지만, 이번 검증에서는 의존성/lock을 변경하지 않았다.
+- **[현재 HEAD 검증]** `UV_CACHE_DIR=/tmp/uv-cache uv run python -m compileall scripts/eda`는 성공했다.
+- **[현재 HEAD 검증]** 다음 7개 CLI의 `--help`가 모두 exit 0으로 끝나 import/argument parsing을 확인했다: `profile_travel_log.py`, `compare_regions.py`, `diagnose_capital_photo_id_links.py`, `extract_capital_sbl_json.py`, `inspect_capital_json.py`, `interpret_capital_codebook.py`, `validate_capital_codebook.py`. `compare_regions.py`는 Matplotlib cache 경고 후 임시 cache를 사용했지만 도움말 실행은 성공했다.
+- **[현재 HEAD 검증]** 기존 합성 안전성 테스트 `.venv/bin/python -m unittest discover -s tests -p 'test_eda_safety_smoke.py'`는 3개 통과했다. k=10 complementary suppression, symlink 뒤 `..` 차단, CLI 입력 경로 guard를 확인하므로 이 범위에는 새 테스트를 추가하지 않았다.
+- **[미실행]** 전체 수도권 원본 프로파일링 및 다른 권역 분석은 재실행하지 않았다. 기존 pilot aggregate는 이번 검증에서 새로 계산하지 않았다.
 - DuckDB `memory_limit`은 실행 시점의 `MemAvailable` 25%를 1~16 GiB로 제한해 자동 지정하고 `run_metadata.json`에 기록한다. `--memory-limit`으로 덮어쓸 수 있다.
 - DuckDB `temp_directory`는 `results/eda/travel-log-2023/tmp/<권역>-<pid>/`이며 종료 시 삭제한다. DuckDB는 `:memory:`로 열어 DB 파일을 만들지 않고, 확장 자동 설치를 끈다.
 - 수도권 pilot 원본은 사용자가 지정한 로컬 입력 경로에 보관한다. 실제 경로는 이 문서에 기록하지 않는다. 프로파일러는 `--raw-root`로 명시한 경로와 그 하위 입력만 허용하고, 입력 파일은 읽기 전용으로 다룬다. 경로 내 symlink와 출력 경로 이탈을 차단한다.
@@ -243,6 +247,11 @@ Issue #12의 승인 기록과 수도권 승인 filekey는 확인했다. AI Hub �
 - **[미확인] JSON 효용·한계:** 캡션·토큰·장소명·랜드마크·라이선스 이름의 값과 이미지 내용은 열람하지 않았다. 따라서 언어·캡션 품질, TOKEN의 계산 방식, photo ID 미매치 원인, TourAPI 매칭률, 라이선스별 사용 허용, 추천 성능 효과는 알 수 없다. 최소 다음 단계는 이용·라이선스 조건을 다시 검토한 뒤 로컬에서만 allowlisted caption feature를 추출하고, raw text 없이 품질과 추천 지표를 k-억제 집계로 비교하는 소규모 평가다. 외부 API/LLM으로 텍스트를 전송하지 않는다.
 - **[로컬 집계 관측] 개인정보 보호 검토:** 첫 read-only 리뷰는 여러 산출물에 k 미만 코호트의 정확한 count/rate가 남아 있음을 발견했다. 기존 집계 profile만 사용해 당시 억제 로직을 보완·재생성했으며, 이후에는 별도 focused validation만 수행했다. 확인한 집계 산출물의 사후 점검은 k 억제 일관성을 확인했으나 모든 profile artifact가 경로·fingerprint를 제외한다고 뜻하지 않는다. 기존 inventory와 run metadata에는 입력 식별 또는 checksum 같은 민감 재현 metadata가 포함될 수 있어 계속 로컬 ignored 상태로 유지하고 공유하지 않는다. 새 focused-validation 산출물은 `0`, `<10`, `10+` 구간만 보유하며 generic `codebook_check.csv`의 k 이상 정확 count와 별도다. 이 휴리스틱은 의미 기반 재식별 위험을 보증하지 않는다.
 - **[로컬 집계 관측] 실행 범위:** 수도권 pilot만 완료됐다. 서부권·동부권·제주·도서 권역 및 4개 권역 비교는 미완료다.
+
+## 추천 시스템 관점의 제한된 관찰
+
+- **[기존 로컬 집계 기록]** 기존 수도권 범위 점검 문서에는 확인된 TL/VL 합계의 고유 여행 수 2,880, 고유 여행자 수 2,880으로 기록돼 있다. 이 검증 작업에서는 해당 결과를 재계산하지 않았다.
+- **[해석 제한]** 확인된 수도권 TL/VL 범위에서는 고유 여행 수와 고유 여행자 수가 동일하게 관측되었다. 따라서 장기 반복 사용자 행동을 전제로 하는 전통적 user-history 기반 CF의 적합성은 추가 확인이 필요하다. 다른 권역 및 미확인 데이터 범위까지 일반화하지 않는다. 이는 후속 EDA 질문이며 알고리즘 선택 결론이 아니다.
 
 ## 한계와 후속 결정 후보
 
