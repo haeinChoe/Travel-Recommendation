@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-
 from interpret_capital_codebook import ScanFailure, find_table, projected_rows
 from validate_capital_codebook import RESULTS_ROOT, has_symlink_component
 
@@ -157,8 +156,15 @@ def prepare_paths(raw_arg: str, input_arg: str, json_arg: str, output_arg: str, 
     return input_root, json_root, output
 
 
-def add_metric(rows: list[dict[str, str]], record_type: str, section: str, field: str,
-               metric: str, value: int, status: str = "k_suppressed_bucket") -> None:
+def add_metric(
+    rows: list[dict[str, str]],
+    record_type: str,
+    section: str,
+    field: str,
+    metric: str,
+    value: int,
+    status: str = "k_suppressed_bucket",
+) -> None:
     rows.append(
         {
             "record_type": record_type,
@@ -175,7 +181,12 @@ def save(path: Path, rows: list[dict[str, str]]) -> bool:
     temporary: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", newline="", dir=path.parent, prefix=".json-structure-", delete=False
+            "w",
+            encoding="utf-8",
+            newline="",
+            dir=path.parent,
+            prefix=".json-structure-",
+            delete=False,
         ) as stream:
             temporary = stream.name
             writer = csv.DictWriter(stream, fieldnames=OUTPUT_FIELDS, lineterminator="\n")
@@ -192,7 +203,9 @@ def save(path: Path, rows: list[dict[str, str]]) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Inspect allowlisted capital JSON structure safely.")
+    parser = argparse.ArgumentParser(
+        description="Inspect allowlisted capital JSON structure safely."
+    )
     parser.add_argument("--raw-root", required=True)
     parser.add_argument("--input", required=True)
     parser.add_argument("--json-root", required=True)
@@ -214,14 +227,10 @@ def main() -> int:
     root_object_cohort = 0
     root_types: Counter[str] = Counter()
     parse_errors = 0
-    section_types: dict[str, Counter[str]] = {
-        section: Counter() for section in SECTIONS
-    }
+    section_types: dict[str, Counter[str]] = {section: Counter() for section in SECTIONS}
     section_present: Counter[str] = Counter()
     field_counts: dict[tuple[str, str], Counter[str]] = {
-        (section, field): Counter()
-        for section, fields in FIELDS.items()
-        for field in fields
+        (section, field): Counter() for section, fields in FIELDS.items() for field in fields
     }
     json_photo_id_present = 0
     json_photo_id_matches = 0
@@ -312,8 +321,9 @@ def main() -> int:
 
     rows: list[dict[str, str]] = []
     for section in SECTIONS:
-        key = (section, "(section)")
-        add_metric(rows, "section", section, "(section)", "parsed_document_cohort", parsed_document_cohort)
+        add_metric(
+            rows, "section", section, "(section)", "parsed_document_cohort", parsed_document_cohort
+        )
         add_metric(rows, "section", section, "(section)", "present", section_present[section])
         add_metric(
             rows,
@@ -338,7 +348,11 @@ def main() -> int:
         add_metric(rows, "field", section, field, "missing", counts["missing"])
         for metric in (f"type_{name}" for name in TYPE_NAMES):
             add_metric(rows, "field", section, field, metric, counts[metric])
-        for metric in ("empty", "nonempty", *(f"array_length_{name}" for name in ARRAY_LENGTH_BUCKETS)):
+        for metric in (
+            "empty",
+            "nonempty",
+            *(f"array_length_{name}" for name in ARRAY_LENGTH_BUCKETS),
+        ):
             add_metric(rows, "field", section, field, metric, counts[metric])
     add_metric(rows, "run", "json", "(files)", "document_cohort", document_cohort)
     add_metric(rows, "run", "json", "(files)", "parsed_document_cohort", parsed_document_cohort)
@@ -346,7 +360,9 @@ def main() -> int:
     for type_name in TYPE_NAMES:
         add_metric(rows, "run", "json", "(files)", f"root_type_{type_name}", root_types[type_name])
     add_metric(rows, "run", "json", "(files)", "parse_errors", parse_errors)
-    add_metric(rows, "link", "images", "PHOTO_FILE_ID", "parsed_document_cohort", parsed_document_cohort)
+    add_metric(
+        rows, "link", "images", "PHOTO_FILE_ID", "parsed_document_cohort", parsed_document_cohort
+    )
     add_metric(rows, "link", "images", "PHOTO_FILE_ID", "json_id_present", json_photo_id_present)
     add_metric(rows, "link", "images", "PHOTO_FILE_ID", "matched_rows", json_photo_id_matches)
     add_metric(rows, "link", "images", "PHOTO_FILE_ID", "unmatched_rows", json_photo_id_unmatched)

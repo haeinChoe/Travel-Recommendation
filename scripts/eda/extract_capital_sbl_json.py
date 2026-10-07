@@ -255,7 +255,9 @@ def extract(archive_path: Path, capital_input: Path, output: Path) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Safely extract approved capital SbL JSON members only.")
+    parser = argparse.ArgumentParser(
+        description="Safely extract approved capital SbL JSON members only."
+    )
     parser.add_argument("--archive", required=True)
     parser.add_argument("--raw-root", required=True)
     parser.add_argument("--capital-input", required=True)

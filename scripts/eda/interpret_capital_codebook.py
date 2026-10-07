@@ -18,7 +18,6 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import duckdb
-
 from validate_capital_codebook import CODEBOOK, has_symlink_component, ql
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -48,9 +47,7 @@ def read_header(path: Path) -> tuple[list[str], str] | None:
         with path.open("rb") as stream:
             prefix = stream.read(4)
         encoding = (
-            "utf-16"
-            if prefix.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE))
-            else "utf-8"
+            "utf-16" if prefix.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)) else "utf-8"
         )
         with path.open("r", encoding=encoding, newline="") as stream:
             header = next(csv.reader(stream), None)
@@ -210,7 +207,9 @@ def save(path: Path, rows: list[dict[str, str]]) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Classify capital code anomalies without emitting values.")
+    parser = argparse.ArgumentParser(
+        description="Classify capital code anomalies without emitting values."
+    )
     parser.add_argument("--raw-root", required=True)
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)

@@ -12,7 +12,8 @@
   관련 셀 중 하나라도 k 미만이면 상호 보완되는 전체 묶음을 억제한다.
   날짜는 연-월 단위로만 요약하고, 범주 빈도도 최소 셀 크기(k) 미만을 병합·억제한다.
 - 결측 처리, 중복 제거, 이상치 제거 등 정제는 하지 않는다. 관찰만 기록한다.
-- 전체 파일을 pandas로 적재하지 않는다. DuckDB가 파일을 직접 스캔하고 pandas는 작은 집계표 저장에만 쓴다.
+- 전체 파일을 pandas로 적재하지 않는다. DuckDB가 파일을 직접 스캔하고
+  pandas는 작은 집계표 저장에만 쓴다.
 """
 
 from __future__ import annotations
@@ -46,8 +47,20 @@ TMP_ROOT = RESULTS_ROOT / "tmp"
 TABULAR_EXTS = {".csv": "csv", ".json": "json", ".jsonl": "json", ".ndjson": "json"}
 PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".heic"}
 OTHER_KNOWN_EXTS = {
-    ".7z", ".avi", ".doc", ".docx", ".gz", ".html", ".md", ".mp4", ".pdf",
-    ".rar", ".tar", ".txt", ".xml", ".zip",
+    ".7z",
+    ".avi",
+    ".doc",
+    ".docx",
+    ".gz",
+    ".html",
+    ".md",
+    ".mp4",
+    ".pdf",
+    ".rar",
+    ".tar",
+    ".txt",
+    ".xml",
+    ".zip",
 }
 
 # 스크립트가 만드는 결과 파일 이름. --overwrite는 이 목록의 파일만 교체한다.
@@ -223,10 +236,19 @@ def is_within(path: Path, root: Path) -> bool:
 
 
 def has_symlink_component(path: Path) -> bool:
-    """Check a lexical absolute path without resolving away symlink components."""
-    absolute = Path(os.path.abspath(path))
-    current = Path(absolute.anchor)
-    for part in absolute.parts[1:]:
+    """Walk lexical path components before resolving away symlink ancestors."""
+    if path.is_absolute():
+        current = Path(path.anchor)
+        parts = path.parts[1:]
+    else:
+        current = Path.cwd()
+        parts = path.parts
+    for part in parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            current = current.parent
+            continue
         current /= part
         if current.is_symlink():
             return True
@@ -317,7 +339,8 @@ def scan_inventory(root: Path, skip_checksum: bool):
         for ext, sizes in sorted(photos.items())
     ]
     other_rows = [
-        {"ext": ext, "count": n, "total_bytes": other_bytes[ext]} for ext, n in sorted(others.items())
+        {"ext": ext, "count": n, "total_bytes": other_bytes[ext]}
+        for ext, n in sorted(others.items())
     ]
     return tabular, photo_rows, other_rows, symlinks
 
@@ -438,7 +461,9 @@ class Profiler:
                 | {k: json.dumps(v) if isinstance(v, dict) else v for k, v in structure.items()}
             )
         if info["status"] not in ("ok", "ok_all_varchar_fallback"):
-            self.flag("error", rel, None, f"table_not_profiled:{info['status']}", info["error_class"])
+            self.flag(
+                "error", rel, None, f"table_not_profiled:{info['status']}", info["error_class"]
+            )
             return
         if info["status"] == "ok_all_varchar_fallback":
             self.flag("warn", rel, None, "type_inference_failed_fallback_all_varchar")
@@ -457,9 +482,9 @@ class Profiler:
         if names_suppressed:
             self.flag("warn", rel, None, "column_names_suppressed_too_many_columns", len(describe))
         try:
-            dup = self.q(
-                f"SELECT {rows} - (SELECT count(*) FROM (SELECT DISTINCT * FROM {view}))"
-            )[0][0]
+            dup = self.q(f"SELECT {rows} - (SELECT count(*) FROM (SELECT DISTINCT * FROM {view}))")[
+                0
+            ][0]
             table_rec["duplicate_rows"] = dup
             if dup:
                 self.flag("warn", rel, None, "fully_duplicated_rows", dup)
@@ -515,8 +540,15 @@ class Profiler:
                 m.update(column=m["label"], non_null=non_null, null_count=rows - non_null)
                 m["null_rate"] = round((rows - non_null) / rows, 6) if rows else None
                 m.update(
-                    distinct=None, duplicate_value_rows=None, blank_count=None, nonfinite_count=None,
-                    min_len=None, avg_len=None, max_len=None, _min=None, _max=None,
+                    distinct=None,
+                    duplicate_value_rows=None,
+                    blank_count=None,
+                    nonfinite_count=None,
+                    min_len=None,
+                    avg_len=None,
+                    max_len=None,
+                    _min=None,
+                    _max=None,
                 )  # fmt: skip
                 if cls in ("nested", "blob", "other"):
                     continue
@@ -584,7 +616,9 @@ class Profiler:
             return
         if cls == "varchar" and ((m["avg_len"] or 0) > 40 or distinct / non_null > 0.2):
             m["value_policy"] = "suppressed:high_cardinality_or_text_like"
-            self.flag("info", rel, label, "values_suppressed_high_cardinality_or_text_like", non_null)
+            self.flag(
+                "info", rel, label, "values_suppressed_high_cardinality_or_text_like", non_null
+            )
             return
         if cls in ("integer", "float"):
             self.numeric_summary(rel, view, label, c)
@@ -602,10 +636,16 @@ class Profiler:
             return "datetime"
         if cls == "varchar":
             hit = self.q(
-                f"SELECT count(*) FILTER (WHERE regexp_full_match(trim({c}), {ql(DATE_RE)})) FROM {view}"
+                "SELECT count(*) FILTER (WHERE "
+                f"regexp_full_match(trim({c}), {ql(DATE_RE)})) FROM {view}"
             )[0][0]
             return "varchar" if hit >= 0.95 * non_null else None
-        if cls == "integer" and m["_min"] is not None and 19000101 <= m["_min"] and m["_max"] <= 21001231:
+        if (
+            cls == "integer"
+            and m["_min"] is not None
+            and 19000101 <= m["_min"]
+            and m["_max"] <= 21001231
+        ):
             hit = self.q(
                 f"SELECT count(*) FILTER (WHERE (({c} // 100) % 100) BETWEEN 1 AND 12 "
                 f"AND ({c} % 100) BETWEEN 1 AND 31) FROM {view}"
@@ -621,7 +661,8 @@ class Profiler:
             "int8": f"CAST({c} // 100 AS VARCHAR)",
         }[kind]
         data = self.q(
-            f"SELECT ym, count(*) FROM (SELECT {ym} AS ym FROM {view} WHERE {c} IS NOT NULL) GROUP BY ym"
+            f"SELECT ym, count(*) FROM (SELECT {ym} AS ym "
+            f"FROM {view} WHERE {c} IS NOT NULL) GROUP BY ym"
         )
         valid = [
             (f"{ym[:4]}-{ym[4:6]}", n)
@@ -631,7 +672,10 @@ class Profiler:
         invalid = sum(n for _, n in data) - sum(n for _, n in valid)
         if invalid:
             self.flag(
-                "warn", rel, label, "date_values_with_invalid_year_month",
+                "warn",
+                rel,
+                label,
+                "date_values_with_invalid_year_month",
                 invalid if invalid >= self.k else "<k",
             )
         if not valid:
@@ -659,18 +703,22 @@ class Profiler:
     def numeric_summary(self, rel: str, view: str, label: str, c: str) -> None:
         sql = (
             "SELECT count(*), count(*) FILTER (WHERE v < 0), count(*) FILTER (WHERE v = 0) "
-            f"FROM (SELECT CAST({c} AS DOUBLE) AS v FROM {view} WHERE {c} IS NOT NULL) WHERE isfinite(v)"
+            f"FROM (SELECT CAST({c} AS DOUBLE) AS v FROM {view} "
+            f"WHERE {c} IS NOT NULL) WHERE isfinite(v)"
         )
         n, neg, zero = self.q(sql)[0]
         if not n:
             return
         rec = {
-            "table": rel, "column": label,
+            "table": rel,
+            "column": label,
             "finite_count": n if n >= self.k else "<k",
             "negative_count": neg if neg >= self.k else "<k",
             "zero_count": zero if zero >= self.k else "<k",
-            "distribution_suppression": "exact_values_withheld" if n >= self.k else "cohort_below_k",
-        }  # fmt: skip
+            "distribution_suppression": (
+                "exact_values_withheld" if n >= self.k else "cohort_below_k"
+            ),
+        }
         self.rec["numeric_summary"].append(rec)
         if n < self.k:
             self.flag("info", rel, label, "numeric_counts_suppressed_below_k", "<k")
@@ -693,12 +741,20 @@ class Profiler:
             )
 
     # 키 후보: 단일 컬럼 유일성은 1단계에서 확인했고, 없을 때만 상위 카디널리티 컬럼 쌍을 검사
-    def composite_keys(self, rel: str, view: str, rows: int, meta: dict[str, dict[str, Any]]) -> str:
-        if not rows or any(m.get("unique") for m in meta.values()) or self.args.max_composite_columns < 2:
+    def composite_keys(
+        self, rel: str, view: str, rows: int, meta: dict[str, dict[str, Any]]
+    ) -> str:
+        if (
+            not rows
+            or any(m.get("unique") for m in meta.values())
+            or self.args.max_composite_columns < 2
+        ):
             return ""
         cand = [
-            n for n, m in meta.items()
-            if m["class"] in ("integer", "varchar", "float", "datetime", "boolean") and m["non_null"] == rows
+            n
+            for n, m in meta.items()
+            if m["class"] in ("integer", "varchar", "float", "datetime", "boolean")
+            and m["non_null"] == rows
         ]  # fmt: skip
         cand = sorted(cand, key=lambda n: -meta[n]["distinct"])[: self.args.max_composite_columns]
         found = []
@@ -770,9 +826,7 @@ class Profiler:
                     (-next_score, name, stream_id, next_left, next_right, stream),
                 )
         if candidate_heap:
-            self.flag(
-                "warn", "*", None, "relation_pairs_truncated", f"at_least_{limit + 1}"
-            )
+            self.flag("warn", "*", None, "relation_pairs_truncated", f"at_least_{limit + 1}")
 
         suppressed_metrics = 0
         for left, right in selected:
@@ -781,8 +835,10 @@ class Profiler:
             a, b = qi(c1), qi(c2)
             try:
                 dl, dr, both = self.q(
-                    f"WITH l AS (SELECT DISTINCT CAST({a} AS VARCHAR) k FROM {v1} WHERE {a} IS NOT NULL), "
-                    f"r AS (SELECT DISTINCT CAST({b} AS VARCHAR) k FROM {v2} WHERE {b} IS NOT NULL) "
+                    f"WITH l AS (SELECT DISTINCT CAST({a} AS VARCHAR) k "
+                    f"FROM {v1} WHERE {a} IS NOT NULL), "
+                    f"r AS (SELECT DISTINCT CAST({b} AS VARCHAR) k "
+                    f"FROM {v2} WHERE {b} IS NOT NULL) "
                     "SELECT (SELECT count(*) FROM l), (SELECT count(*) FROM r), "
                     "(SELECT count(*) FROM l WHERE k IN (SELECT k FROM r))"
                 )[0]
@@ -817,7 +873,10 @@ class Profiler:
                           f"{miss_l}/{miss_r}")  # fmt: skip
         if suppressed_metrics:
             self.flag(
-                "info", "*", None, "relation_metrics_suppressed_below_k",
+                "info",
+                "*",
+                None,
+                "relation_metrics_suppressed_below_k",
                 suppressed_metrics if suppressed_metrics >= self.k else "<k",
             )
 
@@ -861,8 +920,13 @@ class Profiler:
                      "distinct_outside_codebook": bad_distinct}
                 )  # fmt: skip
                 if bad_rows:
-                    self.flag("warn", rel, self.col_meta[view][cname]["label"],
-                              "values_outside_codebook", bad_rows)
+                    self.flag(
+                        "warn",
+                        rel,
+                        self.col_meta[view][cname]["label"],
+                        "values_outside_codebook",
+                        bad_rows,
+                    )
         return source
 
 
@@ -877,7 +941,10 @@ def git_state() -> dict[str, Any]:
         except (OSError, subprocess.CalledProcessError):
             return None
 
-    return {"commit": run("git", "rev-parse", "HEAD"), "dirty": bool(run("git", "status", "--porcelain"))}
+    return {
+        "commit": run("git", "rev-parse", "HEAD"),
+        "dirty": bool(run("git", "status", "--porcelain")),
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -886,11 +953,15 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="원본은 읽기 전용이며 결과는 results/eda/travel-log-2023/ 아래에만 쓴다.",
     )
     p.add_argument(
-        "--raw-root", type=Path, default=RAW_ROOT,
+        "--raw-root",
+        type=Path,
+        default=RAW_ROOT,
         help="읽기 전용 원본 루트 (기본: 저장소 data/raw; 외부 경로를 명시할 수 있음)",
     )
     p.add_argument("--input", required=True, type=Path, help="지정한 raw-root 아래의 데이터셋 폴더")
-    p.add_argument("--output", required=True, type=Path, help="results/eda/travel-log-2023/<region>")
+    p.add_argument(
+        "--output", required=True, type=Path, help="results/eda/travel-log-2023/<region>"
+    )
     p.add_argument(
         "--confirm-approved", action="store_true",
         help="AI Hub 다운로드 승인과 Issue의 데이터 접근 권한을 사용자가 확인했다는 선언",
@@ -907,9 +978,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-columns-named", type=int, default=200, help="초과 시 컬럼명 비공개")
     p.add_argument("--max-composite-columns", type=int, default=8, help="복합키 검사 컬럼 수(0=끔)")
     p.add_argument("--max-relation-pairs", type=int, default=200, help="연결 후보 검사 상한")
-    p.add_argument("--json-stdlib-max-mb", type=int, default=64, help="json 구조 확인 파일 크기 상한")
+    p.add_argument(
+        "--json-stdlib-max-mb", type=int, default=64, help="json 구조 확인 파일 크기 상한"
+    )
     p.add_argument("--skip-checksum", action="store_true", help="sha256 계산 생략")
-    p.add_argument("--codebook", type=Path, help='{"source": "...", "tables": {"<상대경로>": {"<컬럼>": [허용값]}}}')
+    p.add_argument(
+        "--codebook",
+        type=Path,
+        help='{"source": "...", "tables": {"<상대경로>": {"<컬럼>": [허용값]}}}',
+    )
     p.add_argument("--region-label", help="결과에 기록할 권역 라벨 (기본: 입력 폴더명)")
     p.add_argument(
         "--allow-value-column", action="append", default=[], metavar="COLUMN",
@@ -981,7 +1058,12 @@ def suppress_small_aggregate_cells(sections: dict[str, list[dict[str, Any]]], k:
             changed += _suppress_fields(row, ("columns", "duplicate_rows"))
 
     column_counts = (
-        "non_null", "null_count", "distinct", "duplicate_value_rows", "blank_count", "nonfinite_count"
+        "non_null",
+        "null_count",
+        "distinct",
+        "duplicate_value_rows",
+        "blank_count",
+        "nonfinite_count",
     )
     column_stats = column_counts + ("null_rate", "min_len", "avg_len", "max_len")
     for row in sections.get("columns", []):
@@ -1035,10 +1117,14 @@ def suppress_small_aggregate_cells(sections: dict[str, list[dict[str, Any]]], k:
         sanitized_categories.extend(shown)
         if hidden:
             sample = group[0]
-            sanitized_categories.append({
-                "table": sample.get("table"), "column": sample.get("column"),
-                "value": "<suppressed>", "count": hidden if hidden >= k else "<k",
-            })
+            sanitized_categories.append(
+                {
+                    "table": sample.get("table"),
+                    "column": sample.get("column"),
+                    "value": "<suppressed>",
+                    "count": hidden if hidden >= k else "<k",
+                }
+            )
         changed += len(hidden_rows) + int(len(shown) != len(group))
     if grouped:
         sections["categorical_values"] = sanitized_categories
@@ -1083,10 +1169,12 @@ def suppress_small_aggregate_cells(sections: dict[str, list[dict[str, Any]]], k:
         non_null_n = _count_value(non_null_value)
         row_count = _count_value(row.get("rows_outside_codebook"))
         distinct_count = _count_value(row.get("distinct_outside_codebook"))
-        if ((table_n is not None and table_n < k)
-                or (isinstance(table_value, str) and table_value.startswith("<"))
-                or (non_null_n is not None and non_null_n < k)
-                or (isinstance(non_null_value, str) and non_null_value.startswith("<"))):
+        if (
+            (table_n is not None and table_n < k)
+            or (isinstance(table_value, str) and table_value.startswith("<"))
+            or (non_null_n is not None and non_null_n < k)
+            or (isinstance(non_null_value, str) and non_null_value.startswith("<"))
+        ):
             changed += _suppress_fields(
                 row, ("non_null_rows", "rows_outside_codebook", "distinct_outside_codebook")
             )
@@ -1094,11 +1182,10 @@ def suppress_small_aggregate_cells(sections: dict[str, list[dict[str, Any]]], k:
                 row["status"] = "suppressed_cohort_below_k"
                 changed += 1
             continue
-        if ((row_count is not None and 0 < row_count < k)
-                or (distinct_count is not None and 0 < distinct_count < k)):
-            changed += _suppress_fields(
-                row, ("rows_outside_codebook", "distinct_outside_codebook")
-            )
+        if (row_count is not None and 0 < row_count < k) or (
+            distinct_count is not None and 0 < distinct_count < k
+        ):
+            changed += _suppress_fields(row, ("rows_outside_codebook", "distinct_outside_codebook"))
             row["status"] = "suppressed_below_k"
             changed += 1
 
@@ -1112,8 +1199,11 @@ def suppress_small_aggregate_cells(sections: dict[str, list[dict[str, Any]]], k:
 
     for row in sections.get("relations", []):
         fields = (
-            "left_distinct", "right_distinct", "shared_distinct",
-            "left_rows_without_match", "right_rows_without_match",
+            "left_distinct",
+            "right_distinct",
+            "shared_distinct",
+            "left_rows_without_match",
+            "right_rows_without_match",
         )
         if any(_below_k(row.get(field), k) for field in fields):
             changed += _suppress_fields(row, fields + ("left_containment", "right_containment"))
@@ -1138,11 +1228,23 @@ def sanitize_existing_output(out: Path) -> int:
     k = int(run.get("min_cell_count", run.get("options", {}).get("min_cell_count", 10)))
     if k != 10:
         guard_stop("기존 결과의 k가 10이 아니므로 자동 정리를 중단합니다.")
-    sections = {name: profile.get(name, []) for name in (
-        "files_inventory", "photo_summary", "other_files_summary", "tables", "columns",
-        "numeric_summary", "categorical_values", "date_months", "relations", "codebook_check",
-        "json_structure", "anomalies",
-    )}
+    sections = {
+        name: profile.get(name, [])
+        for name in (
+            "files_inventory",
+            "photo_summary",
+            "other_files_summary",
+            "tables",
+            "columns",
+            "numeric_summary",
+            "categorical_values",
+            "date_months",
+            "relations",
+            "codebook_check",
+            "json_structure",
+            "anomalies",
+        )
+    }
     suppressed = suppress_small_aggregate_cells(sections, k)
     profile.update(sections)
 
@@ -1194,15 +1296,17 @@ def write_outputs(out: Path, prof: Profiler, run: dict[str, Any], files, photos,
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    requested_out = args.output.absolute()
+    # Check the caller's lexical paths before abspath()/resolve(), which would
+    # collapse a symlink followed by '..' and hide that symlink component.
+    requested_out = args.output
     if has_symlink_component(requested_out):
         guard_stop("출력 경로에 심볼릭 링크가 있어 결과 위치를 확인할 수 없습니다.")
+    if has_symlink_component(args.raw_root):
+        guard_stop("--raw-root 경로에 심볼릭 링크가 있어 읽기 전용 루트를 확인할 수 없습니다.")
+    if has_symlink_component(args.input):
+        guard_stop("--input 경로에 심볼릭 링크가 있어 입력 경로를 확인할 수 없습니다.")
     requested_raw_root = Path(os.path.abspath(args.raw_root))
     requested_input = Path(os.path.abspath(args.input))
-    if has_symlink_component(requested_raw_root):
-        guard_stop("--raw-root 경로에 심볼릭 링크가 있어 읽기 전용 루트를 확인할 수 없습니다.")
-    if has_symlink_component(requested_input):
-        guard_stop("--input 경로에 심볼릭 링크가 있어 입력 경로를 확인할 수 없습니다.")
     if not requested_raw_root.is_dir():
         guard_stop("--raw-root 폴더가 없습니다.")
     raw_root = requested_raw_root.resolve()
@@ -1215,8 +1319,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.confirm_approved:
         guard_stop("--confirm-approved 가 없습니다. 승인 확인 전에는 원본을 읽지 않습니다.")
     if not args.confirm_terms:
-        guard_stop("--confirm-terms 가 없습니다. 공식 이용·취급 조건 확인 기록 전에는 원본을 읽지 않습니다.")
-    if not is_within(out, RESULTS_ROOT) or out in (RESULTS_ROOT, TMP_ROOT) or is_within(out, TMP_ROOT):
+        guard_stop(
+            "--confirm-terms 가 없습니다. 공식 이용·취급 조건 확인 기록 전에는 "
+            "원본을 읽지 않습니다."
+        )
+    if (
+        not is_within(out, RESULTS_ROOT)
+        or out in (RESULTS_ROOT, TMP_ROOT)
+        or is_within(out, TMP_ROOT)
+    ):
         guard_stop(f"출력은 {RESULTS_ROOT.relative_to(REPO_ROOT)}/<권역> 하위여야 합니다.")
     existing_paths = [
         safe_artifact_path(out, n)
@@ -1297,7 +1408,14 @@ def main(argv: list[str] | None = None) -> int:
                 "photos: extension/count/size only (no names, no content, no image header read)",
             ],
         }  # fmt: skip
-        write_outputs(out, prof, run, [{k: v for k, v in t.items() if k != "abs"} for t in tabular], photos, others)
+        write_outputs(
+            out,
+            prof,
+            run,
+            [{k: v for k, v in t.items() if k != "abs"} for t in tabular],
+            photos,
+            others,
+        )
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         try:

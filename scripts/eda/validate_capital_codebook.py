@@ -296,11 +296,15 @@ def write_artifact(path: Path, rows: list[dict[str, str]]) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate documented capital CSV code domains safely.")
+    parser = argparse.ArgumentParser(
+        description="Validate documented capital CSV code domains safely."
+    )
     parser.add_argument("--raw-root", required=True, help="Designated local raw-data root")
     parser.add_argument("--input", required=True, help="Local extracted capital input directory")
     parser.add_argument("--output", required=True, help="Ignored results CSV destination")
-    parser.add_argument("--overwrite", action="store_true", help="Replace the exact requested artifact")
+    parser.add_argument(
+        "--overwrite", action="store_true", help="Replace the exact requested artifact"
+    )
     args = parser.parse_args()
 
     paths = prepare_paths(args.raw_root, args.input, args.output, args.overwrite)

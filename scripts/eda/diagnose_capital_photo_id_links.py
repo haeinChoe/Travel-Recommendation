@@ -15,15 +15,16 @@ import zipfile
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from inspect_capital_json import collect_json_files, prepare_paths
 from extract_capital_sbl_json import (
     MAX_ARCHIVE_MEMBERS,
     ExtractionBlocked,
     preflight_zip_directory,
     safe_member_path,
 )
+from inspect_capital_json import collect_json_files, prepare_paths
 from interpret_capital_codebook import read_header
-from validate_capital_codebook import has_symlink_component, prepare_paths as prepare_provenance_paths
+from validate_capital_codebook import has_symlink_component
+from validate_capital_codebook import prepare_paths as prepare_provenance_paths
 
 K = 10
 PHOTO_TABLE_PATTERN = re.compile(r"^TN_TOUR_PHOTO_.+_E\.csv$", re.IGNORECASE)
@@ -101,7 +102,15 @@ def scan_table(path: Path) -> tuple[Counter[str], int, int, int, int, int, int]:
                 keys[value] += 1
     duplicate_groups = sum(count > 1 for count in keys.values())
     duplicate_excess_rows = sum(count - 1 for count in keys.values() if count > 1)
-    return keys, row_count, short_rows, empty_rows, whitespace_rows, duplicate_groups, duplicate_excess_rows
+    return (
+        keys,
+        row_count,
+        short_rows,
+        empty_rows,
+        whitespace_rows,
+        duplicate_groups,
+        duplicate_excess_rows,
+    )
 
 
 def scan_json(files: list[Path]) -> tuple[Counter[str], int, int, int, int, int]:
@@ -144,9 +153,10 @@ def has_token(text: str, token: str) -> bool:
     # Treat embedded alphanumeric strings as part of a larger marker. Separators
     # such as underscores, dots, and hyphens remain valid token boundaries.
     boundary = r"[A-Za-z0-9]"
-    return re.search(
-        rf"(?<!{boundary}){re.escape(token)}(?!{boundary})", text, flags=re.IGNORECASE
-    ) is not None
+    return (
+        re.search(rf"(?<!{boundary}){re.escape(token)}(?!{boundary})", text, flags=re.IGNORECASE)
+        is not None
+    )
 
 
 def archive_provenance(
@@ -183,12 +193,9 @@ def archive_provenance(
                 mode = (info.external_attr >> 16) & 0xFFFF
                 if info.is_dir() or (mode and stat.S_ISLNK(mode)):
                     continue
-                if (
-                    PHOTO_TABLE_PATTERN.fullmatch(member_path.name)
-                    and (
-                        archive_category_marked
-                        or any(part.casefold() == "tl_csv" for part in member_path.parts[:-1])
-                    )
+                if PHOTO_TABLE_PATTERN.fullmatch(member_path.name) and (
+                    archive_category_marked
+                    or any(part.casefold() == "tl_csv" for part in member_path.parts[:-1])
                 ):
                     if info.flag_bits & 1 or info.file_size < 0:
                         raise ValueError
@@ -272,26 +279,38 @@ def new_casefold_collisions(raw_values: set[str]) -> int:
     return collision_keys(variants)
 
 
-def append(rows: list[dict[str, str]], scope: str, metric: str, value: int | None,
-           status: str = "k10_bucket") -> None:
-    rows.append({
-        "scope": scope,
-        "metric": metric,
-        "bucket": bucket(value) if value is not None else "not_applicable",
-        "status": status,
-    })
+def append(
+    rows: list[dict[str, str]],
+    scope: str,
+    metric: str,
+    value: int | None,
+    status: str = "k10_bucket",
+) -> None:
+    rows.append(
+        {
+            "scope": scope,
+            "metric": metric,
+            "bucket": bucket(value) if value is not None else "not_applicable",
+            "status": status,
+        }
+    )
 
 
 def save(path: Path, rows: list[dict[str, str]]) -> bool:
     temporary: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", newline="", dir=path.parent,
-            prefix=".photo-id-diagnosis-", delete=False,
+            "w",
+            encoding="utf-8",
+            newline="",
+            dir=path.parent,
+            prefix=".photo-id-diagnosis-",
+            delete=False,
         ) as stream:
             temporary = stream.name
             writer = csv.DictWriter(
-                stream, fieldnames=("scope", "metric", "bucket", "status"),
+                stream,
+                fieldnames=("scope", "metric", "bucket", "status"),
                 lineterminator="\n",
             )
             writer.writeheader()
@@ -306,14 +325,25 @@ def save(path: Path, rows: list[dict[str, str]]) -> bool:
         return False
 
 
-def diagnose(input_root: Path, json_root: Path, raw_root: Path,
-             archive_path: Path, approved_filekey: str) -> list[dict[str, str]]:
+def diagnose(
+    input_root: Path, json_root: Path, raw_root: Path, archive_path: Path, approved_filekey: str
+) -> list[dict[str, str]]:
     files = collect_json_files(json_root)
     candidates = table_candidates(input_root)
     if files is None or len(candidates) != 1:
         raise ValueError
-    table_keys, table_rows, short_rows, empty_rows, whitespace_rows, duplicate_groups, duplicate_excess = scan_table(candidates[0])
-    occurrences, json_missing, json_empty, json_whitespace, json_nonstring, unique_json_count = scan_json(files)
+    (
+        table_keys,
+        table_rows,
+        short_rows,
+        empty_rows,
+        whitespace_rows,
+        duplicate_groups,
+        duplicate_excess,
+    ) = scan_table(candidates[0])
+    occurrences, json_missing, json_empty, json_whitespace, json_nonstring, unique_json_count = (
+        scan_json(files)
+    )
     json_ids = set(occurrences)
     table_ids = set(table_keys)
     exact_matches = json_ids & table_ids
@@ -323,17 +353,19 @@ def diagnose(input_root: Path, json_root: Path, raw_root: Path,
         table_keys, json_ids, str.strip
     )
     trim_candidates = {
-        value for value in exact_unmatched
-        if value.strip() and value.strip() in trim_table_rows
+        value for value in exact_unmatched if value.strip() and value.strip() in trim_table_rows
     }
     after_trim = exact_unmatched - trim_candidates
 
-    cf_transform = lambda value: value.strip().casefold()
+    def cf_transform(value: str) -> str:
+        return value.strip().casefold()
+
     cf_table_rows, cf_table_variants, cf_json_variants = normalized_maps(
         table_keys, json_ids, cf_transform
     )
     casefold_candidates = {
-        value for value in after_trim
+        value
+        for value in after_trim
         if cf_transform(value) and cf_transform(value) in cf_table_rows
     }
     remaining = after_trim - casefold_candidates
@@ -344,13 +376,11 @@ def diagnose(input_root: Path, json_root: Path, raw_root: Path,
     exact_unmatched_occurrences = sum(occurrences[value] for value in exact_unmatched)
 
     trim_ambiguous_candidates = sum(
-        value.strip() in trim_table_rows
-        and trim_table_rows[value.strip()] > 1
+        value.strip() in trim_table_rows and trim_table_rows[value.strip()] > 1
         for value in trim_candidates
     )
     casefold_ambiguous_candidates = sum(
-        cf_transform(value) in cf_table_rows
-        and cf_table_rows[cf_transform(value)] > 1
+        cf_transform(value) in cf_table_rows and cf_table_rows[cf_transform(value)] > 1
         for value in casefold_candidates
     )
     trim_candidate_groups: dict[str, set[str]] = defaultdict(set)
@@ -374,10 +404,22 @@ def diagnose(input_root: Path, json_root: Path, raw_root: Path,
     other_photo_header, headers_complete = csv_headers(input_root, candidates[0])
     rows: list[dict[str, str]] = []
     provenance = archive_provenance(candidates[0], archive_path, raw_root, approved_filekey)
-    append(rows, "table", "capital_role_file_coverage", None, "unique_capital_E_suffix_match_complete_scan")
-    append(rows, "table", "package_category", None,
-           "TL_csv_path_component" if any(part.casefold() == "tl_csv" for part in candidates[0].parts)
-           else "category_component_not_verified")
+    append(
+        rows,
+        "table",
+        "capital_role_file_coverage",
+        None,
+        "unique_capital_E_suffix_match_complete_scan",
+    )
+    append(
+        rows,
+        "table",
+        "package_category",
+        None,
+        "TL_csv_path_component"
+        if any(part.casefold() == "tl_csv" for part in candidates[0].parts)
+        else "category_component_not_verified",
+    )
     for metric, (value, status) in provenance.items():
         append(rows, "provenance", metric, value, status)
     append(rows, "table", "table_version", None, "not_independently_encoded_or_verified")
@@ -389,7 +431,12 @@ def diagnose(input_root: Path, json_root: Path, raw_root: Path,
     append(rows, "table", "nonblank_key_rows", sum(table_keys.values()))
     append(rows, "table", "exact_duplicate_key_groups", duplicate_groups)
     append(rows, "table", "exact_duplicate_excess_rows", duplicate_excess)
-    append(rows, "table", "exact_matched_json_unique_ids_with_duplicate_table_key", exact_duplicate_matches)
+    append(
+        rows,
+        "table",
+        "exact_matched_json_unique_ids_with_duplicate_table_key",
+        exact_duplicate_matches,
+    )
     append(rows, "json", "document_cohort", len(files))
     append(rows, "json", "id_missing_or_null", json_missing)
     append(rows, "json", "id_empty_cell", json_empty)
@@ -398,37 +445,122 @@ def diagnose(input_root: Path, json_root: Path, raw_root: Path,
     append(rows, "json", "id_nonblank_occurrences", sum(occurrences.values()))
     append(rows, "json", "id_unique_values", unique_json_count)
     append(rows, "json", "exact_matched_unique_ids", len(exact_matches))
-    append(rows, "json", "exact_unmatched_unique_ids", len(exact_unmatched), "initial_unmatched_cohort")
-    append(rows, "json", "exact_unmatched_occurrences", exact_unmatched_occurrences, "initial_unmatched_cohort")
-    append(rows, "trim_only_candidate", "unique_ids", len(trim_candidates), "candidate_only_not_joined")
-    append(rows, "trim_only_candidate", "occurrences", trim_candidate_occurrences, "candidate_only_not_joined")
-    append(rows, "casefold_after_trim_candidate", "unique_ids", len(casefold_candidates), "candidate_only_not_joined")
-    append(rows, "casefold_after_trim_candidate", "occurrences", casefold_candidate_occurrences, "candidate_only_not_joined")
+    append(
+        rows, "json", "exact_unmatched_unique_ids", len(exact_unmatched), "initial_unmatched_cohort"
+    )
+    append(
+        rows,
+        "json",
+        "exact_unmatched_occurrences",
+        exact_unmatched_occurrences,
+        "initial_unmatched_cohort",
+    )
+    append(
+        rows, "trim_only_candidate", "unique_ids", len(trim_candidates), "candidate_only_not_joined"
+    )
+    append(
+        rows,
+        "trim_only_candidate",
+        "occurrences",
+        trim_candidate_occurrences,
+        "candidate_only_not_joined",
+    )
+    append(
+        rows,
+        "casefold_after_trim_candidate",
+        "unique_ids",
+        len(casefold_candidates),
+        "candidate_only_not_joined",
+    )
+    append(
+        rows,
+        "casefold_after_trim_candidate",
+        "occurrences",
+        casefold_candidate_occurrences,
+        "candidate_only_not_joined",
+    )
     append(rows, "unmatched_after_casefold", "unique_ids", len(remaining), "cause_unresolved")
-    append(rows, "unmatched_after_casefold", "occurrences", remaining_occurrences, "cause_unresolved")
+    append(
+        rows, "unmatched_after_casefold", "occurrences", remaining_occurrences, "cause_unresolved"
+    )
     append(rows, "exact", "matched_unique_ids_with_duplicate_table_key", exact_duplicate_matches)
     append(rows, "trim", "table_normalization_collision_keys", collision_keys(trim_table_variants))
     append(rows, "trim", "json_normalization_collision_keys", collision_keys(trim_json_variants))
     append(rows, "trim", "candidate_ids_with_multiple_table_rows", trim_ambiguous_candidates)
     append(rows, "trim", "candidate_ids_in_json_normalization_collision", trim_json_collision_ids)
-    append(rows, "casefold_after_trim", "new_table_casefold_collision_keys", new_casefold_collisions(set(table_keys)))
-    append(rows, "casefold_after_trim", "new_json_casefold_collision_keys", new_casefold_collisions(json_ids))
-    append(rows, "casefold_after_trim", "candidate_ids_with_multiple_table_rows", casefold_ambiguous_candidates)
-    append(rows, "casefold_after_trim", "candidate_ids_in_json_normalization_collision", cf_json_collision_ids)
-    append(rows, "documentation", "filename_path_transform", None, "not_tested_no_documented_mapping_rule")
-    append(rows, "documentation", "photo_id_table_scope", None, "HWP_declares_TN_TOUR_PHOTO_and_SbL_images")
-    append(rows, "documentation", "other_region_or_collection_scope", None, "not_scanned_outside_approved_capital_inputs")
-    append(rows, "documentation", "CSV_null_semantics", None, "no_typed_null_or_sentinel_rule_verified")
-    append(rows, "input_inventory", "other_capital_csv_photo_id_header", None,
-           "scan_incomplete" if not headers_complete else "present" if other_photo_header else "none_found")
-    append(rows, "input_inventory", "version_provenance", None,
-           "official_listing_version_does_not_verify_local_table_file_version")
+    append(
+        rows,
+        "casefold_after_trim",
+        "new_table_casefold_collision_keys",
+        new_casefold_collisions(set(table_keys)),
+    )
+    append(
+        rows,
+        "casefold_after_trim",
+        "new_json_casefold_collision_keys",
+        new_casefold_collisions(json_ids),
+    )
+    append(
+        rows,
+        "casefold_after_trim",
+        "candidate_ids_with_multiple_table_rows",
+        casefold_ambiguous_candidates,
+    )
+    append(
+        rows,
+        "casefold_after_trim",
+        "candidate_ids_in_json_normalization_collision",
+        cf_json_collision_ids,
+    )
+    append(
+        rows,
+        "documentation",
+        "filename_path_transform",
+        None,
+        "not_tested_no_documented_mapping_rule",
+    )
+    append(
+        rows,
+        "documentation",
+        "photo_id_table_scope",
+        None,
+        "HWP_declares_TN_TOUR_PHOTO_and_SbL_images",
+    )
+    append(
+        rows,
+        "documentation",
+        "other_region_or_collection_scope",
+        None,
+        "not_scanned_outside_approved_capital_inputs",
+    )
+    append(
+        rows, "documentation", "CSV_null_semantics", None, "no_typed_null_or_sentinel_rule_verified"
+    )
+    append(
+        rows,
+        "input_inventory",
+        "other_capital_csv_photo_id_header",
+        None,
+        "scan_incomplete"
+        if not headers_complete
+        else "present"
+        if other_photo_header
+        else "none_found",
+    )
+    append(
+        rows,
+        "input_inventory",
+        "version_provenance",
+        None,
+        "official_listing_version_does_not_verify_local_table_file_version",
+    )
     append(rows, "interpretation", "normalization_join", None, "not_performed_candidates_only")
     return rows
 
 
-def diagnose_archive_only(input_root: Path, raw_root: Path, archive_path: Path,
-                          approved_filekey: str) -> list[dict[str, str]]:
+def diagnose_archive_only(
+    input_root: Path, raw_root: Path, archive_path: Path, approved_filekey: str
+) -> list[dict[str, str]]:
     candidates = table_candidates(input_root)
     if len(candidates) != 1:
         raise ValueError
@@ -441,18 +573,29 @@ def diagnose_archive_only(input_root: Path, raw_root: Path, archive_path: Path,
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Diagnose capital SbL photo-ID linkage without emitting values.")
+    parser = argparse.ArgumentParser(
+        description="Diagnose capital SbL photo-ID linkage without emitting values."
+    )
     parser.add_argument("--raw-root", required=True)
     parser.add_argument("--input", required=True)
     parser.add_argument("--json-root")
-    parser.add_argument("--archive", required=True,
-                        help="Explicit approved capital TL_csv candidate archive inside raw root")
-    parser.add_argument("--approved-filekey", required=True,
-                        help="Approved TL_csv filekey used only for an in-memory metadata marker check")
+    parser.add_argument(
+        "--archive",
+        required=True,
+        help="Explicit approved capital TL_csv candidate archive inside raw root",
+    )
+    parser.add_argument(
+        "--approved-filekey",
+        required=True,
+        help="Approved TL_csv filekey used only for an in-memory metadata marker check",
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--overwrite", action="store_true")
-    parser.add_argument("--provenance-only", action="store_true",
-                        help="Hash the unique capital photo table against role/category members only")
+    parser.add_argument(
+        "--provenance-only",
+        action="store_true",
+        help="Hash the unique capital photo table against role/category members only",
+    )
     args = parser.parse_args()
     raw_root = Path(args.raw_root).expanduser()
     archive_path = Path(args.archive).expanduser()
@@ -469,7 +612,9 @@ def main() -> int:
     else:
         if not args.json_root:
             parser.error("--json-root is required unless --provenance-only is selected")
-        paths = prepare_paths(args.raw_root, args.input, args.json_root, args.output, args.overwrite)
+        paths = prepare_paths(
+            args.raw_root, args.input, args.json_root, args.output, args.overwrite
+        )
         if paths is None:
             print("status: blocked_path_or_output", file=sys.stderr)
             return 2

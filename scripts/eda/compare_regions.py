@@ -83,13 +83,15 @@ def load_regions(dirs: list[Path]) -> dict[str, dict[str, Any]]:
         if profile.is_symlink():
             stop(f"profile.json 이 심볼릭 링크입니다: {d.name}")
         if not profile.is_file():
-            stop(f"{d.relative_to(REPO_ROOT)}/profile.json 이 없습니다. 먼저 profile_travel_log.py 실행")
+            stop(
+                f"{d.relative_to(REPO_ROOT)}/profile.json 이 없습니다. "
+                "먼저 profile_travel_log.py를 실행하세요."
+            )
         data = json.loads(profile.read_text(encoding="utf-8"))
         label = data["run"]["region_label"]
         if label not in EXPECTED_REGIONS or d.name != label:
-            stop(
-                f"권역 라벨과 입력 폴더는 {', '.join(sorted(EXPECTED_REGIONS))} 중 하나로 정확히 일치해야 합니다: {d.name}"
-            )
+            expected = ", ".join(sorted(EXPECTED_REGIONS))
+            stop(f"권역 라벨과 입력 폴더는 {expected} 중 하나와 정확히 일치해야 합니다: {d.name}")
         if label in regions:
             stop(f"권역 라벨이 중복됩니다: {label} (입력 프로필을 확인하세요)")
         regions[label] = data
@@ -241,9 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     out = args.output.resolve()
     if not all(within_results(p) for p in inputs) or not within_results(out):
         stop("입력·출력 모두 results/eda/travel-log-2023/ 하위여야 합니다.")
-    existing = [
-        n for n in OUTPUTS if (out / n).exists() or (out / n).is_symlink()
-    ]
+    existing = [n for n in OUTPUTS if (out / n).exists() or (out / n).is_symlink()]
     for name in existing:
         safe_output_path(out, name)
     if existing and not args.overwrite:
