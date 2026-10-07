@@ -8,5 +8,6 @@
 - [agent-workflow.md](agent-workflow.md) — Issue, 권한, 브랜치, 커밋, PR 절차
 - [data/aihub-workflow.md](data/aihub-workflow.md) — AI Hub 데이터 접근, 전처리, 분석 및 결과 공유 절차
 - [PRD.md](PRD.md) — 제품 요구사항과 시스템 방향
+- [data/eda-travel-log-2023.md](data/eda-travel-log-2023.md) — 2023 국내 여행로그 4개 권역 EDA 계획과 안전한 집계 보고서 (Issue #12)
 
 새로운 데이터·아키텍처 결정은 결정 기록을 추가하고 관련 Issue 및 근거에 연결한다. 지침을 변경할 때는 근거와 변경 사유를 기록하고 관련 문서 링크를 함께 갱신한다.

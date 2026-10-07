@@ -1,3 +1,16 @@
+[project]
+name = "travel-recommendation"
+version = "0.1.0"
+description = "AI Hub 국내 여행로그 기반 여행 추천 프로젝트의 데이터 분석·실험 코드"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "duckdb>=1.5.6",
+    "matplotlib>=3.11.2",
+    "pandas>=3.0.6",
+    "seaborn>=0.13.2",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100
