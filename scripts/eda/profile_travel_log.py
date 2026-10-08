@@ -82,6 +82,17 @@ ARTIFACTS = [
 ]
 
 EXIT_GUARD = 2  # 승인·데이터·경로 조건 미충족으로 의도적으로 중단
+PUBLIC_RATE_BANDS = (
+    "0-<10%", "10-<25%", "25-<50%", "50-<75%", "75-<90%", "90-100%"
+)
+COUNT_FIELD_NAMES = {
+    "rows", "columns", "count", "distinct", "non_null", "top_level_len",
+    "duplicate_rows", "duplicate_value_rows", "allowed_value_count", "finite_count",
+    "negative_count", "zero_count", "left_distinct", "right_distinct", "shared_distinct",
+    "left_rows_without_match", "right_rows_without_match",
+}
+SIZE_FIELD_NAMES = {"size_bytes", "total_bytes", "min_bytes", "median_bytes", "max_bytes"}
+LENGTH_FIELD_NAMES = {"min_len", "avg_len", "max_len"}
 
 GUIDE = """\
 [중단] {reason}
@@ -168,6 +179,13 @@ def type_class(duck_type: str) -> str:
     if t.startswith(("STRUCT", "MAP", "UNION")) or t.endswith("]") or t == "JSON":
         return "nested"
     return "other"
+
+
+def serialized_type(duck_type: str, source_format: str) -> str:
+    """Hide DuckDB JSON member names embedded in inferred nested type strings."""
+    if source_format.lower() == "json" and type_class(duck_type) == "nested":
+        return "NESTED"
+    return duck_type
 
 
 def clean_label(value: Any, limit: int = 60) -> str:
@@ -477,7 +495,12 @@ class Profiler:
         for pos, (cname, ctype, *_rest) in enumerate(describe):
             label = f"col_{pos:04d}" if names_suppressed else cname
             self.label_of[(rel, cname)] = label
-            meta[cname] = {"label": label, "type": ctype, "class": type_class(ctype), "pos": pos}
+            meta[cname] = {
+                "label": label,
+                "type": serialized_type(ctype, item["format"]),
+                "class": type_class(ctype),
+                "pos": pos,
+            }
         self.col_meta[view] = meta
         if names_suppressed:
             self.flag("warn", rel, None, "column_names_suppressed_too_many_columns", len(describe))
@@ -1013,6 +1036,109 @@ def _below_k(value: Any, k: int) -> bool:
     return n is not None and 0 < n < k
 
 
+def _public_count(value: Any, k: int) -> Any:
+    n = _count_value(value)
+    if n is not None:
+        if n == 0:
+            return "0"
+        return "<10" if n < 10 else "10+"
+    if isinstance(value, str) and value == "<k":
+        return "<10" if k == 10 else "suppressed"
+    if isinstance(value, str) and value.startswith("at_least_"):
+        return "10+"
+    return value
+
+
+def _public_rate(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value in PUBLIC_RATE_BANDS:
+            return value
+        if value in ("<k", "<10", "suppressed", "<10/suppressed"):
+            return "<10/suppressed"
+        return "suppressed"
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return "suppressed"
+    if not 0 <= rate <= 1:
+        return "suppressed"
+    if rate < 0.10:
+        return "0-<10%"
+    if rate < 0.25:
+        return "10-<25%"
+    if rate < 0.50:
+        return "25-<50%"
+    if rate < 0.75:
+        return "50-<75%"
+    if rate < 0.90:
+        return "75-<90%"
+    return "90-100%"
+
+
+def _public_size(value: Any) -> Any:
+    n = _count_value(value)
+    if n is None:
+        return value
+    mib = 2**20
+    if n == 0:
+        return "0"
+    if n < mib:
+        return "<1MiB"
+    if n < 10 * mib:
+        return "1-<10MiB"
+    if n < 100 * mib:
+        return "10-<100MiB"
+    return "100MiB+"
+
+
+def _public_length(value: Any) -> Any:
+    if value is None:
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return value
+    if n <= 0:
+        return "0"
+    return "1-9" if n < 10 else "10+"
+
+
+def _count_field(name: str) -> bool:
+    return (
+        name in COUNT_FIELD_NAMES
+        or name.endswith(("_count", "_rows", "_files", "_tables", "_distinct"))
+    )
+
+
+def _safe_json_distribution(value: Any, k: int, bucket_keys: bool = False) -> Any:
+    was_string = isinstance(value, str)
+    try:
+        parsed = json.loads(value) if was_string else value
+    except json.JSONDecodeError:
+        return value
+    if not isinstance(parsed, dict):
+        return value
+    result: dict[str, Any] = {}
+    merged_counts: Counter[str] = Counter()
+    for key, count in parsed.items():
+        label = str(key)
+        if bucket_keys:
+            bucket = _public_count(label, k)
+            label = {"0": "0", "<10": "1-9", "10+": "10+"}.get(bucket, "suppressed")
+        raw_count = _count_value(count)
+        if bucket_keys and raw_count is not None:
+            merged_counts[label] += raw_count
+        else:
+            result[label] = _public_count(count, k)
+    for label, count in merged_counts.items():
+        result[label] = _public_count(count, k)
+    if bucket_keys and any(not isinstance(v, int) for v in parsed.values()):
+        result = {label: "suppressed" for label in result}
+    return json.dumps(result, ensure_ascii=False, sort_keys=True) if was_string else result
+
+
 def _suppress_fields(record: dict[str, Any], fields: tuple[str, ...]) -> int:
     changed = 0
     for field in fields:
@@ -1045,6 +1171,8 @@ def _suppress_json_count_distribution(value: Any, k: int) -> tuple[Any, bool]:
 def suppress_small_aggregate_cells(sections: dict[str, list[dict[str, Any]]], k: int) -> int:
     """Suppress positive sub-k aggregate cells and complementary count/rate bundles."""
     changed = 0
+    for row in sections.get("files_inventory", []):
+        row.pop("sha256", None)
     table_rows: dict[str, int | None] = {}
     for row in sections.get("tables", []):
         table = str(row.get("table", ""))
@@ -1081,7 +1209,7 @@ def suppress_small_aggregate_cells(sections: dict[str, list[dict[str, Any]]], k:
     # type/count bucket is small, suppress its complete distribution and total.
     for row in sections.get("json_structure", []):
         hidden = False
-        for field in ("value_types", "element_key_count_distribution"):
+        for field in ("value_types", "element_types", "element_key_count_distribution"):
             safe, suppressed = _suppress_json_count_distribution(row.get(field), k)
             if suppressed:
                 row[field] = safe
@@ -1207,6 +1335,64 @@ def suppress_small_aggregate_cells(sections: dict[str, list[dict[str, Any]]], k:
         )
         if any(_below_k(row.get(field), k) for field in fields):
             changed += _suppress_fields(row, fields + ("left_containment", "right_containment"))
+
+    # Serialize only bounded labels, count buckets, and rate bands in every public artifact.
+    for row in sections.get("json_structure", []):
+        for field in ("value_types", "element_types", "element_key_count_distribution"):
+            if field in row:
+                row[field] = _safe_json_distribution(
+                    row[field], k, bucket_keys=field == "element_key_count_distribution"
+                )
+
+    category_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in sections.get("categorical_values", []):
+        category_groups.setdefault((str(row.get("table")), str(row.get("column"))), []).append(row)
+    for group in category_groups.values():
+        index = 0
+        for row in group:
+            if row.get("value") == "<suppressed>":
+                continue
+            index += 1
+            row["value"] = f"category_{index:03d}"
+
+    date_groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in sections.get("date_months", []):
+        date_groups.setdefault((str(row.get("table")), str(row.get("column"))), []).append(row)
+    for group in date_groups.values():
+        periods = [
+            row["month"] for row in group
+            if isinstance(row.get("month"), str)
+            and re.fullmatch(r"(19|20)\d{2}-(0[1-9]|1[0-2])", row["month"])
+        ]
+        for row in group:
+            month = row.get("month")
+            if month in periods:
+                row["month"] = f"period_{periods.index(month) + 1:03d}"
+            for field in ("min_month", "max_month"):
+                value = row.get(field)
+                if isinstance(value, str) and re.fullmatch(r"(19|20)\d{2}-\d{2}", value):
+                    row[field] = f"{int(value[:4]) // 10 * 10}s"
+
+    for records in sections.values():
+        for row in records:
+            for field, value in tuple(row.items()):
+                if field in ("null_rate", "left_containment", "right_containment"):
+                    row[field] = _public_rate(value)
+                elif field in SIZE_FIELD_NAMES:
+                    row[field] = _public_size(value)
+                elif field in LENGTH_FIELD_NAMES:
+                    row[field] = _public_length(value)
+                elif _count_field(field):
+                    if (
+                        field == "count"
+                        and isinstance(value, str)
+                        and re.fullmatch(r"\d+/\d+", value)
+                    ):
+                        row[field] = "/".join(
+                            str(_public_count(part, k)) for part in value.split("/")
+                        )
+                    else:
+                        row[field] = _public_count(value, k)
     return changed
 
 
@@ -1268,6 +1454,38 @@ def sanitize_existing_output(out: Path) -> int:
     return suppressed
 
 
+def public_run_metadata(run: dict[str, Any]) -> dict[str, Any]:
+    public_run = dict(run)
+    public_run.pop("input", None)
+    public_run.pop("codebook_source", None)
+    public_run.pop("disk_free_bytes_results", None)
+    duckdb_config = dict(public_run.get("duckdb_config") or {})
+    duckdb_config.pop("temp_directory", None)
+    if "max_temp_directory_size" in duckdb_config:
+        max_temp_size = duckdb_config["max_temp_directory_size"]
+        if isinstance(max_temp_size, str) and max_temp_size.endswith("MiB"):
+            try:
+                max_temp_size = int(max_temp_size[:-3]) * 2**20
+            except ValueError:
+                max_temp_size = None
+        duckdb_config["max_temp_directory_size"] = _public_size(max_temp_size)
+    public_run["duckdb_config"] = duckdb_config
+    public_run["input_path_recorded"] = False
+    public_run["source_fingerprints_recorded"] = False
+    public_run["codebook_source_recorded"] = bool(run.get("codebook_source"))
+    public_run["disk_free_space_band"] = _public_size(run.get("disk_free_bytes_results"))
+    public_run["symlinks_skipped"] = _public_count(
+        run.get("symlinks_skipped"), run.get("min_cell_count", 10)
+    )
+    memory_detail = run.get("memory_detail") or {}
+    public_run["memory_detail"] = {"policy": memory_detail.get("policy")}
+    public_run["public_output_policy"] = (
+        "count buckets 0/<10/10+; coarse rate bands; complementary category suppression; "
+        "category labels generalized; no source paths or fingerprints"
+    )
+    return public_run
+
+
 def write_outputs(out: Path, prof: Profiler, run: dict[str, Any], files, photos, others) -> None:
     # Validate before mkdir as well as at each write. This prevents a symlinked
     # output ancestor from causing even directory creation outside RESULTS_ROOT.
@@ -1275,7 +1493,9 @@ def write_outputs(out: Path, prof: Profiler, run: dict[str, Any], files, photos,
         safe_artifact_path(out, name)
     out.mkdir(parents=True, exist_ok=True)
     csv_tables = {
-        "files_inventory": files,
+        "files_inventory": [
+            {key: value for key, value in row.items() if key != "sha256"} for row in files
+        ],
         "photo_summary": photos,
         "other_files_summary": others,
         **prof.rec,
@@ -1285,10 +1505,11 @@ def write_outputs(out: Path, prof: Profiler, run: dict[str, Any], files, photos,
         pd.DataFrame(records).to_csv(
             safe_artifact_path(out, f"{stem}.csv"), index=False, encoding="utf-8"
         )
+    public_run = public_run_metadata(run)
     safe_artifact_path(out, "run_metadata.json").write_text(
-        json.dumps(run, ensure_ascii=False, indent=2), "utf-8"
+        json.dumps(public_run, ensure_ascii=False, indent=2), "utf-8"
     )
-    profile = {"run": run, **csv_tables}
+    profile = {"run": public_run, **csv_tables}
     safe_artifact_path(out, "profile.json").write_text(
         json.dumps(profile, ensure_ascii=False, indent=2, default=str), "utf-8"
     )
@@ -1315,7 +1536,7 @@ def main(argv: list[str] | None = None) -> int:
     if not is_within(inp, raw_root) or inp == raw_root:
         guard_stop("입력은 지정한 --raw-root의 하위 데이터셋 폴더여야 합니다.")
     if not inp.is_dir():
-        guard_stop(f"입력 폴더가 없습니다: {inp.relative_to(raw_root)} (원본 미다운로드)")
+        guard_stop("입력 폴더가 없습니다 (원본 미다운로드). 지정한 경로를 확인하세요.")
     if not args.confirm_approved:
         guard_stop("--confirm-approved 가 없습니다. 승인 확인 전에는 원본을 읽지 않습니다.")
     if not args.confirm_terms:
@@ -1422,7 +1643,7 @@ def main(argv: list[str] | None = None) -> int:
             TMP_ROOT.rmdir()  # 비어 있을 때만 제거
         except OSError:
             pass
-    print(f"완료: {out.relative_to(REPO_ROOT)} (표 {len(tabular)}개, memory_limit={memory_limit})")
+        print(f"완료: {out.relative_to(REPO_ROOT)} (memory_limit={memory_limit})")
     return 0
 
 

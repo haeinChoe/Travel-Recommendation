@@ -2,6 +2,8 @@
 
 ## 출처와 범위
 
+이 수도권 HWP 참조와 사진 테이블 정의는 공식 스키마 근거 및 PR #14의 과거 pilot 범위다. 사진 archive를 후속 권역에서 다운로드하거나 분석해야 한다는 뜻은 아니다.
+
 - **[공식 문서 사실]** 기준 페이지는 [AI Hub 국내 여행로그 데이터(수도권, 2023)](https://aihub.or.kr/aihubdata/data/view.do?aihubDataSe=data&currMenu=115&dataSetSn=71776&topMenu=100)다. 2026-10-07 확인 당시 페이지의 데이터 버전은 1.2였고, 2024-12-04 변경 이력은 서브라벨링 추가를 기록한다. 이 문서는 사용자가 제공한 수도권 데이터 설명서의 테이블 정의를 함께 사용한다. 설명서 파일의 별도 개정 표시는 확인하지 못했다.
 - **[공식 문서 사실]** 설명서의 상세 테이블 표는 컬럼명, 자료형, 필수 여부, 설명을 제공한다. `필수 여부`의 Y/N은 필수 입력 여부이며 기본키·외래키 선언으로 해석하지 않는다.
 - **[미확인]** 연결된 구축·활용 가이드의 내용은 확인하지 않았다. `TC_CODEA`와 `TC_CODEB`의 모든 허용 코드값 및 코드 간 상세 매핑은 이 참조에 옮기지 않았다.
@@ -20,7 +22,7 @@
 | `TN_MVMN_CONSUME_HIS` | 교통비 내역 | `TRAVEL_ID`, 이동수단·결제 구분, 결제 시각 (`datetime`), 결제 금액 (`int(11)`); 코드·설명 필드는 문자열 계열 |
 | `TN_LODGE_CONSUME_HIS` | 숙박 소비 내역 | `TRAVEL_ID`, 숙박 유형, 체크인·체크아웃 (`datetime`), 결제 금액 (`int(11)`) 및 결제 정보 |
 | `TN_ADV_CONSUME_HIS` | 여행 전 소비 내역 | `TRAVEL_ID`, 구매·상점·결제 정보, 결제 금액 (`int(11)`); 결제 시각은 `datetime` |
-| `TN_VISIT_AREA_INFO` | 방문지 정보 | `TRAVEL_ID`, `VISIT_AREA_ID`, 방문지명, 시작·종료일 (`date`), 위치·POI·방문 유형·만족/재방문 의향 필드 |
+| `TN_VISIT_AREA_INFO` | 방문지 정보 | `TRAVEL_ID`, `VISIT_AREA_ID`, 방문지명, 시작·종료일 (`date`), 위치·방문 유형·만족/재방문 의향 필드; table-specific `POI_ID` 의미는 미확인 |
 | `TN_TOUR_PHOTO` | 관광 사진 메타데이터 | `TRAVEL_ID`, `VISIT_AREA_ID`, 사진 식별·이름·형식·경로·해상도·좌표; 촬영 시각은 `datetime` |
 | `TN_ACTIVITY_HIS` | 활동 내역 | `TRAVEL_ID`, `VISIT_AREA_ID`, 활동 유형·세부 내용·지출/입장료 구분 |
 | `TN_ACTIVITY_CONSUME_HIS` | 활동 소비 내역 | `TRAVEL_ID`, `VISIT_AREA_ID`, 활동 유형 코드, 결제 금액 (`int(11)`) 및 상점·결제 정보 |
@@ -31,6 +33,7 @@
 ## 식별자, 코드 참조, JSON
 
 - **[공식 문서 사실]** 설명서는 여행객·여행·방문지·사진 관련 식별 컬럼을 정의하며, 일부 시군구 코드 컬럼에 `TC_SGG` 참조를 명시한다. 표준 CSV 이름의 권역 코드 `E`는 수도권이다. 공식 페이지는 GPS CSV를 여행객별 파일로 설명하고, 사진·캡션 JSON의 이름 요소 및 JSON의 `Info`, `images`, `caption`, `licenses` 구획을 설명한다.
+- **[미확인]** 검토한 HWP의 `TN_POI_MASTER` 정의에는 `POI_ID`가 있으나, `TN_VISIT_AREA_INFO` 행에 `POI_ID`를 배정하는 table-specific 정의나 관계 제약은 확인하지 못했다. 따라서 로컬 방문 입력의 `POI_ID` header와 이에 의존하는 통계는 관측 컬럼 후보로만 취급하며 공식 테이블 의미를 주장하지 않는다.
 - **[공식 문서 사실]** 설명서의 코드 범위를 로컬 표·필드명에 연결한 내용은 다음과 같다. 범위는 공식 허용 코드 정의이지 관측 빈도나 실제 값의 예가 아니다.
 
   | 공식 테이블 | 공식 필드 | 허용 범위 |
@@ -46,7 +49,7 @@
   | `TN_ACTIVITY_HIS` | `ACTIVITY_TYPE_CD`, `EXPND_SE`, `ADMISSION_SE` | 각각 1–7 및 99, 1–5, 1–2 |
   | `TN_VISIT_AREA_INFO` | `VISIT_AREA_TYPE_CD`, `VISIT_CHC_REASON_CD`, `DGSTFN`, `REVISIT_INTENTION`, `RCMDTN_INTENTION` | 각각 1–13 및 21–24, 1–11, 1–5, 1–5, 1–5 |
 
-- **[공식 문서 사실]** 설명서는 거주·선호 시군구 코드와 일부 소비/방문 시군구 코드에서 `TC_SGG` 참조를 표시한다. 필드의 의미상 공통 여행·방문·POI·사진 식별자도 이름을 정의하지만, 문서에서 이를 PK/FK 제약으로 선언하지 않는다.
+- **[공식 문서 사실]** 설명서는 거주·선호 시군구 코드와 일부 소비/방문 시군구 코드에서 `TC_SGG` 참조를 표시한다. 여행·방문·사진 식별 필드와 `TN_POI_MASTER.POI_ID`를 정의하지만, 이를 PK/FK 제약으로 선언하지 않는다.
 - **[공식 문서 사실]** HWP에서 `TRAVEL_MISSION`은 개별 미션(`MIS`), `TRAVEL_MISSION_CHECK`는 미션 우선도(`MIS`)이며 두 필드 모두 `(1–13) ∪ (21–28)` 범위를 선언한다. `EXPND_SE`는 지출 구분(`EXP`)이며 1–5 범위를 선언한다. 설명서는 `TC_CODEA`를 코드 리스트, `TC_CODEB`를 코드 상세 테이블로 정의한다.
 - **[추론]** 반복되는 `TRAVEL_ID`, 방문지 식별 필드, POI 식별 필드, 사진 식별 필드는 잠재 연결 후보로 볼 수 있다. 이름·필수 여부만으로 PK/FK, 유일성, 실제 조인 성립을 주장할 수 없다.
 - **[공식 문서 사실]** 캡션 JSON의 `Info` 구획은 데이터셋명·상세 설명, `images`는 사진 식별/파일 메타데이터와 방문지·랜드마크 정보, `caption`은 캡션·토큰·시각 정보, `licenses`는 라이선스 ID·이름을 담도록 설명한다. 설명서의 이미지·캡션 필드에는 문자열 계열 자료형이 기재돼 있다. 필드 그룹마다 필수 여부 표기가 다르다.
