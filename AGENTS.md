@@ -39,6 +39,7 @@
 
 ## 상세 지침
 
+- 저장소 Issue 구현과 해당 Issue에 연결된 열린 PR의 후속 수정은 `.agents/skills/travel-issue-agent-loop/SKILL.md`의 필수 작업 흐름을 따른다. Issue 번호 또는 PR 번호로 요청된 경우 모두 적용한다.
 - 작업 요청, 권한 단계, 브랜치·커밋·PR 절차는 docs/agent-workflow.md를 따른다.
 - AI Hub 원본 및 파생 데이터 처리 절차는 docs/data/aihub-workflow.md를 따른다.
 - 문서 목록과 역할은 docs/README.md에서 확인한다.
