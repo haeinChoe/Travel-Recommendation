@@ -44,6 +44,7 @@ MAPPING = {
 }
 GROUP_FIELDS = {"TRAVEL_MISSION", "TRAVEL_MISSION_CHECK", "EXPND_SE"}
 GROUPS = {group for fields in MAPPING.values() for group, _ in fields.values()}
+CODEBOOK_PATTERN = re.compile(r"^tc_codeb(?:_.+)?\.csv$", re.I)
 
 
 class InputError(ValueError):
@@ -134,8 +135,37 @@ def table_path(root: Path, table: str, region: str) -> Path:
     return one_csv(root, re.compile(rf"tn_{name}_.+_{SUFFIX[region]}\.csv", re.I), "input_table")
 
 
-def codebook(path: Path) -> dict[str, set[str]]:
-    file = path if path.is_file() else one_csv(path, re.compile(r"tc_codeb.*\.csv", re.I), "codebook")
+def codebook_file(path: Path, region: str) -> Path:
+    if not no_symlink(path):
+        raise InputError("codebook_path_invalid")
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise InputError("codebook_path_invalid") from exc
+    roots = [Path(*resolved.parts[:i + 1]) for i, part in enumerate(resolved.parts)
+             if part == f"2023-travel-log-{region}"]
+    if len(roots) != 1:
+        raise InputError("codebook_region_invalid")
+    if resolved.is_dir():
+        if resolved.name.upper() != "TL_CSV":
+            raise InputError("codebook_role_invalid")
+        role_root = resolved
+        candidates = []
+        for base, dirs, files in os.walk(resolved, followlinks=False):
+            dirs[:] = [name for name in dirs if not (Path(base) / name).is_symlink()]
+            candidates.extend(Path(base) / name for name in files if CODEBOOK_PATTERN.fullmatch(name))
+    else:
+        if (not CODEBOOK_PATTERN.fullmatch(resolved.name)
+                or resolved.parent.name.upper() != "TL_CSV"):
+            raise InputError("codebook_role_invalid")
+        role_root = resolved.parent
+        candidates = [resolved]
+    if len(candidates) != 1 or not no_symlink(candidates[0]):
+        raise InputError("codebook_table_mapping_unavailable")
+    return candidates[0]
+
+
+def codebook(file: Path) -> dict[str, set[str]]:
     groups = {group: set() for group in GROUPS}
     for row in read_rows(file, {"CD_A", "CD_B"}):
         group, value = row["CD_A"], row["CD_B"]
@@ -184,9 +214,12 @@ def parse_inputs(args):
 
 
 def run(inputs, books, output: Path) -> None:
+    output = prepare_output(output)
+    codebook_paths = {region: codebook_file(path, region) for region, path in books.items()}
+    group_values = {region: codebook(path) for region, path in codebook_paths.items()}
     domain_rows, field_rows = [], []
-    for region, book_path in books.items():
-        groups = codebook(book_path)
+    for region in books:
+        groups = group_values[region]
         domain_ok = {}
         for group in sorted(GROUPS):
             expected = set().union(*(allowed(spec[1]) for fields in MAPPING.values()
@@ -224,6 +257,18 @@ def run(inputs, books, output: Path) -> None:
                     )
                     field_rows.append({"region": region, "split": role, "table": table, **summary})
 
+    specs = (("codebook_domains.csv", domain_rows), ("field_observations.csv", field_rows))
+    with tempfile.TemporaryDirectory(dir=output.parent, prefix=".code-domain-") as temp:
+        tempdir = Path(temp)
+        for filename, rows in specs:
+            with (tempdir / filename).open("w", encoding="utf-8", newline="") as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(rows[0]), lineterminator="\n")
+                writer.writeheader()
+                writer.writerows(rows)
+        os.replace(tempdir, output)
+
+
+def prepare_output(output: Path) -> Path:
     output = output.expanduser()
     if not no_symlink(output):
         raise InputError("output_path_invalid")
@@ -234,21 +279,12 @@ def run(inputs, books, output: Path) -> None:
         resolved.parent.resolve(strict=True).relative_to(base)
     except (OSError, ValueError) as exc:
         raise InputError("output_path_invalid") from exc
-    if resolved.exists() or not resolved.parent.is_dir() or not no_symlink(resolved):
+    if resolved.exists() or not resolved.parent.is_dir():
         raise InputError("output_must_be_new")
-    ignored = subprocess.run(["git", "check-ignore", "-q", "--no-index", str(resolved)],
-                             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if ignored.returncode:
+    if subprocess.run(["git", "check-ignore", "-q", "--no-index", str(resolved)],
+                      cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
         raise InputError("output_not_ignored")
-    specs = (("codebook_domains.csv", domain_rows), ("field_observations.csv", field_rows))
-    with tempfile.TemporaryDirectory(dir=resolved.parent, prefix=".code-domain-") as temp:
-        tempdir = Path(temp)
-        for filename, rows in specs:
-            with (tempdir / filename).open("w", encoding="utf-8", newline="") as stream:
-                writer = csv.DictWriter(stream, fieldnames=list(rows[0]), lineterminator="\n")
-                writer.writeheader()
-                writer.writerows(rows)
-        os.replace(tempdir, resolved)
+    return resolved
 
 
 def main(argv=None) -> int:
@@ -262,8 +298,9 @@ def main(argv=None) -> int:
     try:
         if not args.confirm_approved or not args.confirm_terms:
             raise InputError("confirmation_required")
+        output = prepare_output(Path(args.output))
         inputs, books = parse_inputs(args)
-        run(inputs, books, Path(args.output))
+        run(inputs, books, output)
     except InputError as exc:
         print(f"validation_status: {exc}", file=sys.stderr)
         return 2
