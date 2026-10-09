@@ -1,0 +1,4 @@
+interface:
+  display_name: "Issue-to-PR Agent Loop"
+  short_description: "Run Herdr implementation and review loops to a PR"
+  default_prompt: "Use $travel-issue-agent-loop to implement Issue #<number> through an authorized PR."
