@@ -36,6 +36,129 @@ OUTPUTS = [
 ]
 EXIT_GUARD = 2
 EXPECTED_REGIONS = {"capital", "west", "east", "jeju-islands"}
+COUNT_BUCKETS = {"0", "<10", "10+", "suppressed"}
+RATE_BANDS = {
+    "<10/suppressed", "0-<10%", "10-<25%", "25-<50%", "50-<75%",
+    "75-<90%", "90-100%", "mixed", "suppressed",
+}
+PUBLIC_RATE_BANDS = (
+    "0-<10%", "10-<25%", "25-<50%", "50-<75%", "75-<90%", "90-100%"
+)
+
+
+def count_bucket(value: Any) -> str:
+    if isinstance(value, str) and value in COUNT_BUCKETS:
+        return value
+    if isinstance(value, bool):
+        return "suppressed"
+    if isinstance(value, float) and not value.is_integer():
+        return "suppressed"
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return "suppressed"
+    if count < 0:
+        return "suppressed"
+    if count == 0:
+        return "0"
+    return "<10" if count < 10 else "10+"
+
+
+def sum_count_buckets(values: Any) -> str:
+    buckets = [count_bucket(value) for value in values]
+    if "10+" in buckets:
+        return "10+"
+    if "suppressed" in buckets:
+        return "suppressed"
+    if not buckets or all(value == "0" for value in buckets):
+        return "0"
+    small = buckets.count("<10")
+    if small == 1:
+        return "<10"
+    return "suppressed"
+
+
+def coarse_rate(value: Any, numerator: Any = None, denominator: Any = None) -> str:
+    if denominator in ("<10", "suppressed"):
+        return "<10/suppressed"
+    if isinstance(denominator, (int, float)) and denominator < 10:
+        return "<10/suppressed"
+    if numerator in ("<10", "suppressed"):
+        return "<10/suppressed"
+    if isinstance(numerator, (int, float)) and 0 < numerator < 10:
+        return "<10/suppressed"
+    if isinstance(value, str) and value in RATE_BANDS:
+        return value
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return "suppressed"
+    if not 0 <= rate <= 1:
+        return "suppressed"
+    if rate < 0.10:
+        return "0-<10%"
+    if rate < 0.25:
+        return "10-<25%"
+    if rate < 0.50:
+        return "25-<50%"
+    if rate < 0.75:
+        return "50-<75%"
+    if rate < 0.90:
+        return "75-<90%"
+    return "90-100%"
+
+
+def combined_rate_bands(values: Any) -> str:
+    bands = {str(value) for value in values if value is not None}
+    if not bands:
+        return "suppressed"
+    if len(bands) == 1:
+        return next(iter(bands))
+    if "<10/suppressed" in bands or "suppressed" in bands:
+        return "<10/suppressed"
+    return "mixed"
+
+
+def size_band(value: Any) -> str:
+    if isinstance(value, str) and value in {
+        "0", "<1MiB", "1-<10MiB", "10-<100MiB", "100MiB+", "suppressed"
+    }:
+        return value
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return "suppressed"
+    if size == 0:
+        return "0"
+    if size < 2**20:
+        return "<1MiB"
+    if size < 10 * 2**20:
+        return "1-<10MiB"
+    if size < 100 * 2**20:
+        return "10-<100MiB"
+    return "100MiB+"
+
+
+def combined_size_bands(values: Any) -> str:
+    bands = [size_band(value) for value in values]
+    if not bands or all(value == "0" for value in bands):
+        return "0"
+    if "100MiB+" in bands:
+        return "100MiB+"
+    if "10-<100MiB" in bands:
+        return "10MiB+"
+    if "1-<10MiB" in bands:
+        return "1MiB+"
+    return "suppressed"
+
+
+def decade_band(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if len(text) >= 4 and text[:4].isdigit():
+        return f"{int(text[:4]) // 10 * 10}s"
+    return text if text.endswith("s") and text[:-1].isdigit() else "suppressed"
 
 
 def stop(message: str) -> None:
@@ -107,15 +230,15 @@ def build_frames(regions: dict[str, dict[str, Any]]) -> dict[str, pd.DataFrame]:
         summary.append(
             {
                 "region": region,
-                "tabular_files": len(tables),
-                "profiled_tables": len(ok),
-                "failed_tables": len(tables) - len(ok),
-                "total_rows": int(ok["rows"].sum()),
-                "total_tabular_bytes": int(tables["size_bytes"].sum()),
-                "photo_files": sum(p["count"] for p in data["photo_summary"]),
-                "photo_bytes": sum(p["total_bytes"] for p in data["photo_summary"]),
-                "tables_with_suppressed_column_names": int(ok["names_suppressed"].sum()),
-                "duplicate_rows_total": int(ok["duplicate_rows"].fillna(0).sum()),
+                "tabular_files": count_bucket(len(tables)),
+                "profiled_tables": count_bucket(len(ok)),
+                "failed_tables": count_bucket(len(tables) - len(ok)),
+                "total_rows": sum_count_buckets(ok["rows"].tolist()),
+                "total_tabular_size_band": combined_size_bands(tables["size_bytes"].tolist()),
+                "tables_with_suppressed_column_names": count_bucket(
+                    int(ok["names_suppressed"].sum())
+                ),
+                "duplicate_rows_total": sum_count_buckets(ok["duplicate_rows"].tolist()),
             }
         )
         # 컬럼명이 비공개된 표(col_NNNN)는 이름 기준 비교가 불가능하므로 제외한다.
@@ -126,7 +249,7 @@ def build_frames(regions: dict[str, dict[str, Any]]) -> dict[str, pd.DataFrame]:
                 {
                     "region": region,
                     "table": t["table"],
-                    "rows": int(t["rows"]),
+                    "rows": count_bucket(t["rows"]),
                     "signature": "|".join(sorted(tcols["column"].str.lower())),
                 }
             )
@@ -137,8 +260,9 @@ def build_frames(regions: dict[str, dict[str, Any]]) -> dict[str, pd.DataFrame]:
                     "region": region,
                     "column": str(c["column"]).lower(),
                     "type": c["type"],
-                    "rows": int(rows),
-                    "null_count": int(c["null_count"]),
+                    "rows": count_bucket(rows),
+                    "null_count": count_bucket(c["null_count"]),
+                    "null_rate": coarse_rate(c.get("null_rate"), c.get("null_count"), rows),
                     "value_policy": c.get("value_policy"),
                 }
             )
@@ -148,9 +272,9 @@ def build_frames(regions: dict[str, dict[str, Any]]) -> dict[str, pd.DataFrame]:
                     {
                         "region": region,
                         "column": str(d["column"]).lower(),
-                        "min_month": d["min_month"],
-                        "max_month": d["max_month"],
-                        "invalid_rows": d["invalid_rows"],
+                        "min_period": decade_band(d["min_month"]),
+                        "max_period": decade_band(d["max_month"]),
+                        "invalid_rows": count_bucket(d["invalid_rows"]),
                     }
                 )
     g = pd.DataFrame(groups)
@@ -161,7 +285,10 @@ def build_frames(regions: dict[str, dict[str, Any]]) -> dict[str, pd.DataFrame]:
     g["schema_group"] = g["signature"].map(sig_id)
     schema_groups = (
         g.groupby(["schema_group", "region"])
-        .agg(tables=("table", "count"), rows=("rows", "sum"))
+        .agg(
+            tables=("table", lambda values: count_bucket(len(values))),
+            rows=("rows", sum_count_buckets),
+        )
         .reset_index()
         .merge(
             g.drop_duplicates("schema_group")[["schema_group", "signature"]],
@@ -173,17 +300,18 @@ def build_frames(regions: dict[str, dict[str, Any]]) -> dict[str, pd.DataFrame]:
     presence = (
         c.groupby(["column", "region"])
         .agg(
-            tables=("rows", "count"),
-            rows=("rows", "sum"),
-            null_count=("null_count", "sum"),
+            tables=("rows", lambda values: count_bucket(len(values))),
+            rows=("rows", sum_count_buckets),
+            null_count=("null_count", sum_count_buckets),
             types=("type", lambda s: ";".join(sorted(set(s)))),
+            null_rate=("null_rate", combined_rate_bands),
         )
         .reset_index()
     )
-    presence["null_rate"] = (presence["null_count"] / presence["rows"]).round(6)
     n_regions = len(regions)
-    presence["regions_with_column"] = presence.groupby("column")["region"].transform("nunique")
-    presence["in_all_regions"] = presence["regions_with_column"] == n_regions
+    presence["in_all_regions"] = (
+        presence.groupby("column")["region"].transform("nunique") == n_regions
+    )
     presence["type_conflict"] = presence.groupby("column")["types"].transform("nunique") > 1
     return {
         "region_summary": pd.DataFrame(summary),
@@ -195,10 +323,12 @@ def build_frames(regions: dict[str, dict[str, Any]]) -> dict[str, pd.DataFrame]:
 
 def draw_figures(out: Path, frames: dict[str, pd.DataFrame]) -> None:
     sg = frames["schema_groups"]
+    row_order = {"0": 0, "<10": 1, "10+": 2, "suppressed": 1}
+    plot_rows = sg.assign(_row_bucket=sg["rows"].map(row_order).fillna(1))
     fig, ax = plt.subplots(figsize=(10, 5))
-    sns.barplot(data=sg, x="schema_group", y="rows", hue="region", ax=ax)
-    ax.set_yscale("log")
-    ax.set_title("Rows per schema group (same column-name set) by region")
+    sns.barplot(data=plot_rows, x="schema_group", y="_row_bucket", hue="region", ax=ax)
+    ax.set_yticks([0, 1, 2], labels=["0", "<10", "10+"])
+    ax.set_title("Row-count bucket per schema group by region")
     fig.tight_layout()
     fig.savefig(safe_output_path(out, "schema_group_rows.png"), dpi=150)
     plt.close(fig)
@@ -207,11 +337,18 @@ def draw_figures(out: Path, frames: dict[str, pd.DataFrame]) -> None:
     common = pres[pres["in_all_regions"]]
     if common.empty:
         return
-    heat = common.pivot(index="column", columns="region", values="null_rate")
-    heat = heat.loc[heat.max(axis=1).sort_values(ascending=False).index[:40]]
-    fig, ax = plt.subplots(figsize=(8, max(4, 0.3 * len(heat))))
-    sns.heatmap(heat, annot=True, fmt=".2f", vmin=0, vmax=1, cmap="viridis_r", ax=ax)
-    ax.set_title("Null rate of columns present in every region (top 40)")
+    heat_labels = common.pivot(index="column", columns="region", values="null_rate")
+    rate_labels = ("<10/suppressed", *PUBLIC_RATE_BANDS, "mixed", "suppressed")
+    rate_order = {name: index for index, name in enumerate(rate_labels)}
+    heat_codes = heat_labels.apply(lambda column: column.map(rate_order).fillna(-1))
+    heat_codes = heat_codes.loc[heat_codes.max(axis=1).sort_values(ascending=False).index[:40]]
+    heat_labels = heat_labels.loc[heat_codes.index]
+    fig, ax = plt.subplots(figsize=(8, max(4, 0.3 * len(heat_codes))))
+    sns.heatmap(
+        heat_codes, annot=heat_labels, fmt="", vmin=-1, vmax=len(rate_order) - 1,
+        cmap="viridis_r", ax=ax,
+    )
+    ax.set_title("Null-rate bands for columns present in every region (top 40)")
     fig.tight_layout()
     fig.savefig(safe_output_path(out, "null_rate_heatmap.png"), dpi=150)
     plt.close(fig)
@@ -264,9 +401,15 @@ def main(argv: list[str] | None = None) -> int:
     draw_figures(out, frames)
     summary = {
         "regions": list(regions),
-        "codebook_sources": {r: d["run"].get("codebook_source") for r, d in regions.items()},
+        "codebook_provided": {
+            r: bool(d["run"].get("codebook_source_recorded", d["run"].get("codebook_source")))
+            for r, d in regions.items()
+        },
         "code_commits": {r: d["run"].get("code", {}).get("commit") for r, d in regions.items()},
         "comparison_basis": "lowercased column-name sets; no column semantics assumed",
+        "public_output_policy": (
+            "count buckets 0/<10/10+ or suppressed; coarse rate bands; no raw values"
+        ),
         "tables": {k: json.loads(v.to_json(orient="records")) for k, v in frames.items()},
     }
     safe_output_path(out, "comparison.json").write_text(
