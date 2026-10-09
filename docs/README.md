@@ -11,5 +11,6 @@
 - [data/aihub-71776-capital-schema.md](data/aihub-71776-capital-schema.md) — 수도권 스키마 및 EDA 관련 컬럼 요약 참조
 - [PRD.md](PRD.md) — 제품 요구사항과 시스템 방향
 - [data/eda-travel-log-2023.md](data/eda-travel-log-2023.md) — 2023 국내 여행로그 4개 권역 EDA 계획과 안전한 집계 보고서 (Issue #12)
+- [recommendation/training-data-contract.md](recommendation/training-data-contract.md) — Legacy TravelMate와 AI Hub 2023 근거에 기반한 추천 학습 데이터 계약 (Issue #17)
 
 새로운 데이터·아키텍처 결정은 결정 기록을 추가하고 관련 Issue 및 근거에 연결한다. 지침을 변경할 때는 근거와 변경 사유를 기록하고 관련 문서 링크를 함께 갱신한다.
