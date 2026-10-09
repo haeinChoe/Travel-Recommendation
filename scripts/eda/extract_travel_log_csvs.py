@@ -56,8 +56,10 @@ def parse_archive_spec(value: str) -> tuple[str, Path]:
 
 
 def safe_member_path(name: str) -> PurePosixPath:
-    if not name or "\\" in name or "\x00" in name or name.startswith("/"):
+    if not name or "\\" in name or "\x00" in name or name.startswith("//"):
         raise ExtractionBlocked
+    if name.startswith("/"):
+        name = name[1:]
     parts = name.split("/")
     if parts[-1] == "":
         parts.pop()

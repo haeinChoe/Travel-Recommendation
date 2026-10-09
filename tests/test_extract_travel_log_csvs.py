@@ -11,6 +11,10 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "eda" / "extract_travel_log_csvs.py"
+EDA_DIR = SCRIPT.parent
+sys.path.insert(0, str(EDA_DIR))
+
+from extract_travel_log_csvs import ExtractionBlocked, safe_member_path  # noqa: E402
 
 
 def make_zip(path: Path, members: list[tuple[str, bytes]]) -> None:
@@ -49,6 +53,22 @@ def run_cli(
 
 
 class ExtractTravelLogCsvsTests(unittest.TestCase):
+    def test_accepts_exactly_one_leading_slash_as_relative_path(self) -> None:
+        self.assertEqual(
+            safe_member_path("/tables/synthetic.csv").as_posix(),
+            "tables/synthetic.csv",
+        )
+
+    def test_rejects_traversal_after_removing_one_leading_slash(self) -> None:
+        for name in ("/../escape.csv", "/tables/../../escape.csv"):
+            with self.subTest(path_class="traversal"):
+                with self.assertRaises(ExtractionBlocked):
+                    safe_member_path(name)
+
+    def test_rejects_double_leading_slash(self) -> None:
+        with self.assertRaises(ExtractionBlocked):
+            safe_member_path("//server/share/synthetic.csv")
+
     def test_extracts_capital_csv_archive_under_capital_root(self) -> None:
         with TemporaryDirectory() as temp:
             raw, region_root = make_raw_root(Path(temp), "capital")
@@ -91,7 +111,7 @@ class ExtractTravelLogCsvsTests(unittest.TestCase):
 
     def test_rejects_unsafe_member_paths_without_logging_names(self) -> None:
         names = [
-            "/absolute.csv",
+            "//absolute.csv",
             "../escape.csv",
             "folder/../../escape.csv",
             r"folder\backslash.csv",

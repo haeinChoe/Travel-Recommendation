@@ -113,8 +113,10 @@ def preflight_zip_directory(path: Path) -> tuple[int, int]:
 
 
 def safe_member_name(name: str) -> PurePosixPath:
-    if not name or "\\" in name or "\x00" in name or name.startswith("/"):
+    if not name or "\\" in name or "\x00" in name or name.startswith("//"):
         raise ArchiveBlocked
+    if name.startswith("/"):
+        name = name[1:]
     parts = name.split("/")
     if parts[-1] == "":
         parts.pop()

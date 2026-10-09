@@ -80,10 +80,19 @@ class TravelLogArchiveMetadataTests(unittest.TestCase):
                 self.assertTrue(all(row["region"] == "west" for row in rows))
 
     def test_archive_path_and_symlink_members_are_rejected(self) -> None:
-        with self.assertRaises(ArchiveBlocked):
-            safe_member_name("../private.json")
-        with self.assertRaises(ArchiveBlocked):
-            safe_member_name("/absolute/private.json")
+        self.assertEqual(
+            safe_member_name("/safe/member.json").as_posix(),
+            "safe/member.json",
+        )
+        for name in (
+            "../private.json",
+            "/../private.json",
+            "/safe/../../private.json",
+            "//server/share/private.json",
+        ):
+            with self.subTest(path_class="unsafe"):
+                with self.assertRaises(ArchiveBlocked):
+                    safe_member_name(name)
         with tempfile.TemporaryDirectory(prefix="synthetic-zip-symlink-") as temp:
             archive_path = Path(temp) / "symlink.zip"
             link = zipfile.ZipInfo("safe-looking-member.json")
