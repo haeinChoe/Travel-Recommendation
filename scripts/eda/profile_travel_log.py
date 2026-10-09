@@ -39,10 +39,13 @@ from typing import Any
 import duckdb
 import pandas as pd
 
+from validate_travel_log_code_domains import MAPPING, mapped_csv_aliases, mapped_table_for_path
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RAW_ROOT = REPO_ROOT / "data" / "raw"
 RESULTS_ROOT = REPO_ROOT / "results" / "eda" / "travel-log-2023"
 TMP_ROOT = RESULTS_ROOT / "tmp"
+UNRESOLVED_CODEBOOK_FIELDS = {"TRAVEL_MISSION", "TRAVEL_MISSION_CHECK", "EXPND_SE"}
 
 TABULAR_EXTS = {".csv": "csv", ".json": "json", ".jsonl": "json", ".ndjson": "json"}
 PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".heic"}
@@ -1534,35 +1537,42 @@ def run_codebook_only(args: argparse.Namespace, inp: Path, out: Path) -> None:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise SystemExit("기존 profile 또는 codebook JSON을 읽을 수 없습니다.") from exc
     table_specs = spec.get("tables")
-    unresolved_specs = spec.get("unresolved_fields", {})
+    unresolved_fields_spec = spec.get("unresolved_fields", {})
     column_groups = spec.get("column_groups", {})
     group_validation = spec.get("group_validation", {})
     if (
         not isinstance(table_specs, dict)
-        or not isinstance(unresolved_specs, dict)
+        or not isinstance(unresolved_fields_spec, dict)
         or not isinstance(column_groups, dict)
         or not isinstance(group_validation, dict)
         or not spec.get("source")
     ):
         raise SystemExit("codebook JSON에는 source와 tables 객체가 필요합니다.")
 
-    # Scan only CSV names needed by the codebook. Photo and other-file metadata are untouched.
-    requested = set(table_specs) | set(unresolved_specs)
-    tabular_paths: list[Path] = []
-    for base, dirs, files in os.walk(inp, followlinks=False):
-        dirs[:] = sorted(name for name in dirs if not (Path(base) / name).is_symlink())
-        for name in sorted(files):
-            path = Path(base) / name
-            if path.is_symlink() or path.suffix.lower() not in TABULAR_EXTS:
-                continue
-            tabular_paths.append(path)
-    aliases = {}
-    ordered_paths = sorted(tabular_paths, key=lambda p: p.relative_to(inp).as_posix())
-    for index, path in enumerate(ordered_paths, 1):
-        alias = f"table_{index:06d}{path.suffix.lower()}"
-        aliases[alias] = path
-    if any(alias not in aliases or aliases[alias].suffix.lower() != ".csv" for alias in requested):
+    # Preserve aliases from the existing profile; enumerate only mapped TL/VL CSVs.
+    try:
+        aliases = mapped_csv_aliases(inp, profile)
+    except ValueError:
+        raise SystemExit("codebook input must map to documented TL/VL CSV roles") from None
+    requested = set(table_specs) | set(unresolved_fields_spec)
+    if any(alias not in aliases for alias in requested):
         raise SystemExit("codebook에 지정된 CSV 매핑이 입력과 일치하지 않습니다.")
+    for alias, path in aliases.items():
+        table = mapped_table_for_path(path)
+        assert table is not None
+        direct_fields = table_specs.get(alias, {})
+        unresolved_fields = unresolved_fields_spec.get(alias, [])
+        if not isinstance(direct_fields, dict) or not isinstance(unresolved_fields, list):
+            raise SystemExit("codebook 열 매핑 형식이 올바르지 않습니다.")
+        documented_fields = MAPPING[table]
+        if not (set(direct_fields) | set(unresolved_fields)) <= set(documented_fields):
+            raise SystemExit("codebook 열이 문서화된 TL/VL 테이블 매핑 밖에 있습니다.")
+        if set(unresolved_fields) - UNRESOLVED_CODEBOOK_FIELDS:
+            raise SystemExit("unresolved_fields에는 미확정 복합 필드만 지정할 수 있습니다.")
+        for field in set(direct_fields) | set(unresolved_fields):
+            expected_group = documented_fields[field][0]
+            if column_groups.get(alias, {}).get(field) != expected_group:
+                raise SystemExit("codebook field/group mapping does not match the manual map.")
     items = [(alias, aliases[alias]) for alias in sorted(requested)]
 
     con = duckdb.connect(":memory:", config={"autoinstall_known_extensions": False})
@@ -1581,7 +1591,7 @@ def run_codebook_only(args: argparse.Namespace, inp: Path, out: Path) -> None:
                 for name, ctype, *_ in describe
             }
         source = prof.codebook(args.codebook)
-        for alias, columns in unresolved_specs.items():
+        for alias, columns in unresolved_fields_spec.items():
             view = prof.views[alias]
             for column in columns:
                 status = (
@@ -1596,7 +1606,7 @@ def run_codebook_only(args: argparse.Namespace, inp: Path, out: Path) -> None:
         con.close()
 
     k = int(metadata.get("min_cell_count", 10))
-    unresolved_fields = {"TRAVEL_MISSION", "TRAVEL_MISSION_CHECK", "EXPND_SE"}
+    unresolved_fields = UNRESOLVED_CODEBOOK_FIELDS
     safe_checks = []
     count_fields = (
         "allowed_value_count", "non_null_rows", "rows_outside_codebook",

@@ -46,6 +46,8 @@ GROUP_FIELDS = {"TRAVEL_MISSION", "TRAVEL_MISSION_CHECK", "EXPND_SE"}
 GROUPS = {group for fields in MAPPING.values() for group, _ in fields.values()}
 CODEBOOK_PATTERN = re.compile(r"^tc_codeb(?:_.+)?\.csv$", re.I)
 REGION_FILE_SUFFIX = re.compile(r"_([EFGH])\.csv$", re.I)
+CSV_ROLE_NAMES = {"TL_CSV", "VL_CSV"}
+PHOTO_DIRECTORY_NAMES = {"TS_PHOTO", "VS_PHOTO"}
 
 
 class InputError(ValueError):
@@ -124,7 +126,11 @@ def no_symlink(path: Path) -> bool:
 def one_csv(root: Path, pattern: re.Pattern, label: str) -> Path:
     found = []
     for base, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = [name for name in dirs if not (Path(base) / name).is_symlink()]
+        dirs[:] = [
+            name for name in dirs
+            if name.upper() not in PHOTO_DIRECTORY_NAMES
+            and not (Path(base) / name).is_symlink()
+        ]
         found.extend(Path(base) / name for name in files if pattern.fullmatch(name))
     if len(found) != 1 or not no_symlink(found[0]):
         raise InputError(f"{label}_mapping_unavailable")
@@ -134,6 +140,104 @@ def one_csv(root: Path, pattern: re.Pattern, label: str) -> Path:
 def table_path(root: Path, table: str, region: str) -> Path:
     name = re.escape(table[3:].lower())
     return one_csv(root, re.compile(rf"tn_{name}_.+_{SUFFIX[region]}\.csv", re.I), "input_table")
+
+
+def mapped_table_for_path(path: Path) -> str | None:
+    name = path.name.upper()
+    return next((table for table in MAPPING if name.startswith(f"{table}_")), None)
+
+
+def csv_role_paths(root: Path) -> list[Path]:
+    """Return only documented TN table CSVs below TL/VL roles; prune photo dirs top-down."""
+    if not no_symlink(root):
+        raise InputError("input_path_invalid")
+    try:
+        resolved = root.resolve(strict=True)
+    except OSError as exc:
+        raise InputError("input_region_path_invalid") from exc
+    if not resolved.is_dir():
+        raise InputError("input_role_directory_invalid")
+    regions = [region for region in SUFFIX if f"2023-travel-log-{region}" in resolved.parts]
+    if len(regions) != 1:
+        raise InputError("input_region_invalid")
+    region = regions[0]
+    root_is_role = resolved.name.upper() in CSV_ROLE_NAMES
+    paths = []
+    for base, dirs, files in os.walk(resolved, topdown=True, followlinks=False):
+        dirs[:] = sorted(
+            name for name in dirs
+            if name.upper() not in PHOTO_DIRECTORY_NAMES
+            and not (Path(base) / name).is_symlink()
+        )
+        if base == str(resolved) and not root_is_role:
+            dirs[:] = [name for name in dirs if name.upper() in CSV_ROLE_NAMES]
+            continue
+        relative = Path(base).relative_to(resolved)
+        role = resolved.name.upper() if root_is_role else (
+            relative.parts[0].upper() if relative.parts else ""
+        )
+        if role not in CSV_ROLE_NAMES:
+            continue
+        for name in files:
+            path = Path(base) / name
+            if path.is_symlink() or path.suffix.lower() != ".csv":
+                continue
+            table = mapped_table_for_path(path)
+            if table is None:
+                continue
+            suffix = REGION_FILE_SUFFIX.search(name)
+            if not suffix or suffix.group(1).upper() != SUFFIX[region]:
+                raise InputError("input_table_region_or_mapping_invalid")
+            paths.append(path)
+    if not paths:
+        raise InputError("mapped_csv_sources_missing")
+    return sorted(paths, key=lambda path: path.relative_to(resolved).as_posix())
+
+
+def mapped_csv_aliases(root: Path, profile: dict) -> dict[str, Path]:
+    """Map documented role CSVs to historical profiler aliases using safe profile schema."""
+    paths = csv_role_paths(root)
+    columns_by_alias: dict[str, set[str]] = {}
+    # Profiler column metadata intentionally omits labels; safe summary rows keep them.
+    for section in ("categorical_values", "numeric_summary", "date_months", "codebook_check"):
+        for row in profile.get(section, []):
+            if not isinstance(row, dict):
+                continue
+            alias, column = row.get("table"), row.get("column")
+            if isinstance(alias, str) and isinstance(column, str):
+                columns_by_alias.setdefault(alias, set()).add(column)
+
+    aliases_by_table: dict[str, list[str]] = {table: [] for table in MAPPING}
+    for row in profile.get("tables", []):
+        if not isinstance(row, dict):
+            continue
+        alias = row.get("table")
+        if not isinstance(alias, str) or row.get("format") != "csv":
+            continue
+        if not re.fullmatch(r"table_\d{6}\.csv", alias):
+            continue
+        columns = columns_by_alias.get(alias, set())
+        matches = [table for table, fields in MAPPING.items() if set(fields) <= columns]
+        if len(matches) == 1:
+            aliases_by_table[matches[0]].append(alias)
+
+    paths_by_table: dict[str, list[Path]] = {table: [] for table in MAPPING}
+    for path in paths:
+        table = mapped_table_for_path(path)
+        if table is not None:
+            paths_by_table[table].append(path)
+
+    result = {}
+    for table, source_paths in paths_by_table.items():
+        old_aliases = sorted(aliases_by_table[table], key=lambda value: int(value[6:12]))
+        if len(source_paths) != len(old_aliases):
+            if source_paths or old_aliases:
+                raise InputError("profile_alias_mapping_unavailable")
+            continue
+        result.update(zip(old_aliases, source_paths))
+    if not result:
+        raise InputError("profile_alias_mapping_unavailable")
+    return result
 
 
 def codebook_file(path: Path, region: str) -> Path:
@@ -153,7 +257,11 @@ def codebook_file(path: Path, region: str) -> Path:
         role_root = resolved
         candidates = []
         for base, dirs, files in os.walk(resolved, followlinks=False):
-            dirs[:] = [name for name in dirs if not (Path(base) / name).is_symlink()]
+            dirs[:] = [
+                name for name in dirs
+                if name.upper() not in PHOTO_DIRECTORY_NAMES
+                and not (Path(base) / name).is_symlink()
+            ]
             candidates.extend(Path(base) / name for name in files if CODEBOOK_PATTERN.fullmatch(name))
     else:
         if (not CODEBOOK_PATTERN.fullmatch(resolved.name)
