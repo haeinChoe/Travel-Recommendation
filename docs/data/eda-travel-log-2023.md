@@ -16,7 +16,7 @@ Issue #12의 EDA 파이프라인과 보고 양식이다. 이 문서에는 안전
 | 수도권 파일 | PR #14의 과거 pilot 입력으로 Shell 목록 8개 범주가 추출됨. 사진 archive 포함은 당시 이력이며 후속 권역 입력 요구가 아님 |
 | 원본 보관 | 사용자가 지정한 로컬 raw root 하위에서 읽기 전용으로 사용. 실제 경로는 문서에 기록하지 않음 |
 | 수도권 pilot | **프로파일링·집계 재억제·read-only 재검토 완료**. 모든 tabular 입력을 검사했고 linkage-pair 검사는 최대 20개로 제한. 결과와 checksum inventory는 계속 로컬에만 유지 |
-| 4개 권역 EDA | **4개 권역 구조·추천 적합성 EDA 실행 완료, 문서 의미 검증 일부 미완료**. 네 권역 프로파일·C 집계·비교 및 SbL 허용 필드 포함률·후보 연결 산출물이 생성됨. East 프로파일 숫자 종료 코드는 보존되지 않았으며, HWP 의미 정의와 필드별 코드 그룹 대응, 권역 경계에 따른 권역 밖 방문 검사는 미확인 |
+| 4개 권역 EDA | **4개 권역 구조·추천 적합성 EDA 실행 완료, 필드별 관측값 의미 검증 일부 미완료**. 네 권역 프로파일·C 집계·비교 및 SbL 허용 필드 포함률·후보 연결 산출물이 생성됨. East 프로파일 숫자 종료 코드는 보존되지 않았으며, 권역 경계에 따른 권역 밖 방문 및 필드별 관측값의 설명서 도메인 적합성은 미확인 |
 | 실제 분석 결과 | 수도권 역사 기록과 네 권역 safe aggregate를 로컬에 생성함. 이 문서에는 원본 레코드·식별자·캡션·정확 좌표·정확 count/rate를 기록하지 않음 |
 
 ## 근거와 출처
@@ -110,7 +110,7 @@ Issue #12의 승인 기록과 수도권 승인 filekey는 확인했다. AI Hub �
 - 각 권역의 다섯 CSV 역할 추출물이 존재한다. 수도권 `VL_csv` 추출물은 다른 수도권 CSV 추출 디렉터리와 별도 경로에 있다. West/East/Jeju 추출물에는 5개 역할 디렉터리가 있다. 사진 ZIP이나 이미지 payload는 열거나 열거하지 않았다.
 - 각 권역의 추출된 TL CSV에서 `TC_CODEA`, `TC_CODEB`, `TC_SGG` 테이블이 각각 확인됐고 header는 읽을 수 있었다. 기존 `validate_capital_codebook.py` 자체는 HWP에서 옮긴 수도권 domain과 `_E.csv` 패턴에 한정되지만, 그 명시 target-field list 중 같은 이름의 38개 컬럼이 각 권역 TL/VL 역할 테이블 header에 있었다. 해당 컬럼만 한 번씩 스트리밍해 지역별 `TC_CODEA/B` reference union과 대조했다. 세부는 아래 코드표 후보 coverage 절에 기록한다. `TC_SGG`는 존재하지만 validator target list와 같은 이름으로 연결되는 field는 없어 이번 값 대조에서 제외했다.
 - SbL JSON은 ZIP에서 직접 스트리밍해 검사했고 JSON을 별도 추출하지 않았다. 아래 allowlist field coverage와 같은 권역의 `TN_TOUR_PHOTO` CSV 후보 linkage도 안전 집계했다.
-- 원본 HWP 설명서는 Downloads에서 수도권 `119-145` (동일 문서 사본 `(2)` 포함), 서부권 `119-147`, 동부권 `119-146`, 제주·도서권 `119-148` 파일을 찾았다. 이번 WSL 실행 환경에는 HWP 원본을 직접 변환할 도구가 없었다. 네 권역 설명서의 기존 Markdown 변환본은 별도 열린 PR #15의 `origin/agent/12-travel-log-docs`에 있으며 현재 PR #16 작업 트리에는 없다.
+- 원본 HWP 설명서는 Downloads에서 수도권 `119-145` (동일 문서 사본 `(2)` 포함), 서부권 `119-147`, 동부권 `119-146`, 제주·도서권 `119-148` 파일을 찾았다. 이번 WSL 실행 환경에서는 HWP 원본을 직접 변환하지 못했다. 네 권역 설명서의 기존 Markdown 변환본은 PR #15에서 `dev`에 병합됐으며 현재 작업 트리의 `docs/data/travel-log-2023/`에 있다.
 
 ### Four-region execution evidence and exits
 
@@ -421,11 +421,42 @@ SbL inspector는 같은 후속 권역별 SbL ZIP을 `--archive "SbL=$AIHUB_<REGI
 
 - **[로컬 집계 관측]** 기존 validator의 명시 target-field mapping 38개를 각 권역 TL/VL CSV header에서 확인했고, 네 권역·두 split에서 해당 컬럼만 한 번씩 스트리밍했다. 산출물은 304 field-split aggregate rows이며 ignored `results/eda/travel-log-2023/code-table-coverage-summary/code_table_membership.csv`에 있다. `valid`, `unknown`, `blank` row counts와 distinct-code counts만 k=10 bucket으로 기록하고 작은 분할에는 complementary suppression을 적용했다. raw code values/rates는 artifact에 기록하지 않았다.
 - **[로컬 집계 관측·주의]** same-region `TC_CODEA.cd_a` 및 `TC_CODEB.cd_a/cd_b`의 합집합과 정확 문자열 비교했을 때 `TRAVEL_MISSION`, `TRAVEL_MISSION_CHECK`, `EXPND_SE`의 unknown-cell count는 네 권역 TL/VL 각각 `10+` bucket이었다. blank-cell count도 `ADMISSION_SE`, `DGSTFN`, `EXPND_SE`, `HOUSE_INCOME`, `JOB_ETC`, `MVMN_CD_1`, `MVMN_CD_2`, `RCMDTN_INTENTION`, `REVISIT_INTENTION`, `TRAVEL_MOTIVE_3`, `VISIT_CHC_REASON_CD`에서 모든 권역·split별 `10+` bucket이었다. 그 밖의 값은 field-level artifact에서 bucket/suppression 상태로 확인할 수 있다. 여기서 unknown은 값이 넓은 코드표 union에 없다는 뜻일 뿐, 해당 field의 잘못된 코드라는 뜻이 아니다. field별 code group을 구분하지 않았으며 구분자 포함 복합 표현도 분해하지 않아 unknown에 포함될 수 있다.
-- **[범위 제한]** 네 권역 설명서의 기존 Markdown 변환본은 필드 설명·허용 범위·코드 그룹 표기를 포함하지만, 이번 4권역 집계에는 그 정의를 적용하지 않았다. 이번 검사는 38개 대상 필드와 같은 권역 `TC_CODEA`/`TC_CODEB` 값의 합집합만 비교했다. 따라서 이번 결과는 필드별 설명서 의미나 코드 그룹 대응을 검증한 것이 아니다. `TC_SGG`는 존재하지만 해당 validator field mapping에 연결되는 동명 target column이 없어 코드값 대조를 하지 않았다. 원본 cell·code·identifier는 출력하지 않았다.
+- **[문서 매핑]** PR #15에서 병합된 수도권·서부권·동부권·제주/도서권 설명서는 아래 38개 대상 필드의 허용 범위와 코드 그룹을 동일하게 명시한다. 범위는 문서 정의이며 관측값의 적합성을 뜻하지 않는다.
+
+| 필드 | 문서상 허용 범위 | 코드 그룹 |
+| --- | --- | --- |
+| `ACTIVITY_TYPE_CD` | `1–7, 99` | `ACT` |
+| `ADMISSION_SE` | `1–2` | `AMS` |
+| `COMPANION_AGE_GRP` | `1–8` | `AGE` |
+| `COMPANION_GENDER` | `1–2` | `GEN` |
+| `COMPANION_SITUATION` | `1–3` | `CST` |
+| `DGSTFN` | `1–5` | `DGS` |
+| `EDU_FNSH_SE` | `1–5` | `EFS` |
+| `EDU_NM` | `1–8` | `EDU` |
+| `EXPND_SE` | `1–5` | `EXP` |
+| `HOUSE_INCOME`, `INCOME` | `1–12` | `INC` |
+| `JOB_ETC` | `1–3` | `JOE` |
+| `JOB_NM` | `1–13` | `JOB` |
+| `LODGING_TYPE_CD` | `1–12` | `HTY` |
+| `MARR_STTS` | `1–5` | `MAR` |
+| `MVMN_CD_1`, `MVMN_CD_2`, `MVMN_SE` | `1–16, 50` | `MOV` |
+| `PAYMENT_MTHD_SE` | `1–5` | `PAY` |
+| `RCMDTN_INTENTION` | `1–5` | `REC` |
+| `REL_CD` | `1–11` | `TCR` |
+| `REVISIT_INTENTION` | `1–5` | `REP` |
+| `TRAVEL_MISSION`, `TRAVEL_MISSION_CHECK` | `1–13, 21–28` | `MIS` |
+| `TRAVEL_MOTIVE_1`, `TRAVEL_MOTIVE_2`, `TRAVEL_MOTIVE_3` | `1–10` | `TMT` |
+| `TRAVEL_STYL_1`–`TRAVEL_STYL_8` | `1–7` | `TSY` |
+| `TRAVEL_TERM` | `1–4` | `TTM` |
+| `VISIT_AREA_TYPE_CD` | `1–13, 21–24` | `VIS` |
+| `VISIT_CHC_REASON_CD` | `1–11` | `REN` |
+
+- **[코드표 도메인 대조]** 네 권역의 기존 TL 추출 경로에서 `TC_CODEA`와 `TC_CODEB`를 직접 읽어 문서의 10+ 코드 그룹 키 및 각 그룹의 허용 코드 집합과 대조했다. 네 권역 모두 문서상 허용 코드가 해당 그룹의 `TC_CODEB.cd_b` distinct 값에 포함됐고, 누락·추가 도메인 값과 그룹 키 누락은 각각 `0` bucket이었다. 이 제한 검사는 문서 도메인과 코드표 정의만 비교하며 TL/VL 관측값은 검사하지 않는다. 원본 코드값은 출력하지 않았다.
+- **[관측값 검증 한계]** 기존 `code_table_membership.csv`는 각 권역의 `TC_CODEA.cd_a`와 `TC_CODEB.cd_a/cd_b` 합집합을 대상으로 한 넓은 후보 비교라 필드별 문서 코드 그룹을 적용할 수 없다. 재사용 가능한 `codebook_check.csv`도 수도권 지정 결과는 없고 West/East/Jeju 결과는 header-only다. 따라서 이번에 재확인 가능한 기존 결과만으로는 실제 관측값을 필드별 허용 범위·코드 그룹에 대조할 수 없다. 전체 CSV 행을 다시 처리하지 않았으며, 필드별 관측값 검증은 미완료다. `TC_SGG`는 존재하지만 이 38개 코드 그룹 매핑에 속하지 않아 제외했다.
 
 ## 한계와 후속 결정 후보
 
-- 이번 WSL 실행 환경에서는 HWP 원본을 직접 변환하지 못했다. 네 권역 설명서의 기존 Markdown 변환본은 별도 열린 PR #15의 `origin/agent/12-travel-log-docs`에 있으며 필드 설명·허용 범위·코드 그룹 표기를 포함한다. 다만 이번 4권역 코드값 집계는 이 정의를 적용하지 않고 38개 대상 필드와 같은 권역 `TC_CODEA`/`TC_CODEB` 값의 합집합만 비교했다. 따라서 이 결과는 필드별 설명서 의미나 코드 그룹 대응을 검증한 것이 아니다. 수도권 기존 일부 필드의 HWP 도메인·코드 그룹 대조 사실은 [수도권 스키마 참조](aihub-71776-capital-schema.md)에 보존하며, 이번 4권역 결과로 일반화하지 않는다. 공식 문서 출처: [AI Hub 국내 여행로그 데이터(수도권, 2023)](https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&dataSetSn=71776).
+- 이번 WSL 실행 환경에서는 HWP 원본을 직접 변환하지 못했다. 네 권역 설명서의 기존 Markdown 변환본은 PR #15에서 병합됐으며 필드 설명·허용 범위·코드 그룹 표기를 포함한다. 이번 제한 대조는 문서 정의와 코드표의 그룹별 distinct 도메인만 비교했고, 실제 관측 필드값의 의미 검증은 완료하지 않았다. 수도권 기존 일부 필드의 HWP 도메인·코드 그룹 대조 사실은 [수도권 스키마 참조](aihub-71776-capital-schema.md)에 보존하며, 이번 네 권역 코드표 도메인 대조와 구분한다. 공식 문서 출처: [AI Hub 국내 여행로그 데이터(수도권, 2023)](https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&dataSetSn=71776).
 - 행정구역 수준 위치 집계는 공식 구조 확인 후 `--allow-value-column` 지정이 필요하다. 좌표 자체는 집계에 쓰지 않는다.
 - 중첩 JSON은 자동으로 펼치지 않는다(펼치는 기준이 데이터 의미에 의존).
 - CSV가 UTF-8/UTF-16이 아니면 변환하지 않고 중단 기록만 남긴다. 변환은 행 단위 파생 파일을 만들기 때문에 별도 결정이 필요하다.
