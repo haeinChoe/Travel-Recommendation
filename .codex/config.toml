@@ -1,0 +1,5 @@
+[mcp_servers.herdr]
+command = "python3"
+args = ["scripts/herdr_mcp_server.py"]
+cwd = "."
+env = { HERDR_ENV = "1" }
