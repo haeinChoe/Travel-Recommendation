@@ -18,6 +18,8 @@ Run a complete, bounded implementation and review loop for an explicitly selecte
 
 Create one dedicated Issue worktree and branch from `dev`, following `docs/agent-workflow.md` (normally `agent/<issue>-<slug>`). Use Herdr and preserve the user's current focus. Keep every writer in a separate worktree when their file scopes are independent; use one lead implementer to integrate parallel work.
 
+Use the path returned by Herdr's normal worktree creation flow. Do not invent a temporary directory or custom naming scheme. If the configured path is inaccessible in the current execution environment, report the exact permission boundary and use an explicitly configured project worktree root; do not silently relocate the checkout to `/tmp`.
+
 Choose the number of agents to fit the task:
 
 - Small, well-bounded Issue: one implementer and one reviewer.
@@ -37,5 +39,7 @@ Do not ask the user about routine implementation choices. Continue through the a
 ## Delivery
 
 Before push, prepare and report the commit, changed files, validation results, and remaining limitations as required by repository policy. This report is informational when push/PR is already authorized; do not wait for a reply. Push only the Issue branch and create or update its PR. Never push directly to `dev` or `main`, merge the PR, deploy, or delete worktrees unless separately authorized.
+
+Read `.github/PULL_REQUEST_TEMPLATE.md` before creating or updating a PR. Preserve every template heading, checklist, and requested field; fill it with the Issue-specific result and evidence. After the PR write, inspect the resulting body and confirm it follows the template.
 
 Finish with the branch and PR links, implementation summary, reviewers and rounds, validation performed, and any unresolved blocker. Leave the Issue worktree available for follow-up unless the user requested cleanup.
