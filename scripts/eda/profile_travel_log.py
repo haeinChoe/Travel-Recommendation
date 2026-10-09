@@ -1568,6 +1568,8 @@ def run_codebook_only(args: argparse.Namespace, inp: Path, out: Path) -> None:
             if threshold is None:
                 raise SystemExit("기존 profile의 privacy threshold를 확인할 수 없습니다.")
             recorded_thresholds.append(threshold)
+    if not recorded_thresholds:
+        raise SystemExit("기존 profile의 privacy threshold가 기록되지 않아 갱신을 중단합니다.")
     if any(threshold != 10 for threshold in recorded_thresholds):
         raise SystemExit("기존 profile의 privacy threshold가 k=10이 아니므로 갱신을 중단합니다.")
     k = 10
