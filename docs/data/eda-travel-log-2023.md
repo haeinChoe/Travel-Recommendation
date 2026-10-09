@@ -455,6 +455,27 @@ SbL inspector는 같은 후속 권역별 SbL ZIP을 `--archive "SbL=$AIHUB_<REGI
 - **[West/East/Jeju 관측값 검사]** 기존 TL/VL 역할 디렉터리에서 문서 매핑 대상 열을 순차 읽어 각 관측값 전체를 문서 허용 범위와 대조했다. 이 가운데 `TRAVEL_MISSION`, `TRAVEL_MISSION_CHECK`, `EXPND_SE`만 해당 권역 `TC_CODEB`의 `MIS` 또는 `EXP` 그룹 고유 코드와 추가로 정확 대조했다. 다른 직접 대응 필드는 권역별 통과 필드 수가 `10+` 구간이고 비결측 관측값이 모두 문서 범위에 포함됐다. 세 추가 대조 필드는 세 권역 TL/VL 각각 직접 일치 실패 후보가 `10+` 구간이다. 네 권역 Markdown 설명서는 이 필드들의 구분자, 복합 코드 분해 또는 표기 정규화를 정의하지 않는다. 따라서 구분 토큰을 임의로 나누거나 정규화하지 않았고, 이 후보가 유효한 복합 표현인지 도메인 밖 값인지 판정하지 못해 미검증으로 유지한다. `JOB_ETC`는 세 권역 모두 비결측 관측 `0`, 결측 `10+` 구간이라 실제 값 검증을 할 수 없었다. 안전 집계는 Git 추적 제외 경로 `results/eda/travel-log-2023/code-domain-three-fields-codebook-retry-20261009/observations.csv`에 저장했으며 원본 행·값·파일명은 포함하지 않는다.
 - **[수도권 및 기존 결과 한계]** 이번 확인에서 수도권 TL/VL 역할로 지정 가능한 추출 파일은 없었다. 새 원본 경로 탐색이나 재처리는 하지 않고 [수도권 스키마 참조](aihub-71776-capital-schema.md)에 기록된 일부 필드의 기존 제한 검증만 유지한다. 기존 `code_table_membership.csv`는 같은 권역 코드표 합집합 후보 비교라 필드별 문서 그룹을 적용할 수 없고, 재사용 가능한 `codebook_check.csv`도 수도권 지정 결과는 없으며 West/East/Jeju 결과는 헤더만 있다. `TC_SGG`는 이 38개 코드 그룹 매핑에 속하지 않아 제외했다. 전체 CSV 프로파일은 다시 실행하지 않았다.
 
+### 재현 가능한 관측값 검사기
+
+`scripts/eda/validate_travel_log_code_domains.py`는 네 권역 Markdown 설명서의 동일한 38개 필드 매핑을 사용해 지정한 West/East/Jeju TL/VL CSV의 매핑 열만 순차 검사한다. 문서 허용 범위 검사는 모든 매핑 필드에 수행하고, 같은 권역 `TC_CODEB`의 `MIS`/`EXP` 그룹과 관측값을 정확 비교하는 검사는 `TRAVEL_MISSION`, `TRAVEL_MISSION_CHECK`, `EXPND_SE`에만 수행한다. 코드표의 그룹별 도메인 일치 결과와 CSV 관측값 검사는 별도 산출물로 기록한다. 구분자 분리나 값 정규화는 하지 않으며, 불일치는 잘못된 값으로 단정하지 않고 `unresolved_candidate`로 남긴다.
+
+```sh
+WEST=/path/to/2023-travel-log-west/eda-csv-extracted
+EAST=/path/to/2023-travel-log-east/eda-csv-extracted
+JEJU=/path/to/2023-travel-log-jeju-islands/eda-csv-extracted
+RUN=code-domain-cli-YYYYMMDD-HHMM
+.venv/bin/python scripts/eda/validate_travel_log_code_domains.py \
+  --input "west:TL=$WEST/TL_csv" --input "west:VL=$WEST/VL_csv" \
+  --input "east:TL=$EAST/TL_csv" --input "east:VL=$EAST/VL_csv" \
+  --input "jeju-islands:TL=$JEJU/TL_csv" --input "jeju-islands:VL=$JEJU/VL_csv" \
+  --codebook "west=$WEST/TL_csv" --codebook "east=$EAST/TL_csv" \
+  --codebook "jeju-islands=$JEJU/TL_csv" \
+  --output "results/eda/travel-log-2023/$RUN" \
+  --confirm-approved --confirm-terms
+```
+
+`RUN`은 기존 출력과 겹치지 않는 새 이름으로 바꾼다. 출력은 ignored 경로의 `codebook_domains.csv` 및 `field_observations.csv`이며, 원본 값·코드값·경로·정확 건수는 저장하지 않는다. 건수는 `0`, `<10`, `10+` 구간, 상태는 `valid` 또는 `unresolved_*`로 기록한다. 기존 제한 검사에서 세 MIS/EXP 필드는 각 권역·분할의 직접 일치 실패 후보가 `10+` 구간이었다. 이 세 값의 복합 표현 여부는 설명서에 분해 규칙이 없어 미확인이다. 이 세 필드를 제외한 직접 대응 필드는 범위 밖 후보가 `0` 구간이고 통과 필드 수가 `10+` 구간이었으며, `JOB_ETC`는 비결측 관측이 `0` 구간이었다. 위 재현 명령은 전체 EDA가 아니라 해당 열만 재검사한다.
+
 ## 한계와 후속 결정 후보
 
 - 이번 WSL 실행 환경에서는 HWP 원본을 직접 변환하지 못했다. 네 권역 설명서의 기존 Markdown 변환본은 PR #15에서 병합됐으며 필드 설명·허용 범위·코드 그룹 표기를 포함한다. 이번 제한 검사는 문서 정의와 코드표 도메인 및 직접 대응 가능한 관측값을 확인했지만, 복합 표기 가능성이 남은 세 필드와 수도권의 신규 관측값 검증은 미완료다. 수도권 기존 일부 필드의 HWP 도메인·코드 그룹 대조 사실은 [수도권 스키마 참조](aihub-71776-capital-schema.md)에 보존하며, 이번 네 권역 결과와 구분한다. 공식 문서 출처: [AI Hub 국내 여행로그 데이터(수도권, 2023)](https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&dataSetSn=71776).
