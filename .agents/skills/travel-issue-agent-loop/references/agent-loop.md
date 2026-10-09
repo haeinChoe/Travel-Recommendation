@@ -23,7 +23,7 @@ herdr worktree create --workspace "$WORKSPACE_ID" \
   --branch "agent/<N>-<slug>" --base dev --label "issue-<N>" --no-focus
 ```
 
-Omit `--path` to use Herdr's configured worktree root and normal branch-derived directory name. Do not choose `/tmp` or another custom location to work around a sandbox boundary. If the returned path is outside the allowed write roots, report the exact boundary and request/configure an approved worktree root before starting agents.
+Omit `--path` to use Herdr's configured worktree root and branch-derived directory name. If the returned path is outside the allowed write roots, identify the boundary and follow the repository or session's approved alternate-root procedure before starting agents. Do not silently select a custom path.
 
 Use the worktree returned by Herdr for the implementation branch. Confirm its branch, base, and clean state before starting agents. Use the returned shell pane when it is at an interactive prompt; otherwise split a pane with the worktree path as cwd and `--no-focus`. Start agents only in returned pane IDs and use unique names. Never start two agents in one pane.
 
@@ -93,6 +93,6 @@ Explicitly instruct reviewers to remain read-only and report no findings when no
 4. Re-run the relevant validation and re-review the changed diff. Repeat up to three rounds.
 5. Treat unresolved blocker/high findings or failed required validation as a stop condition. Medium/low suggestions that do not violate acceptance criteria may be recorded as limitations.
 6. Before push, verify the worktree is clean, commits contain only Issue files, the base is `dev`, and no required validation was skipped. Summarize the pre-push state to the user, then continue without waiting because PR delivery was authorized.
-7. Read `.github/PULL_REQUEST_TEMPLATE.md` and use its full structure for the PR body. Keep all headings, checkboxes, and requested fields; fill or mark each one accurately. Push the Issue branch and create or update one PR. If a PR already exists for the branch, update it instead of creating a duplicate. Inspect the resulting PR body to verify template compliance. Do not merge.
+7. Inspect the target repository's instructions and any applicable PR template. Use the conventions selected for that repository, preserving its required headings, checkboxes, and fields. Push the Issue branch and create or update one PR. If a PR already exists for the branch, update it instead of creating a duplicate. Inspect the resulting body against those conventions. Do not merge.
 
 If Herdr reports an agent as blocked, inspect its state and output before sending anything. Continue only when the request is clearly within the Issue authorization; stop on approval requests outside that scope. Never answer a security or data-permission prompt by guessing.
