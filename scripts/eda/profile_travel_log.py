@@ -1006,6 +1006,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--skip-checksum", action="store_true", help="sha256 계산 생략")
     p.add_argument(
+        "--codebook-only", action="store_true",
+        help="기존 profile의 다른 집계는 보존하고 지정 CSV 허용값 검사만 재생성",
+    )
+    p.add_argument(
         "--codebook",
         type=Path,
         help='{"source": "...", "tables": {"<상대경로>": {"<컬럼>": [허용값]}}}',
@@ -1515,6 +1519,139 @@ def write_outputs(out: Path, prof: Profiler, run: dict[str, Any], files, photos,
     )
 
 
+def run_codebook_only(args: argparse.Namespace, inp: Path, out: Path) -> None:
+    """Run only configured codebook columns and replace only codebook artifacts."""
+    if not args.codebook:
+        raise SystemExit("--codebook-only에는 --codebook JSON이 필요합니다.")
+    if not out.is_dir():
+        guard_stop("--codebook-only는 기존 profile 결과 폴더가 필요합니다.")
+    profile_path = safe_artifact_path(out, "profile.json")
+    metadata_path = safe_artifact_path(out, "run_metadata.json")
+    try:
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        spec = json.loads(args.codebook.read_text(encoding="utf-8-sig"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SystemExit("기존 profile 또는 codebook JSON을 읽을 수 없습니다.") from exc
+    table_specs = spec.get("tables")
+    unresolved_specs = spec.get("unresolved_fields", {})
+    column_groups = spec.get("column_groups", {})
+    group_validation = spec.get("group_validation", {})
+    if (
+        not isinstance(table_specs, dict)
+        or not isinstance(unresolved_specs, dict)
+        or not isinstance(column_groups, dict)
+        or not isinstance(group_validation, dict)
+        or not spec.get("source")
+    ):
+        raise SystemExit("codebook JSON에는 source와 tables 객체가 필요합니다.")
+
+    # Scan only CSV names needed by the codebook. Photo and other-file metadata are untouched.
+    requested = set(table_specs) | set(unresolved_specs)
+    tabular_paths: list[Path] = []
+    for base, dirs, files in os.walk(inp, followlinks=False):
+        dirs[:] = sorted(name for name in dirs if not (Path(base) / name).is_symlink())
+        for name in sorted(files):
+            path = Path(base) / name
+            if path.is_symlink() or path.suffix.lower() not in TABULAR_EXTS:
+                continue
+            tabular_paths.append(path)
+    aliases = {}
+    ordered_paths = sorted(tabular_paths, key=lambda p: p.relative_to(inp).as_posix())
+    for index, path in enumerate(ordered_paths, 1):
+        alias = f"table_{index:06d}{path.suffix.lower()}"
+        aliases[alias] = path
+    if any(alias not in aliases or aliases[alias].suffix.lower() != ".csv" for alias in requested):
+        raise SystemExit("codebook에 지정된 CSV 매핑이 입력과 일치하지 않습니다.")
+    items = [(alias, aliases[alias]) for alias in sorted(requested)]
+
+    con = duckdb.connect(":memory:", config={"autoinstall_known_extensions": False})
+    prof = Profiler(con, args)
+    try:
+        for index, (alias, path) in enumerate(items, start=1):
+            view = f"cb_{index}"
+            item = {"path": alias, "abs": path, "format": "csv"}
+            info = prof.create_view(view, item)
+            if info["status"] != "ok":
+                raise SystemExit("codebook 대상 CSV를 읽을 수 없습니다.")
+            prof.views[alias] = view
+            describe = prof.q(f"DESCRIBE SELECT * FROM {view}")
+            prof.col_meta[view] = {
+                name: {"label": name, "type": ctype}
+                for name, ctype, *_ in describe
+            }
+        source = prof.codebook(args.codebook)
+        for alias, columns in unresolved_specs.items():
+            view = prof.views[alias]
+            for column in columns:
+                status = (
+                    "unresolved_candidate"
+                    if column in prof.col_meta[view]
+                    else "column_missing_in_data"
+                )
+                prof.rec["codebook_check"].append(
+                    {"table": alias, "column": column, "status": status}
+                )
+    finally:
+        con.close()
+
+    k = int(metadata.get("min_cell_count", 10))
+    unresolved_fields = {"TRAVEL_MISSION", "TRAVEL_MISSION_CHECK", "EXPND_SE"}
+    safe_checks = []
+    count_fields = (
+        "allowed_value_count", "non_null_rows", "rows_outside_codebook",
+        "distinct_outside_codebook",
+    )
+    for row in prof.rec["codebook_check"]:
+        safe = dict(row)
+        for key in count_fields:
+            value = safe.pop(key, None)
+            if value is not None:
+                safe[f"{key}_bucket"] = _public_count(value, k)
+        field = safe.get("column")
+        observed = row.get("non_null_rows") or 0
+        outside = row.get("rows_outside_codebook") or 0
+        if field in unresolved_fields:
+            safe["status"] = "unresolved_candidate"
+        elif (
+            column_groups.get(safe.get("table"), {}).get(field) in group_validation
+            and group_validation.get(
+                column_groups.get(safe.get("table"), {}).get(field)
+            ) != "valid"
+        ):
+            safe["status"] = "unresolved_codebook_domain"
+        elif safe.get("status") in {"match", "mismatch"}:
+            safe["status"] = (
+                "valid" if observed >= k and outside == 0 else "unresolved_candidate"
+            )
+        safe_checks.append(safe)
+    run = dict(profile.get("run") or metadata)
+    run["codebook_source"] = source
+    run.setdefault("options", {})["codebook_provided"] = True
+    run["codebook_execution_scope"] = "configured_codebook_columns_only_existing_profile_preserved"
+    public = public_run_metadata(run)
+    profile["run"] = public
+    profile["codebook_check"] = safe_checks
+    anomalies = [
+        row for row in profile.get("anomalies", [])
+        if row.get("flag") != "codebook_check_not_run_no_codebook_provided"
+    ]
+    profile["anomalies"] = anomalies
+    staged = {
+        "codebook_check.csv": pd.DataFrame(profile["codebook_check"]).to_csv(index=False),
+        "profile.json": json.dumps(profile, ensure_ascii=False, indent=2, default=str),
+        "run_metadata.json": json.dumps(public, ensure_ascii=False, indent=2),
+    }
+    with tempfile.TemporaryDirectory(prefix=".codebook-only-", dir=out) as temp_name:
+        temp = Path(temp_name)
+        for name, content in staged.items():
+            (temp / name).write_text(content, encoding="utf-8")
+        for name in staged:
+            safe_artifact_path(out, name)
+        for name in staged:
+            os.replace(temp / name, safe_artifact_path(out, name))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     # Check the caller's lexical paths before abspath()/resolve(), which would
@@ -1556,12 +1693,17 @@ def main(argv: list[str] | None = None) -> int:
         if (out / n).exists() or (out / n).is_symlink()
     ]
     existing = [p.name for p in existing_paths]
-    if existing and not args.overwrite:
+    if existing and not args.overwrite and not args.codebook_only:
         guard_stop(f"출력 폴더에 기존 결과가 있습니다({len(existing)}개). 덮어쓰려면 --overwrite")
     if args.min_cell_count < 2:
         raise SystemExit("--min-cell-count 는 2 이상이어야 합니다.")
     if args.codebook and not args.codebook.is_file():
         raise SystemExit("--codebook 파일을 찾을 수 없습니다.")
+
+    if args.codebook_only:
+        run_codebook_only(args, inp, out)
+        print("완료: codebook 대상 열만 검사하고 기존 profile의 나머지 집계는 보존했습니다.")
+        return 0
 
     tabular, photos, others, symlinks = scan_inventory(inp, args.skip_checksum)
     if not tabular:

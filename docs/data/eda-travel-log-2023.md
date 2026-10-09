@@ -387,7 +387,7 @@ SbL inspector는 같은 후속 권역별 SbL ZIP을 `--archive "SbL=$AIHUB_<REGI
 - **[범위·보관]** 2026-10-08 West만 처리했다. `Other`, `TL_csv`, `TL_gps_data`, `VL_csv`, `VL_gps_data`의 CSV를 승인된 추출기로 raw-root의 West dataset child `eda-csv-extracted/`에 추출했다. `profile`, `profile-tl`, `profile-vl`, `recommendation-fit` 결과는 ignored `results/eda/travel-log-2023/west/` 아래에 생성했다. SbL은 ZIP에서 JSON 구조만 직접 검사해 `sbl-structure`에 기록했다. 사진 archive는 열거나 추출·분석하지 않았고, 사진/바이너리 metadata 요구도 포함하지 않았다. 기존 수도권 산출물은 재실행·변경하지 않았다.
 - **[프로필·coverage]** 전체 CSV profile과 TL-only/VL-only profile은 모두 종료 코드 0이었다. 각 산출물에서 테이블 수와 행 수는 `10+` bucket에 있었고, 프로파일된 테이블 상태는 모두 `ok` bucket이었다. TL과 VL의 대응 테이블 schema는 공개된 컬럼명·자료형 기준으로 모두 일치했다. 공식 문서의 구축 규모와 실제 profile 행 수는 모두 공개 `10+` 범위로만 비교할 수 있어 차이의 크기나 비율은 산출하지 않았다. 전체 입력 profile은 composite 후보 상한을 2로 설정했다.
 - **[품질·날짜]** 전체 CSV profile에서는 전체 행 중복이 관측된 테이블 그룹, 모든 값이 결측인 컬럼, 상수 컬럼이 각각 `10+` bucket으로 관측됐다. 날짜 분포는 월 단위로 요약하고 작은 셀은 억제했다. 좌표·식별자·자유 텍스트 값은 공개하지 않았다. 이 결과는 원자료를 수정하거나 품질 원인으로 확정하지 않는다.
-- **[이전 로컬 HWP Markdown 기반 비교]** 이전 작업에서 수도권·동부권·서부권·제주/도서권 데이터 설명서의 명시 범위 도메인을 비교했고, West profile의 공개 category aggregate에서 HWP 범위 밖 후보가 `10+` category / `10+` field bucket으로 관측됐다. 일부 범주는 k 억제로 합쳐졌으므로 전체 도메인 검증은 아니다. 공식 문서 출처는 [AI Hub 국내 여행로그 데이터(수도권, 2023) 상세페이지 및 연결된 권역별 데이터 설명서](https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&dataSetSn=71776)다. 이 비교는 과거 West 결과로 유지하며 이번 4권역 코드값 집계에서 재현하거나 확장하지 않았다. 값 정규화나 원인 추정은 하지 않았고, profile 자체 `codebook_check.csv`는 `--codebook`을 주지 않아 실행되지 않았다.
+- **[이전 로컬 HWP Markdown 기반 비교]** 이전 작업에서 수도권·동부권·서부권·제주/도서권 데이터 설명서의 명시 범위 도메인을 비교했고, West profile의 공개 category aggregate에서 HWP 범위 밖 후보가 `10+` category / `10+` field bucket으로 관측됐다. 일부 범주는 k 억제로 합쳐졌으므로 전체 도메인 검증은 아니다. 공식 문서 출처는 [AI Hub 국내 여행로그 데이터(수도권, 2023) 상세페이지 및 연결된 권역별 데이터 설명서](https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&dataSetSn=71776)다. 이 과거 category 결과는 별도 관측으로 보존한다. 최초 profile 실행은 `--codebook`을 주지 않아 `codebook_check.csv`가 생성되지 않았지만, 이후 아래의 focused codebook-only 갱신으로 West/East/Jeju의 기존 profile에 허용값 검사 결과를 채웠다. 값 정규화나 원인 추정은 하지 않았다.
 - **[C: split·반복 이력]** TL, VL, combined 각각에서 unique travelers, trips, visits, visit areas, POI 후보의 count bucket은 모두 `10+`였다. `ambiguous_trip_traveler_mappings`는 각 scope에서 `0` bucket이었다. 공개된 trips-per-traveler 분포에는 `1` 구간이 있었고, visits-per-trip 및 visits-per-traveler는 여러 억제·빈도 구간으로만 남겼다. visitors-per-POI와 POI visit frequency에는 `1`, `2–4`, `5–9`, `10–49` 및 일부 scope의 `50+` 구간이 나타났다. 전 count는 bucket, rate는 coarse band이며 분포에는 complementary suppression을 유지했다.
 - **[C: POI 후보·feedback]** `POI_ID`와 방문지 식별 열은 후보 관계로만 계산했다. 둘 다 있는 행의 비율 band는 TL `75–<90%`, VL `50–<75%`, combined `75–<90%`; POI 후보가 비고 방문지 후보가 있는 행은 각각 `10–<25%`, `25–<50%`, `10–<25%`였다. TL/VL POI 후보 overlap은 `50–<75%`, VL cold-start POI share는 `25–<50%`였다. 단일 방문 POI 후보 비율은 TL/combined `50–<75%`, VL `75–<90%`였다. 세 feedback 필드의 코드 `1`–`5` 및 결측 범주는 각 scope에서 공개 count bucket `10+`였다. HWP 및 CLI gate는 `TN_VISIT_AREA_INFO.POI_ID`의 table-specific 의미나 PK/FK를 확정하지 않으므로 canonical POI·관계로 해석하지 않는다.
 - **[SbL JSON 구조·field coverage]** generic inspector의 structural aggregate와 별도 allowlist one-off의 field coverage/linkage를 모두 생성했다. 상세 bucket/band는 Four-region SbL 절을 참조한다.
@@ -453,7 +453,40 @@ SbL inspector는 같은 후속 권역별 SbL ZIP을 `--archive "SbL=$AIHUB_<REGI
 
 - **[코드표 도메인 대조]** 네 권역의 기존 TL 추출 경로에서 `TC_CODEA`와 `TC_CODEB`를 직접 읽어 문서의 10+ 코드 그룹 키와 그룹별 허용 코드 집합을 대조했다. 네 권역 모두 문서상 허용 코드가 해당 그룹의 `TC_CODEB.cd_b` 고유값에 포함됐고, 누락·추가 도메인 값과 그룹 키 누락은 각각 `0` 구간이었다. 원본 코드값은 출력하지 않았다.
 - **[West/East/Jeju 관측값 검사]** 기존 TL/VL 역할 디렉터리에서 문서 매핑 대상 열을 순차 읽어 각 관측값 전체를 문서 허용 범위와 대조했다. 이 가운데 `TRAVEL_MISSION`, `TRAVEL_MISSION_CHECK`, `EXPND_SE`만 해당 권역 `TC_CODEB`의 `MIS` 또는 `EXP` 그룹 고유 코드와 추가로 정확 대조했다. 다른 직접 대응 필드는 권역별 통과 필드 수가 `10+` 구간이고 비결측 관측값이 모두 문서 범위에 포함됐다. 세 추가 대조 필드는 세 권역 TL/VL 각각 직접 일치 실패 후보가 `10+` 구간이다. 네 권역 Markdown 설명서는 이 필드들의 구분자, 복합 코드 분해 또는 표기 정규화를 정의하지 않는다. 따라서 구분 토큰을 임의로 나누거나 정규화하지 않았고, 이 후보가 유효한 복합 표현인지 도메인 밖 값인지 판정하지 못해 미검증으로 유지한다. `JOB_ETC`는 세 권역 모두 비결측 관측 `0`, 결측 `10+` 구간이라 실제 값 검증을 할 수 없었다. 안전 집계는 Git 추적 제외 경로 `results/eda/travel-log-2023/code-domain-three-fields-codebook-retry-20261009/observations.csv`에 저장했으며 원본 행·값·파일명은 포함하지 않는다.
-- **[수도권 및 기존 결과 한계]** 이번 확인에서 수도권 TL/VL 역할로 지정 가능한 추출 파일은 없었다. 새 원본 경로 탐색이나 재처리는 하지 않고 [수도권 스키마 참조](aihub-71776-capital-schema.md)에 기록된 일부 필드의 기존 제한 검증만 유지한다. West/East/Jeju 프로파일 실행에는 `--codebook`이 제공되지 않았고, 각 `run_metadata.json`에 `codebook_provided=false`, `codebook_source_recorded=false`가 기록됐으며 `profile.json`의 `codebook_check`는 비어 있었다. `profile_travel_log.py --codebook`은 `TC_CODEB.csv`가 아니라 허용값 JSON을 받으므로 이 실행에서 원본 `TC_CODEB` 탐색은 수행되지 않았다. East와 Jeju의 지정 `codebook_check.csv`는 각각 헤더 없는 1바이트 빈 파일이고, West 최상위 파일은 없으며 `profile`, `profile-tl`, `profile-vl` 하위 결과에 빈 파일이 있었다. 이는 no-codebook 분기의 산출물이며 CSV 입력 실패나 컬럼 불일치가 아니다. `codebook_check.csv`의 빈 상태와 별개로, 위의 별도 제한 검사는 `TC_CODEA`/`TC_CODEB` 도메인을 사용했다. `TC_SGG`는 이 38개 코드 그룹 매핑에 속하지 않아 제외했다. 전체 CSV 프로파일은 다시 실행하지 않았다.
+- **[수도권 및 기존 결과 한계]** 이번 확인에서 수도권 TL/VL 역할로 지정 가능한 추출 파일은 없었다. 새 원본 경로 탐색이나 재처리는 하지 않고 [수도권 스키마 참조](aihub-71776-capital-schema.md)에 기록된 일부 필드의 기존 제한 검증만 유지한다. 최초 West/East/Jeju 프로파일 실행에는 `--codebook`이 제공되지 않아 당시 `run_metadata.json`에 `codebook_provided=false`, `codebook_source_recorded=false`가 기록됐고 `profile.json`의 `codebook_check`는 비어 있었다. East와 Jeju의 당시 `codebook_check.csv`는 헤더 없는 빈 파일이었으며 West의 해당 출력도 비어 있었다. 이는 no-codebook 분기의 결과이지 CSV 입력 실패나 컬럼 불일치가 아니다. `profile_travel_log.py --codebook`은 `TC_CODEB.csv`가 아니라 공식 문서에서 구성한 허용값 JSON을 입력으로 받으므로, 최초 프로파일 실행은 원본 `TC_CODEB` 탐색을 하지 않았다.
+
+- **[focused codebook-only 갱신]** 전체 profile을 재실행하지 않고 `profile_travel_log.py --codebook-only`로 기존 profile 다섯 개(West 통합/TL/VL, East 통합, Jeju/도서권 통합)의 문서 매핑 대상 열만 다시 검사했다. 네 권역 Markdown 설명서의 38개 필드 매핑에 더해 각 권역 `TC_CODEA`의 그룹 키와 `TC_CODEB`의 그룹별 코드 목록을 사용했다. builder는 각 직접 대응 필드의 허용값을 설명서 범위와 해당 지역 코드 그룹의 교집합으로 구성하며, 설명서 범위와 `TC_CODEB` 그룹 도메인이 일치하고 `TC_CODEA` 그룹 키가 있을 때만 그룹 검증 상태를 `valid`로 둔다. 기존 profile의 다른 집계는 보존했다. 갱신 후 다섯 `run_metadata.json` 모두 `codebook_provided=true`, `codebook_source_recorded=true`이고, 코드북 검사 행은 각 결과에서 `10+` bucket이다. 허용값 수와 관측·불일치 행 수는 `0`, `<10`, `10+` bucket으로만 저장했다. 문서상 코드 표현 규칙이 확인되지 않은 `TRAVEL_MISSION`, `TRAVEL_MISSION_CHECK`, `EXPND_SE`는 allowlist에서 제외하고 `unresolved_fields`로 기록해 `unresolved_candidate`로 남겼으며 토큰 분리·정규화하지 않았다. 나머지 직접 대응 필드는 검사 가능한 비결측 값이 지역별 허용목록에 모두 포함되고 그룹 검증이 통과한 경우 `valid`로 기록했다. 별도 `validate_travel_log_code_domains.py`의 그룹 도메인 결과와 profile의 관측 행 검사는 별개다. `TC_SGG`는 기존 38개 매핑에 속하지 않아 제외했다. 수도권은 새 profile 입력이 없어 이번 focused 갱신 대상이 아니며 기존 제한 검증만 유지했다.
+
+  재현 시 `PROFILE_INPUT`, `PROFILE_TL_CSV`, `PROFILE_OUTPUT`, `REGION`, `AIHUB_RAW_ROOT`를 이미 승인·추출한 해당 권역 경로로 로컬 shell에서 지정한다. `PROFILE_TL_CSV`는 같은 권역의 TL role directory이며, VL 입력 검사에서도 TC_CODEA/TC_CODEB reference는 이 TL role에서 읽는다. allowlist 생성기는 `validate_travel_log_code_domains.py`의 네 권역 문서 매핑을 재사용한다. 각 대상 CSV를 입력 root 기준 상대 경로순으로 정렬하고 profiler와 같은 `table_000001.csv` 형식의 alias를 부여한다. 각 필드에 연결된 문서 범위의 양 끝을 포함해 정수 값을 확장한 뒤 같은 권역 `TC_CODEA`에서 그룹 키를 확인하고 `TC_CODEB`에서 해당 그룹의 코드 문자열을 읽는다. 지역 허용목록은 문서 범위와 그룹 코드 집합의 교집합으로 만든다. 두 집합이 같고 `TC_CODEA`에 그룹 키가 있을 때만 `group_validation`을 `valid`로 기록하며, 그 외에는 관측값이 교집합에 있더라도 profile 상태를 `unresolved_codebook_domain`으로 남긴다. 같은 권역 그룹 도메인은 `validate_travel_log_code_domains.py`의 별도 도메인 결과에서도 검증했으며 이 결과와 필드별 CSV 관측 행 검사는 분리한다. `TRAVEL_MISSION`, `TRAVEL_MISSION_CHECK`, `EXPND_SE`는 허용값 목록에서 제외하고 `unresolved_fields`에 기록하므로 관측값이 목록에 맞아도 결과는 `unresolved_candidate`다. 해당 세 필드의 `MIS`/`EXP` 그룹 membership은 이 profile 검사의 대상이 아니다. 직접 대응값 비교는 정확 문자열 비교이며 공백 제거, 대소문자 변경, 구분자 분리나 기타 정규화는 하지 않는다. JSON은 실제 관측값을 포함하지 않고 무시 규칙이 적용되는 결과 폴더에만 둔다.
+
+  ```bash
+  .venv/bin/python scripts/eda/build_travel_log_codebook.py \
+    --input-root "$PROFILE_INPUT" --region "$REGION" \
+    --codebook-root "$PROFILE_TL_CSV" \
+    --output "$PROFILE_OUTPUT/codebook-allowlist.json"
+
+  .venv/bin/python - "$PROFILE_OUTPUT/codebook-allowlist.json" <<'PY'
+  import json, sys
+  spec = json.load(open(sys.argv[1], encoding="utf-8"))
+  assert isinstance(spec.get("source"), str)
+  assert isinstance(spec.get("tables"), dict)
+  assert isinstance(spec.get("unresolved_fields"), dict)
+  assert isinstance(spec.get("column_groups"), dict)
+  assert isinstance(spec.get("group_validation"), dict)
+  assert set(spec["group_validation"].values()) <= {"valid", "unresolved"}
+  assert all(isinstance(values, list) and all(isinstance(v, str) for v in values)
+             for columns in spec["tables"].values() for values in columns.values())
+  print("allowlist JSON structure valid")
+  PY
+
+  .venv/bin/python scripts/eda/profile_travel_log.py \
+    --raw-root "$AIHUB_RAW_ROOT" --input "$PROFILE_INPUT" \
+    --output "$PROFILE_OUTPUT" --codebook-only \
+    --codebook "$PROFILE_OUTPUT/codebook-allowlist.json" \
+    --confirm-approved --confirm-terms
+  ```
+
+  `--codebook` JSON 구조는 `source` 문자열, alias별 열과 지역 허용 문자열 목록을 담는 `tables`, unresolved 열을 담는 `unresolved_fields`, 필드→그룹 참조인 `column_groups`, 그룹 도메인 상태인 `group_validation`이다. JSON 확인 명령은 구조만 검사하고 허용 코드 문자열이나 입력 경로를 출력하지 않는다. `--codebook-only`는 지정 CSV 열만 읽고 `codebook_check.csv`, `profile.json`의 코드북 섹션, `run_metadata.json`의 실행 플래그만 갱신하며 기존 다른 profile 집계는 보존한다.
 
 ### 재현 가능한 관측값 검사기
 
