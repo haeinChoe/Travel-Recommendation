@@ -265,6 +265,46 @@ class CodebookOnlyTests(unittest.TestCase):
                 pd.DataFrame(profile[section]).to_csv(index=False),
             )
 
+    def test_mismatched_recorded_threshold_fails_before_input_scan(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="codebook-threshold-test-", dir=RESULTS_ROOT) as name:
+            base = Path(name)
+            raw_root = base / "raw"
+            region_root = raw_root / "2023-travel-log-west"
+            input_root, _, output, profile = make_fixture(region_root)
+            spec = base / "allowlist.json"
+            spec.write_text(json.dumps({
+                "source": "Synthetic test fixture",
+                "tables": {"table_000005.csv": {"ACTIVITY_TYPE_CD": ["1"]}},
+                "unresolved_fields": {},
+                "column_groups": {"table_000005.csv": {"ACTIVITY_TYPE_CD": "ACT"}},
+                "group_validation": {"ACT": "valid"},
+            }), encoding="utf-8")
+            profile["run"]["min_cell_count"] = 20
+            profile_path = output / "profile.json"
+            profile_path.write_text(json.dumps(profile), encoding="utf-8")
+            # If validation reached the selected input, DuckDB would fail on this fixture.
+            source = input_root / "TL_csv" / "TN_ACTIVITY_HIS_G.csv"
+            source.write_bytes(b"\x00 invalid synthetic CSV")
+            before = {
+                path.name: path.read_bytes()
+                for path in output.iterdir()
+                if path.is_file()
+            }
+
+            with self.assertRaisesRegex(SystemExit, "privacy threshold"):
+                main([
+                    "--raw-root", str(raw_root), "--input", str(input_root),
+                    "--output", str(output), "--codebook-only", "--codebook", str(spec),
+                    "--confirm-approved", "--confirm-terms",
+                ])
+
+            after = {
+                path.name: path.read_bytes()
+                for path in output.iterdir()
+                if path.is_file()
+            }
+            self.assertEqual(before, after)
+
     def test_builder_preserves_historical_alias_positions_and_prunes_photo_dirs(self) -> None:
         with tempfile.TemporaryDirectory(prefix="codebook-builder-test-") as name:
             base = Path(name)

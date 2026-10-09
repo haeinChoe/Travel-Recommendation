@@ -1553,12 +1553,24 @@ def run_codebook_only(args: argparse.Namespace, inp: Path, out: Path) -> None:
     prior_run = profile.get("run") or metadata
     if not isinstance(prior_run, dict) or not isinstance(spec, dict):
         raise SystemExit("기존 profile 또는 codebook JSON 형식이 올바르지 않습니다.")
-    try:
-        k = int(metadata.get("min_cell_count", prior_run.get("min_cell_count", 10)))
-    except (TypeError, ValueError):
-        raise SystemExit("기존 profile의 privacy threshold를 확인할 수 없습니다.") from None
-    if k != 10:
+    recorded_thresholds = []
+    for record in (metadata, prior_run):
+        if "min_cell_count" in record:
+            threshold = _count_value(record["min_cell_count"])
+            if threshold is None:
+                raise SystemExit("기존 profile의 privacy threshold를 확인할 수 없습니다.")
+            recorded_thresholds.append(threshold)
+        options = record.get("options")
+        if options is not None and not isinstance(options, dict):
+            raise SystemExit("기존 profile의 privacy options 형식이 올바르지 않습니다.")
+        if isinstance(options, dict) and "min_cell_count" in options:
+            threshold = _count_value(options["min_cell_count"])
+            if threshold is None:
+                raise SystemExit("기존 profile의 privacy threshold를 확인할 수 없습니다.")
+            recorded_thresholds.append(threshold)
+    if any(threshold != 10 for threshold in recorded_thresholds):
         raise SystemExit("기존 profile의 privacy threshold가 k=10이 아니므로 갱신을 중단합니다.")
+    k = 10
     sections = {name: profile.get(name, []) for name in PROFILE_SECTIONS}
     if any(
         not isinstance(records, list) or any(not isinstance(row, dict) for row in records)

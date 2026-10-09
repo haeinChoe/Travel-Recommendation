@@ -487,7 +487,7 @@ SbL inspector는 같은 후속 권역별 SbL ZIP을 `--archive "SbL=$AIHUB_<REGI
     --confirm-approved --confirm-terms
   ```
 
-  `--codebook` JSON 구조는 `source` 문자열, alias별 열과 지역 허용 문자열 목록을 담는 `tables`, unresolved 열을 담는 `unresolved_fields`, 필드→그룹 참조인 `column_groups`, 그룹 도메인 상태인 `group_validation`이다. JSON 확인 명령은 구조만 검사하고 허용 코드 문자열이나 입력 경로를 출력하지 않는다. `--codebook-only`는 지정 CSV 열만 읽어 코드북 검사 결과를 갱신하고, 보존하는 모든 기존 profile 섹션에 k=10 공개 serializer를 다시 적용한다. `profile.json`과 각 섹션 CSV를 같은 안전 집계로 함께 재생성하며 `run_metadata.json`의 실행 플래그도 갱신한다. 지원하지 않는 profile 섹션이나 k=10이 아닌 기존 결과는 안전하게 갱신할 수 없어 중단한다.
+  `--codebook` JSON 구조는 `source` 문자열, alias별 열과 지역 허용 문자열 목록을 담는 `tables`, unresolved 열을 담는 `unresolved_fields`, 필드→그룹 참조인 `column_groups`, 그룹 도메인 상태인 `group_validation`이다. JSON 확인 명령은 구조만 검사하고 허용 코드 문자열이나 입력 경로를 출력하지 않는다. `--codebook-only`는 지정 CSV 열만 읽어 코드북 검사 결과를 갱신하고, 보존하는 모든 기존 profile 섹션에 k=10 공개 serializer를 다시 적용한다. `profile.json`과 각 섹션 CSV를 같은 안전 집계로 함께 재생성하며 `run_metadata.json`의 실행 플래그도 갱신한다. profile과 run metadata에 기록된 모든 privacy threshold가 k=10이어야 하며, 지원하지 않는 profile 섹션이나 다른 threshold가 있으면 안전하게 갱신할 수 없어 중단한다.
 
 ### 재현 가능한 관측값 검사기
 
