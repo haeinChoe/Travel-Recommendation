@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 EDA_DIR = Path(__file__).resolve().parents[1] / "scripts" / "eda"
 sys.path.insert(0, str(EDA_DIR))
 
@@ -73,26 +75,86 @@ def make_fixture(base: Path) -> tuple[Path, Path, Path, dict]:
         ("table_000005.csv", "csv", activity_fields),
         ("table_000006.csv", "csv", travel_fields),
     ]
+    legacy_sections = {
+        "files_inventory": [{
+            "path": "table_000001.csv", "size_bytes": 987654321,
+            "sha256": "LEGACY_HASH_SENTINEL",
+        }, {
+            "path": "table_000002.json", "size_bytes": 987654321.5,
+            "sha256": "LEGACY_FLOAT_SIZE_SENTINEL",
+        }],
+        "photo_summary": [{
+            "ext": ".jpg", "count": 23, "total_bytes": 987654321,
+            "min_bytes": 123456789, "median_bytes": 234567890, "max_bytes": 987654321,
+        }],
+        "other_files_summary": [{"ext": ".csv", "count": 23, "total_bytes": 987654321}],
+        "tables": [
+            {"table": alias, "format": fmt, "rows": 23, "columns": 3,
+             "duplicate_rows": 2, "size_bytes": 987654321}
+            for alias, fmt, _ in profile_tables
+        ],
+        "columns": [{
+            "table": "table_000005.csv", "column": "ACTIVITY_TYPE_CD", "type": "VARCHAR",
+            "non_null": 23, "null_count": 2, "null_rate": 0.086956,
+            "distinct": 12, "min_len": 1, "avg_len": 4.25, "max_len": 12,
+        }],
+        "numeric_summary": [{
+            "table": "table_000005.csv", "column": "ACTIVITY_TYPE_CD",
+            "finite_count": 23, "negative_count": 2, "zero_count": 0,
+        }],
+        "categorical_values": [
+            {"table": alias, "column": field, "value": "LEGACY_VALUE_SENTINEL", "count": 23}
+            for alias, _, fields in profile_tables
+            for field in fields
+        ],
+        "date_months": [{
+            "table": "table_000005.csv", "column": "DATE_SENTINEL", "month": "2023-03",
+            "rows": 13, "min_month": "2023-03", "max_month": "2023-12", "invalid_rows": 2,
+        }],
+        "relations": [{
+            "left_distinct": 23, "right_distinct": 22, "shared_distinct": 8,
+            "left_rows_without_match": 2, "right_rows_without_match": 0,
+            "left_containment": 0.123456, "right_containment": 0.876543,
+        }],
+        "codebook_check": [{
+            "table": "table_000005.csv", "column": "ACTIVITY_TYPE_CD", "status": "mismatch",
+            "allowed_value_count": 12, "non_null_rows": 23,
+            "rows_outside_codebook": 2, "distinct_outside_codebook": 1,
+        }],
+        "json_structure": [{
+            "table": "table_000002.json", "top_level_len": 23,
+            "value_types": '{"object": 23}', "element_types": '{"dict": 4, "str": 19}',
+            "element_key_count_distribution": '{"1": 8, "2": 15}',
+        }],
+        "anomalies": [
+            {"table": "table_000005.csv", "flag": "synthetic", "count": "12/23"},
+            {"table": "*", "flag": "codebook_check_not_run_no_codebook_provided", "count": 0},
+            {"table": "table_000005.csv", "flag": "fractional_count_fixture", "count": 23.5},
+        ],
+    }
     profile = {
         "run": {"min_cell_count": 10, "options": {}},
-        "tables": [{"table": alias, "format": fmt} for alias, fmt, _ in profile_tables],
-        "categorical_values": [
-            {"table": alias, "column": column}
-            for alias, _, columns in profile_tables
-            for column in columns
-        ],
-        "anomalies": [{"flag": "codebook_check_not_run_no_codebook_provided"}],
+        **legacy_sections,
     }
     (output / "profile.json").write_text(json.dumps(profile), encoding="utf-8")
     (output / "run_metadata.json").write_text(
         json.dumps({"min_cell_count": 10, "options": {"codebook_provided": False}}),
         encoding="utf-8",
     )
+    for name, records in legacy_sections.items():
+        csv_path = output / f"{name}.csv"
+        if records:
+            with csv_path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=list(records[0]))
+                writer.writeheader()
+                writer.writerows(records)
+        else:
+            csv_path.write_text("\n", encoding="utf-8")
     return input_root, codebook_root, output, profile
 
 
 class CodebookOnlyTests(unittest.TestCase):
-    def run_synthetic(self, column: str, value: str) -> tuple[dict, dict, str]:
+    def run_synthetic(self, column: str, value: str) -> tuple[dict, dict, dict[str, str]]:
         with tempfile.TemporaryDirectory(prefix="codebook-only-test-", dir=RESULTS_ROOT) as name:
             base = Path(name)
             raw_root = base / "raw"
@@ -125,12 +187,18 @@ class CodebookOnlyTests(unittest.TestCase):
             self.assertEqual(code, 0)
             result = json.loads((output / "profile.json").read_text(encoding="utf-8"))
             metadata = json.loads((output / "run_metadata.json").read_text(encoding="utf-8"))
-            artifact = (output / "codebook_check.csv").read_text(encoding="utf-8")
-            self.assertEqual(profile["tables"], result["tables"])
-            return result, metadata, artifact
+            artifacts = {
+                path.name: path.read_text(encoding="utf-8")
+                for path in output.glob("*.csv")
+            }
+            self.assertEqual(
+                [(row["table"], row["format"]) for row in profile["tables"]],
+                [(row["table"], row["format"]) for row in result["tables"]],
+            )
+            return result, metadata, artifacts
 
     def test_documented_single_code_is_valid_and_bucketed(self) -> None:
-        profile, metadata, artifact = self.run_synthetic("ACTIVITY_TYPE_CD", "1")
+        profile, metadata, artifacts = self.run_synthetic("ACTIVITY_TYPE_CD", "1")
         row = profile["codebook_check"][0]
         self.assertEqual(row["status"], "valid")
         self.assertEqual(row["non_null_rows_bucket"], "10+")
@@ -138,19 +206,64 @@ class CodebookOnlyTests(unittest.TestCase):
         self.assertEqual(row["allowed_value_count_bucket"], "<10")
         self.assertTrue(metadata["options"]["codebook_provided"])
         self.assertTrue(metadata["codebook_source_recorded"])
-        self.assertNotIn(",10,", artifact)
+        self.assertNotIn(",10,", artifacts["codebook_check.csv"])
 
     def test_compound_unresolved_value_is_not_split_or_emitted(self) -> None:
-        profile, _, artifact = self.run_synthetic("TRAVEL_MISSION", "1;2")
+        profile, _, artifacts = self.run_synthetic("TRAVEL_MISSION", "1;2")
         row = profile["codebook_check"][0]
         self.assertEqual(row["status"], "unresolved_candidate")
         self.assertEqual(row.get("rows_outside_codebook_bucket"), "10+", row)
-        self.assertNotIn("1;2", artifact)
+        self.assertNotIn("1;2", artifacts["codebook_check.csv"])
         self.assertNotIn("1;2", json.dumps(profile))
 
     def test_complex_field_remains_unresolved_even_for_exact_code(self) -> None:
         profile, _, _ = self.run_synthetic("TRAVEL_MISSION", "1")
         self.assertEqual(profile["codebook_check"][0]["status"], "unresolved_candidate")
+
+    def test_legacy_profile_sections_and_csvs_are_resanitized(self) -> None:
+        profile, _, artifacts = self.run_synthetic("ACTIVITY_TYPE_CD", "1")
+        serialized = json.dumps(profile, ensure_ascii=False, sort_keys=True)
+        csv_serialized = "\n".join(artifacts.values())
+        self.assertEqual(profile["tables"][4]["rows"], "10+")
+        self.assertEqual(profile["tables"][4]["size_bytes"], "100MiB+")
+        self.assertEqual(profile["columns"][0]["null_count"], "<10")
+        self.assertEqual(profile["columns"][0]["null_rate"], "<10/suppressed")
+        self.assertEqual(profile["numeric_summary"][0]["finite_count"], "<10")
+        self.assertEqual(profile["other_files_summary"][0]["count"], "10+")
+        self.assertEqual(profile["other_files_summary"][0]["total_bytes"], "100MiB+")
+        self.assertEqual(profile["photo_summary"][0]["count"], "10+")
+        self.assertEqual(profile["photo_summary"][0]["total_bytes"], "100MiB+")
+        self.assertEqual(profile["categorical_values"][0]["value"], "category_001")
+        self.assertEqual(profile["categorical_values"][0]["count"], "10+")
+        self.assertEqual(profile["relations"][0]["shared_distinct"], "<10")
+        self.assertEqual(profile["relations"][0]["left_containment"], "<10/suppressed")
+        self.assertEqual(profile["date_months"][0]["month"], "period_001")
+        self.assertEqual(profile["anomalies"][0]["count"], "10+/10+")
+        self.assertEqual(profile["anomalies"][1]["count"], "suppressed")
+        self.assertEqual(profile["json_structure"][0]["top_level_len"], "<10")
+        self.assertNotIn("987654321", serialized + csv_serialized)
+        self.assertNotIn("987654321.5", serialized + csv_serialized)
+        self.assertNotIn("0.086956", serialized + csv_serialized)
+        self.assertNotIn("0.123456", serialized + csv_serialized)
+        self.assertNotIn("2023-03", serialized + csv_serialized)
+        self.assertNotIn("LEGACY_VALUE_SENTINEL", serialized + csv_serialized)
+        self.assertNotIn("LEGACY_HASH_SENTINEL", serialized + csv_serialized)
+        self.assertNotIn("LEGACY_FLOAT_SIZE_SENTINEL", serialized + csv_serialized)
+        self.assertNotIn("codebook_check_not_run_no_codebook_provided", csv_serialized)
+        self.assertIn("10+", artifacts["tables.csv"])
+        self.assertIn("<10/suppressed", artifacts["relations.csv"])
+        self.assertIn("100MiB+", artifacts["files_inventory.csv"])
+        self.assertIn("100MiB+", artifacts["photo_summary.csv"])
+        self.assertIn("category_001", artifacts["categorical_values.csv"])
+        for section in (
+            "files_inventory", "photo_summary", "other_files_summary", "tables", "columns",
+            "numeric_summary", "categorical_values", "date_months", "relations",
+            "codebook_check", "json_structure", "anomalies",
+        ):
+            self.assertEqual(
+                artifacts[f"{section}.csv"],
+                pd.DataFrame(profile[section]).to_csv(index=False),
+            )
 
     def test_builder_preserves_historical_alias_positions_and_prunes_photo_dirs(self) -> None:
         with tempfile.TemporaryDirectory(prefix="codebook-builder-test-") as name:

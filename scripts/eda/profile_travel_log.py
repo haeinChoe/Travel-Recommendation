@@ -83,6 +83,20 @@ ARTIFACTS = [
     "json_structure.csv",
     "anomalies.csv",
 ]
+PROFILE_SECTIONS = (
+    "files_inventory",
+    "photo_summary",
+    "other_files_summary",
+    "tables",
+    "columns",
+    "numeric_summary",
+    "categorical_values",
+    "date_months",
+    "relations",
+    "codebook_check",
+    "json_structure",
+    "anomalies",
+)
 
 EXIT_GUARD = 2  # 승인·데이터·경로 조건 미충족으로 의도적으로 중단
 PUBLIC_RATE_BANDS = (
@@ -1046,14 +1060,23 @@ def _below_k(value: Any, k: int) -> bool:
 def _public_count(value: Any, k: int) -> Any:
     n = _count_value(value)
     if n is not None:
+        if n < 0:
+            return "suppressed"
         if n == 0:
             return "0"
         return "<10" if n < 10 else "10+"
-    if isinstance(value, str) and value == "<k":
-        return "<10" if k == 10 else "suppressed"
-    if isinstance(value, str) and value.startswith("at_least_"):
-        return "10+"
-    return value
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value in {"0", "<10", "10+", "suppressed", "<10/suppressed"}:
+            return value
+        if value == "<k":
+            return "<10" if k == 10 else "suppressed"
+        if value.startswith("at_least_"):
+            return "10+"
+        if re.fullmatch(r"(?:0|<10|10\+)/(?:0|<10|10\+)", value):
+            return value
+    return "suppressed"
 
 
 def _public_rate(value: Any) -> Any:
@@ -1087,7 +1110,10 @@ def _public_rate(value: Any) -> Any:
 def _public_size(value: Any) -> Any:
     n = _count_value(value)
     if n is None:
-        return value
+        bands = {"0", "<1MiB", "1-<10MiB", "10-<100MiB", "100MiB+"}
+        return value if value is None or isinstance(value, str) and value in bands else "suppressed"
+    if n < 0:
+        return "suppressed"
     mib = 2**20
     if n == 0:
         return "0"
@@ -1421,23 +1447,7 @@ def sanitize_existing_output(out: Path) -> int:
     k = int(run.get("min_cell_count", run.get("options", {}).get("min_cell_count", 10)))
     if k != 10:
         guard_stop("기존 결과의 k가 10이 아니므로 자동 정리를 중단합니다.")
-    sections = {
-        name: profile.get(name, [])
-        for name in (
-            "files_inventory",
-            "photo_summary",
-            "other_files_summary",
-            "tables",
-            "columns",
-            "numeric_summary",
-            "categorical_values",
-            "date_months",
-            "relations",
-            "codebook_check",
-            "json_structure",
-            "anomalies",
-        )
-    }
+    sections = {name: profile.get(name, []) for name in PROFILE_SECTIONS}
     suppressed = suppress_small_aggregate_cells(sections, k)
     profile.update(sections)
 
@@ -1536,6 +1546,27 @@ def run_codebook_only(args: argparse.Namespace, inp: Path, out: Path) -> None:
         spec = json.loads(args.codebook.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise SystemExit("기존 profile 또는 codebook JSON을 읽을 수 없습니다.") from exc
+    if not isinstance(profile, dict) or not isinstance(metadata, dict):
+        raise SystemExit("기존 profile metadata 형식이 올바르지 않습니다.")
+    if set(profile) - {"run", *PROFILE_SECTIONS}:
+        raise SystemExit("지원하지 않는 profile section이 있어 안전하게 갱신할 수 없습니다.")
+    prior_run = profile.get("run") or metadata
+    if not isinstance(prior_run, dict) or not isinstance(spec, dict):
+        raise SystemExit("기존 profile 또는 codebook JSON 형식이 올바르지 않습니다.")
+    try:
+        k = int(metadata.get("min_cell_count", prior_run.get("min_cell_count", 10)))
+    except (TypeError, ValueError):
+        raise SystemExit("기존 profile의 privacy threshold를 확인할 수 없습니다.") from None
+    if k != 10:
+        raise SystemExit("기존 profile의 privacy threshold가 k=10이 아니므로 갱신을 중단합니다.")
+    sections = {name: profile.get(name, []) for name in PROFILE_SECTIONS}
+    if any(
+        not isinstance(records, list) or any(not isinstance(row, dict) for row in records)
+        for records in sections.values()
+    ):
+        raise SystemExit("기존 profile section 형식이 올바르지 않습니다.")
+    suppress_small_aggregate_cells(sections, k)
+    profile.update(sections)
     table_specs = spec.get("tables")
     unresolved_fields_spec = spec.get("unresolved_fields", {})
     column_groups = spec.get("column_groups", {})
@@ -1605,7 +1636,6 @@ def run_codebook_only(args: argparse.Namespace, inp: Path, out: Path) -> None:
     finally:
         con.close()
 
-    k = int(metadata.get("min_cell_count", 10))
     unresolved_fields = UNRESOLVED_CODEBOOK_FIELDS
     safe_checks = []
     count_fields = (
@@ -1641,17 +1671,19 @@ def run_codebook_only(args: argparse.Namespace, inp: Path, out: Path) -> None:
     run["codebook_execution_scope"] = "configured_codebook_columns_only_existing_profile_preserved"
     public = public_run_metadata(run)
     profile["run"] = public
-    profile["codebook_check"] = safe_checks
-    anomalies = [
-        row for row in profile.get("anomalies", [])
+    sections["codebook_check"] = safe_checks
+    sections["anomalies"] = [
+        row for row in sections["anomalies"]
         if row.get("flag") != "codebook_check_not_run_no_codebook_provided"
     ]
-    profile["anomalies"] = anomalies
+    suppress_small_aggregate_cells(sections, k)
+    profile.update(sections)
     staged = {
-        "codebook_check.csv": pd.DataFrame(profile["codebook_check"]).to_csv(index=False),
-        "profile.json": json.dumps(profile, ensure_ascii=False, indent=2, default=str),
-        "run_metadata.json": json.dumps(public, ensure_ascii=False, indent=2),
+        f"{name}.csv": pd.DataFrame(sections[name]).to_csv(index=False)
+        for name in PROFILE_SECTIONS
     }
+    staged["profile.json"] = json.dumps(profile, ensure_ascii=False, indent=2, default=str)
+    staged["run_metadata.json"] = json.dumps(public, ensure_ascii=False, indent=2)
     with tempfile.TemporaryDirectory(prefix=".codebook-only-", dir=out) as temp_name:
         temp = Path(temp_name)
         for name, content in staged.items():
