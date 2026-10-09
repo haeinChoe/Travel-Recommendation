@@ -24,9 +24,15 @@ AI Hub 필드 표기는 [네 권역 설명서](../data/travel-log-2023/README.md
 
 ## 2. Legacy TravelMate 구조 및 복원
 
-**[코드 사실]** 공개 `travelmate-model`의 `app/preprocessing.py`는 `gender`, `age_grp`, `start_month`를 one-hot encode하고 `content_id` 방문 pivot으로 `traveler_id` × `content_id` 방문 행렬을 만든다. 사용자 유사도는 profile 유사도와 방문 유사도를 각각 0.7 및 0.3으로 혼합한다. 이 가중치는 legacy 코드의 사실일 뿐 새 baseline 가중치가 아니다.
+**[코드 사실 — 의도된 설계]** 공개 `travelmate-model`의 `app/preprocessing.py`는 `gender`, `age_grp`, `start_month`를 one-hot encode하고 `content_id` 방문 pivot으로 `traveler_id` × `content_id` 방문 행렬을 만든다. 코드는 profile 기반 user-user similarity에 0.7, 방문 기반 user-user similarity에 0.3을 곱해 더하려는 연산을 작성한다.
 
-**[코드 사실]** `app/recommendation.py`는 유사 사용자의 방문과 `content_embeddings`를 추천 단계에서 사용한다. 이 구조는 collaborative interaction과 item-content 정보를 함께 소비했다는 것을 보여주지만, embedding 생성 provenance나 AI Hub 필드 대응을 자동으로 입증하지 않는다.
+**[구현 결함 후보 — 실제 코드]** 두 similarity dataframe은 각각 본래 traveler × traveler 축이다. 그러나 유효 사용자 필터 단계에서 두 dataframe을 `index=visit_matrix.index`, `columns=visit_matrix.columns`로 재색인하며, `visit_matrix.columns`는 traveler가 아니라 `content_id`다. 따라서 결과 column 축이 content 축으로 바뀌거나 label 교집합에 의존하게 되어, 0.7/0.3 결합 결과가 의도한 user-user similarity matrix라고 확정할 수 없다.
+
+`app/recommendation.py`는 이 결합 결과의 행을 user-user similarity처럼 읽어 정렬된 label을 얻으려 한다. similarity 값의 수가 dataframe index보다 많으면 정렬 위치를 index에 적용하는 단계에서 실패할 수 있고, 성공하면 `similar_users`에는 traveler index label이 들어간다. `app/main.py`는 방문 행렬을 NumPy 배열로 변환해 추천 함수에 넘기지만, 추천 함수는 먼저 `visit_matrix.to_numpy(...)`를 호출하므로 공개 호출 경로는 그 지점에서 자료형 오류가 발생한다. DataFrame이 직접 전달되는 경우에도 함수는 이를 NumPy 행렬로 바꾼 뒤 traveler ID label을 `visit_matrix_np[similar_users]`의 행 위치로 사용하므로 ID와 위치가 같다는 보장이 없다. 또 `similar_users`는 similarity 값의 argsort 순서로 정렬하지만, 가중 합에는 정렬 전 `similarity_values[:len(similar_users)]`를 사용해 사용자와 점수의 순서가 어긋날 수 있다. 이후 콘텐츠 기반 경로는 원래 `visit_matrix`의 `.loc`를 기대한다. 따라서 축·label·순서·자료형의 불일치가 있으며, 이 문서는 legacy 추천 흐름의 정상 실행이나 추천 품질을 검증하지 않았다.
+
+**[새 시스템 결정]** 0.7/0.3 가중치, 이 similarity 계산 방식, legacy one-hot preprocessing을 새 baseline에 이전하지 않는다. Legacy 코드는 과거 구현을 복원하는 참고 자료이지 새 데이터 계약이나 알고리즘의 정답이 아니다.
+
+**[코드 사실 — 소비 의도]** `app/recommendation.py`에는 유사 사용자 방문과 `content_embeddings`를 함께 읽으려는 추천 경로가 있다. 이는 collaborative interaction과 item-content를 결합하려는 구조를 보여줄 뿐, 위에서 확인한 축·호출 불일치가 있는 코드의 정상 실행이나 추천 품질을 입증하지 않는다. embedding 생성 provenance나 AI Hub 필드 대응도 확인되지 않았다.
 
 **[코드 사실]** `travelmate-model/app/schema.py`와 `models.py`는 `Preference` 입력(여행 스타일 1–7 및 동반자 포함)과 `Visited(traveler_id, content_id)`를 정의한다. `travelmate-backend`의 `Preference.java`는 traveler relation, 인구통계, 여행 날짜, 스타일 1–7 및 동반자를 보유하며, `Visited.java`는 traveler와 `contentId`를 보유한다. `TourSpot.java`의 `contentId`는 TourAPI content ID이고, 분류·지역/구역·테마 metadata가 함께 정의된다.
 
@@ -49,7 +55,7 @@ AI Hub 필드 표기는 [네 권역 설명서](../data/travel-log-2023/README.md
 | `TourSpot` categories, region/district/theme | item metadata | `TN_POI_MASTER.ASORT_LCLASDC`, `ASORT_MLSFCDC`, `ASORT_SDASDC`, `SGG_CD` 및 visit-area `VISIT_AREA_TYPE_CD`, `SGG_CD` | **변경:** metadata 후보; schema-field availability 확인 전 optional item context로만 취급 | 두 테이블의 분류 체계 동일성 미확인. 정규화·crosswalk 미정 |
 | `content_embeddings` | item content representation | SbL `caption.IMG_CAPTION`, `images.LANDMARK`/`VISIT_AREA_NM` 또는 POI metadata 후보 | **폐기:** 기존 artifact 미이식. caption-derived text는 후속 실험만 | 생성법·매핑·품질 미확인; baseline은 raw image 및 image embedding 제외 |
 | profile one-hot `gender`, `age_grp`, `start_month` | preprocessing features | `GENDER`, `AGE_GRP`; `TRAVEL_START_YMD` month candidate | **변경:** profile/date context는 availability policy를 통과해야 함; start-month 변환은 확정하지 않음 | legacy preprocessing 구현 사실. 날짜 파생 규칙·제품 필요성 미정 |
-| profile 0.7 + visit 0.3 similarity | user-user recommendation score | 해당 없음 | **폐기:** 가중치를 새 baseline으로 전용하지 않음 | legacy 모델 결정이지 AI Hub 기반 실험 근거가 아님 |
+| profile 0.7 + visit 0.3 similarity | user-user recommendation score 의도 | 해당 없음 | **폐기:** 가중치와 계산 방식을 새 baseline으로 전용하지 않음 | 두 similarity dataframe의 column을 `visit_matrix.columns(content_id)`로 재색인하므로 결합 결과를 user-user matrix로 확정할 수 없음 |
 
 ## 4. User 정의
 
@@ -187,19 +193,19 @@ Candidate universe는 모델별로 변경하지 않고 평가 cohort별로 고�
 | Same-region requested candidate scope | Provisional | Bounded scope; official region/ID crosswalk still unresolved |
 | Exclude raw images and image embeddings | Decided | Explicit baseline boundary; no image pipeline or raw image EDA |
 | Exclude caption text from baseline | Decided | Coverage/linkage evidence is not semantic, permission, or serving-parity evidence |
-| Do not transfer legacy 0.7/0.3 weights, one-hot encoding or TourAPI IDs | Decided | Implementation facts are not validated AI Hub transformation rules |
+| Do not transfer legacy 0.7/0.3 weights, similarity calculation, one-hot preprocessing, or TourAPI IDs | Decided | The code expresses an intended weighted user-similarity design, but reindexes similarity columns to `visit_matrix.columns` (`content_id`); downstream consumption also assumes user-user axes. This is not validated behavior or an AI Hub transformation rule |
 
 ## Appendix A. Public legacy source references
 
-Code evidence refers to the published repository files below. The links establish implementation locations; they do not prove AI Hub field semantics, model quality, or an external data license.
+Code evidence refers to the published repository files below, pinned to the model commit `097fca72b9c4299f70bdec30730ba7342710bbf7` and backend commit `0f63c6ec9a754aafc5cb8b1eb847209f034f37cb`. The links establish implementation locations; they do not prove AI Hub field semantics, model quality, successful runtime behavior, or an external data license. In particular, the preprocessing source contains a 0.7/0.3 weighted-combination expression, but its reindexing uses the content axis for similarity columns, so the result is not established as a valid user-user matrix.
 
 | Evidence | Exact public source path |
 | --- | --- |
-| Preference/profile + `content_id` visit pivot; user similarity | [`travelmate-model/app/preprocessing.py`](https://github.com/9roomthon-TravelMate/travelmate-model/blob/097fca72b9c4299f70bdec30730ba7342710bbf7/app/preprocessing.py) |
-| Similar-user visits and `content_embeddings` recommendation use | [`travelmate-model/app/recommendation.py`](https://github.com/9roomthon-TravelMate/travelmate-model/blob/097fca72b9c4299f70bdec30730ba7342710bbf7/app/recommendation.py) |
+| Profile and visit similarity construction, intended 0.7/0.3 combination, and traveler/content reindexing | [`travelmate-model/app/preprocessing.py`](https://github.com/9roomthon-TravelMate/travelmate-model/blob/097fca72b9c4299f70bdec30730ba7342710bbf7/app/preprocessing.py) |
+| Consumption of the combined dataframe as user similarity, visit-matrix indexing, and `content_embeddings` recommendation | [`travelmate-model/app/recommendation.py`](https://github.com/9roomthon-TravelMate/travelmate-model/blob/097fca72b9c4299f70bdec30730ba7342710bbf7/app/recommendation.py), [`travelmate-model/app/main.py`](https://github.com/9roomthon-TravelMate/travelmate-model/blob/097fca72b9c4299f70bdec30730ba7342710bbf7/app/main.py) |
 | Model Preference / Visited schema | [`travelmate-model/app/schema.py`](https://github.com/9roomthon-TravelMate/travelmate-model/blob/097fca72b9c4299f70bdec30730ba7342710bbf7/app/schema.py), [`travelmate-model/app/models.py`](https://github.com/9roomthon-TravelMate/travelmate-model/blob/097fca72b9c4299f70bdec30730ba7342710bbf7/app/models.py) |
 | Backend `Preference`, `Visited`, and `TourSpot` entities | [`travelmate-backend/src/main/java/travelmate/backend/entity/Preference.java`](https://github.com/9roomthon-TravelMate/travelmate-backend/blob/0f63c6ec9a754aafc5cb8b1eb847209f034f37cb/src/main/java/travelmate/backend/entity/Preference.java), [`Visited.java`](https://github.com/9roomthon-TravelMate/travelmate-backend/blob/0f63c6ec9a754aafc5cb8b1eb847209f034f37cb/src/main/java/travelmate/backend/entity/Visited.java), [`TourSpot.java`](https://github.com/9roomthon-TravelMate/travelmate-backend/blob/0f63c6ec9a754aafc5cb8b1eb847209f034f37cb/src/main/java/travelmate/backend/entity/TourSpot.java) |
 | Request DTO / recommend flow | [`travelmate-backend/src/main/java/travelmate/backend/dto/PreferenceDTO.java`](https://github.com/9roomthon-TravelMate/travelmate-backend/blob/0f63c6ec9a754aafc5cb8b1eb847209f034f37cb/src/main/java/travelmate/backend/dto/PreferenceDTO.java), [`RecommendController.java`](https://github.com/9roomthon-TravelMate/travelmate-backend/blob/0f63c6ec9a754aafc5cb8b1eb847209f034f37cb/src/main/java/travelmate/backend/controller/RecommendController.java) |
 | Save-visited persistence flow | [`travelmate-backend/src/main/java/travelmate/backend/service/RecommendationService.java`](https://github.com/9roomthon-TravelMate/travelmate-backend/blob/0f63c6ec9a754aafc5cb8b1eb847209f034f37cb/src/main/java/travelmate/backend/service/RecommendationService.java) |
 
-**Source verification:** the legacy source tree and cited file contents were checked at backend commit `0f63c6ec9a754aafc5cb8b1eb847209f034f37cb` and model commit `097fca72b9c4299f70bdec30730ba7342710bbf7`; Appendix A links are pinned to those revisions.
+**Source verification:** the cited `preprocessing.py`, `recommendation.py`, `main.py`, and `crud.py` contents were re-read at model commit `097fca72b9c4299f70bdec30730ba7342710bbf7`; backend references remain pinned to `0f63c6ec9a754aafc5cb8b1eb847209f034f37cb`. The similarity-axis and downstream-consumption statements above describe code structure and possible failure/misalignment, not a reproduced runtime result.
