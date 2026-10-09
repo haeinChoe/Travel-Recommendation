@@ -45,6 +45,7 @@ MAPPING = {
 GROUP_FIELDS = {"TRAVEL_MISSION", "TRAVEL_MISSION_CHECK", "EXPND_SE"}
 GROUPS = {group for fields in MAPPING.values() for group, _ in fields.values()}
 CODEBOOK_PATTERN = re.compile(r"^tc_codeb(?:_.+)?\.csv$", re.I)
+REGION_FILE_SUFFIX = re.compile(r"_([EFGH])\.csv$", re.I)
 
 
 class InputError(ValueError):
@@ -162,6 +163,9 @@ def codebook_file(path: Path, region: str) -> Path:
         candidates = [resolved]
     if len(candidates) != 1 or not no_symlink(candidates[0]):
         raise InputError("codebook_table_mapping_unavailable")
+    suffix = REGION_FILE_SUFFIX.search(candidates[0].name)
+    if suffix and suffix.group(1).upper() != SUFFIX[region]:
+        raise InputError("codebook_suffix_mismatch")
     return candidates[0]
 
 

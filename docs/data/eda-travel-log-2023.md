@@ -476,7 +476,9 @@ RUN=code-domain-cli-YYYYMMDD-HHMM
 
 `RUN`은 기존 출력과 겹치지 않는 새 이름으로 바꾼다. 출력은 ignored 경로의 `codebook_domains.csv` 및 `field_observations.csv`이며, 원본 값·코드값·경로·정확 건수는 저장하지 않는다. 건수는 `0`, `<10`, `10+` 구간, 상태는 `valid` 또는 `unresolved_*`로 기록한다. 기존 제한 검사에서 세 MIS/EXP 필드는 각 권역·분할의 직접 일치 실패 후보가 `10+` 구간이었다. 이 세 값의 복합 표현 여부는 설명서에 분해 규칙이 없어 미확인이다. 이 세 필드를 제외한 직접 대응 필드는 범위 밖 후보가 `0` 구간이고 통과 필드 수가 `10+` 구간이었으며, `JOB_ETC`는 비결측 관측이 `0` 구간이었다. 위 재현 명령은 전체 EDA가 아니라 해당 열만 재검사한다.
 
-2026-10-09에 출력 경로·코드표 선검증을 보강한 검사기를 기존 West/East/Jeju 추출 입력으로 다시 실행해 exit 0을 확인했다. 결과는 ignored `results/eda/travel-log-2023/code-domain-cli-20261009-guarded-rerun2/`에 생성됐다. 세 MIS/EXP 필드에 대해 이전 `observations.csv`와 비교한 West/East/Jeju TL/VL의 관측·결측·범위 불일치·코드 그룹 불일치 bucket 및 상태가 모두 일치했다. 비교 요약에는 값과 정확 건수를 출력하지 않았다. 새 `codebook_domains.csv`의 그룹 도메인 bucket은 이번 재현 산출물에 별도로 기록했다.
+권역 파일 표식은 공식 파일 구성 설명의 수도권 E, 동부권 F, 서부권 G, 제주·도서권 H 정의를 따른다. 실제 West/East/Jeju `TC_CODEB` 파일명에는 권역 표식이 없었으며, 검사기는 코드표를 해당 권역 `2023-travel-log-<region>/.../TL_csv`에서만 찾는다. `TC_CODEB` 파일명에 E/F/G/H 표식이 명시된 경우에는 요청 권역의 표식과 일치해야 한다. 지역별 TN 테이블은 파일명 끝 표식도 확인한다.
+
+2026-10-09에 출력 경로·코드표 역할·권역 표식 검증을 보강한 검사기를 기존 West/East/Jeju 추출 입력으로 다시 실행해 exit 0을 확인했다. 결과는 ignored `results/eda/travel-log-2023/code-domain-cli-20261009-suffix-guard/`에 생성됐다. 세 MIS/EXP 필드에 대해 이전 `observations.csv`와 비교한 West/East/Jeju TL/VL의 관측·결측·범위 불일치·코드 그룹 불일치 bucket 및 상태가 모두 일치했다. 비교 요약에는 값과 정확 건수를 출력하지 않았다. 새 `codebook_domains.csv`의 그룹 도메인 bucket은 이번 재현 산출물에 별도로 기록했다.
 
 ## 한계와 후속 결정 후보
 

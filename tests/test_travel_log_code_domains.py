@@ -78,6 +78,24 @@ class TravelLogCodeDomainTests(unittest.TestCase):
         self.assertIn("codebook_region_path_invalid", errors.getvalue())
         self.assertNotIn(str(temp), errors.getvalue())
 
+    def test_codebook_directory_rejects_wrong_region_suffix(self):
+        with tempfile.TemporaryDirectory() as temp:
+            roots = self._region_roots(Path(temp))
+            names = {"west": "tc_codeb_fixture_F.csv",
+                     "east": "tc_codeb_fixture.csv",
+                     "jeju-islands": "tc_codeb_fixture.csv"}
+            for region, root in roots.items():
+                (root / "TL_csv" / names[region]).write_text("CD_A,CD_B\n", encoding="utf-8")
+            books = {region: root / "TL_csv" for region, root in roots.items()}
+            args = self._cli_args(roots, books, "wrong-suffix")
+            errors = io.StringIO()
+            with contextlib.redirect_stderr(errors):
+                status = main(args)
+
+        self.assertEqual(status, 2)
+        self.assertIn("codebook_suffix_mismatch", errors.getvalue())
+        self.assertNotIn(str(temp), errors.getvalue())
+
     @staticmethod
     def _region_roots(base):
         roots = {}
