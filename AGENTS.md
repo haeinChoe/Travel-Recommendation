@@ -42,3 +42,5 @@
 - 작업 요청, 권한 단계, 브랜치·커밋·PR 절차는 docs/agent-workflow.md를 따른다.
 - AI Hub 원본 및 파생 데이터 처리 절차는 docs/data/aihub-workflow.md를 따른다.
 - 문서 목록과 역할은 docs/README.md에서 확인한다.
+- 2023 국내 여행로그 네 권역 설명서의 Markdown 변환본과 원문·권역별 차이는 docs/data/travel-log-2023/README.md에서 확인한다.
+- 수도권 스키마와 EDA 관련 컬럼 요약은 docs/data/aihub-71776-capital-schema.md를 참고한다.

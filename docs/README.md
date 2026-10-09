@@ -7,6 +7,8 @@
 - [../AGENTS.md](../AGENTS.md) — 저장소 전체에 적용되는 에이전트 작업 원칙
 - [agent-workflow.md](agent-workflow.md) — Issue, 권한, 브랜치, 커밋, PR 절차
 - [data/aihub-workflow.md](data/aihub-workflow.md) — AI Hub 데이터 접근, 전처리, 분석 및 결과 공유 절차
+- [data/travel-log-2023/README.md](data/travel-log-2023/README.md) — 2023 국내 여행로그 네 권역 데이터 설명서 Markdown 변환본과 권역별 차이
+- [data/aihub-71776-capital-schema.md](data/aihub-71776-capital-schema.md) — 수도권 스키마 및 EDA 관련 컬럼 요약 참조
 - [PRD.md](PRD.md) — 제품 요구사항과 시스템 방향
 - [data/eda-travel-log-2023.md](data/eda-travel-log-2023.md) — 2023 국내 여행로그 4개 권역 EDA 계획과 안전한 집계 보고서 (Issue #12)
 
