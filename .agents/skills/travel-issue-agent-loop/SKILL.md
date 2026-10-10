@@ -36,6 +36,10 @@ Ask the read-only reviewer to inspect the Issue, acceptance criteria, and full d
 
 Do not ask the user about routine implementation choices. Continue through the authorized work, including branch push and PR creation when the user explicitly authorizes PR delivery. Stop only for a real blocker: missing or conflicting requirements/permissions, unavailable required access, a security concern outside the authorization, or an issue that remains unresolved after three review rounds.
 
+## Authorized cleanup
+
+Clean an Issue workspace only when the user explicitly requests cleanup or the Issue authorizes it. Follow the guarded MCP teardown sequence in [references/agent-loop.md](references/agent-loop.md). Do not close the caller, current focused workspace, or unrelated work. Report cleanup as complete only after Herdr inventory and Git worktree readback confirm the targets are absent. If a teardown tool is unavailable, denied, or returns an ambiguous result, preserve the remaining state and report the exact blocker; do not fall back to force or arbitrary shell deletion.
+
 ## Delivery
 
 Before push, prepare and report the commit, changed files, validation results, and remaining limitations as required by repository policy. This report is informational when push/PR is already authorized; do not wait for a reply. Push only the Issue branch and create or update its PR. Never push directly to `dev` or `main`, merge the PR, deploy, or delete worktrees unless separately authorized.
