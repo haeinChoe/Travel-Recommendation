@@ -46,7 +46,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "mutation": "worktree_remove",
     },
     "herdr_workspace_close": {
-        "description": "Safely close one non-focused plain Herdr workspace after validating primary checkout ownership and linked worktrees.",
+        "description": "Close one plain Herdr workspace only when caller identity and exclusive repository ownership are verified.",
         "input": "workspace_id",
         "mutation": "workspace_close",
     },
@@ -180,6 +180,14 @@ def _workspace_context(workspace_id: str) -> tuple[dict[str, Any] | None, list[d
 def _assert_not_focused(workspace: dict[str, Any]) -> None:
     if workspace.get("focused") is not False:
         raise RuntimeError("Refusing to close the current or focused workspace")
+
+
+def _assert_not_caller_workspace(workspace_id: str) -> None:
+    caller_workspace_id = os.environ.get("HERDR_WORKSPACE_ID")
+    if not isinstance(caller_workspace_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(caller_workspace_id):
+        raise RuntimeError("Caller workspace identity is unavailable; refusing teardown")
+    if workspace_id == caller_workspace_id:
+        raise RuntimeError("Refusing to tear down the workspace running this caller")
 
 
 def _focused_workspace_id(workspaces: list[dict[str, Any]]) -> str | None:
@@ -361,6 +369,7 @@ def _assert_plain_workspace_provenance(
 
 
 def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
+    _assert_not_caller_workspace(workspace_id)
     workspace, all_workspaces, agents = _workspace_context(workspace_id)
     if workspace is None:
         if name == "herdr_worktree_remove":
@@ -412,6 +421,16 @@ def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
     )
     if checkout_owner_id == workspace_id and any(item.get("is_linked_worktree") is not False for item in worktrees):
         raise RuntimeError("Refusing to close a workspace while a linked worktree remains")
+    if checkout_owner_id != workspace_id:
+        raise RuntimeError("Refusing to close a workspace that shares its primary checkout with another workspace")
+    repo_key = workspace["worktree"]["repo_key"]
+    if any(
+        item.get("workspace_id") != workspace_id
+        and isinstance(item.get("worktree"), dict)
+        and item["worktree"].get("repo_key") == repo_key
+        for item in all_workspaces
+    ):
+        raise RuntimeError("Refusing to close a workspace while another workspace shares its Git repository")
     git_paths = [item["path"] for item in worktrees if isinstance(item.get("path"), str) and item.get("path")]
     git_before = _git_status_snapshot(git_paths)
     git_worktrees_before = _git_worktree_snapshot(git_paths)

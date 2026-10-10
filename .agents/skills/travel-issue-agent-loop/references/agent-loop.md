@@ -120,10 +120,10 @@ If Herdr reports an agent as blocked, inspect its state and output before sendin
 Only clean a workspace after explicit user authorization or an Issue that authorizes cleanup. Before calling a mutation tool:
 
 1. Confirm the PR is merged, or the user explicitly authorized abandoning the work. An open PR is not a cleanup signal.
-2. Confirm the target is an Issue workspace, is not the caller/current focused workspace, and is not needed by another task.
+2. Confirm the target is an Issue workspace, is not the caller/current focused workspace, does not share a Git repository with the caller or any other Herdr workspace, and is not needed by another task.
 3. Confirm all agents in the target are idle or done; stop if any agent is working, blocked, or unknown.
 4. For a linked worktree, confirm git status --porcelain is empty and the branch is not dev or main; call the explicit MCP tool herdr_worktree_remove without force.
 5. Close a workspace with herdr_workspace_close only after confirming it has no linked worktree.
-6. Read Herdr workspace/agent inventory and git worktree list --porcelain again. Report success only if every requested target is absent.
+6. Read Herdr workspace/agent inventory and git worktree list --porcelain again. Report success only if every requested target is absent and unrelated workspace IDs remain present.
 
-If a tool is unavailable, denied, or returns a timeout/ambiguous result, read state before deciding what remains. Never blindly repeat a mutation, use --force, or substitute rm/raw API calls. Preserve unresolved work and report the exact result.
+If a tool is unavailable, denied, or returns a timeout/ambiguous result, read state before deciding what remains. Never retry through direct Herdr CLI, blindly repeat a mutation, use --force, or substitute raw API calls. Preserve unresolved work and report the exact result.

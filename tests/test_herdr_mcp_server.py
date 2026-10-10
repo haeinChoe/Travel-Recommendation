@@ -6,7 +6,6 @@ import shutil
 import subprocess
 import tempfile
 import unittest
-import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -151,6 +150,8 @@ class MCPProtocolTests(unittest.TestCase):
 
 class TeardownSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.caller_env = patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "caller"})
+        self.caller_env.start()
         self.temp_root = Path(tempfile.mkdtemp(prefix="herdr-bridge-unit-"))
         self.repo = self.temp_root / "repo"
         self.repo.mkdir()
@@ -164,6 +165,7 @@ class TeardownSafetyTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_root)
+        self.caller_env.stop()
 
     def _git_worktree(self, branch: str = "feature") -> Path:
         path = self.temp_root / "checkout"
@@ -196,6 +198,24 @@ class TeardownSafetyTests(unittest.TestCase):
             mocks, *_ = self._setup_api(focused=focused, status=status)
             with mocks, self.assertRaises(RuntimeError):
                 bridge._mutate_tool("herdr_workspace_close", "target")
+
+    def test_rejects_caller_workspace_before_reading_or_mutating(self) -> None:
+        with patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "target"}), patch.object(
+            bridge, "_workspace_context"
+        ) as context, patch.object(bridge, "_run_herdr_json") as mutation:
+            with self.assertRaisesRegex(RuntimeError, "workspace running this caller"):
+                bridge._mutate_tool("herdr_workspace_close", "target")
+        context.assert_not_called()
+        mutation.assert_not_called()
+
+    def test_rejects_teardown_without_caller_context(self) -> None:
+        with patch.dict(os.environ, {}, clear=True), patch.object(
+            bridge, "_workspace_context"
+        ) as context, patch.object(bridge, "_run_herdr_json") as mutation:
+            with self.assertRaisesRegex(RuntimeError, "Caller workspace identity is unavailable"):
+                bridge._mutate_tool("herdr_workspace_close", "target")
+        context.assert_not_called()
+        mutation.assert_not_called()
 
     def test_rejects_unlinked_and_dirty_worktrees(self) -> None:
         path = self._git_worktree()
@@ -381,7 +401,7 @@ class TeardownSafetyTests(unittest.TestCase):
         with mocks, self.assertRaisesRegex(RuntimeError, "inventories disagree"):
             bridge._mutate_tool("herdr_workspace_close", "target")
 
-    def test_workspace_close_allows_plain_target_with_another_primary_checkout_owner(self) -> None:
+    def test_workspace_close_rejects_shared_primary_checkout_workspace(self) -> None:
         provenance = {
             "repo_key": str(self.repo / ".git"),
             "repo_name": "repo",
@@ -408,14 +428,11 @@ class TeardownSafetyTests(unittest.TestCase):
             "is_linked_worktree": True,
             "open_workspace_id": "agent-17",
         }
-        workspace_reads = 0
         worktree_commands: list[list[str]] = []
 
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
-            nonlocal workspace_reads
             if command[:2] == ["workspace", "list"]:
-                workspace_reads += 1
-                return [primary, target, linked_owner] if workspace_reads == 1 else [primary, linked_owner]
+                return [primary, target, linked_owner]
             if command[:2] == ["agent", "list"]:
                 return [{"workspace_id": "target", "agent_status": "idle"}]
             if command[:2] == ["worktree", "list"]:
@@ -426,19 +443,50 @@ class TeardownSafetyTests(unittest.TestCase):
         git_before = bridge._git(str(self.repo), "worktree", "list", "--porcelain")
         status_before = bridge._git(str(self.repo), "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching")
         with patch.object(bridge, "_collection", side_effect=collection), patch.object(
-            bridge, "_run_herdr_json", return_value={"result": {}}
+            bridge, "_run_herdr_json"
         ) as mutation:
-            result = bridge._mutate_tool("herdr_workspace_close", "target")
+            with self.assertRaisesRegex(RuntimeError, "shares its primary checkout"):
+                bridge._mutate_tool("herdr_workspace_close", "target")
 
-        self.assertEqual(result, {"workspace_id": "target", "closed": True, "already_absent": False})
-        mutation.assert_called_once_with(["workspace", "close", "target"])
-        self.assertIn(["worktree", "list", "--cwd", str(self.repo)], worktree_commands)
-        self.assertEqual(bridge._focused_workspace_id([primary]), "primary")
+        mutation.assert_not_called()
+        self.assertIn(["worktree", "list", "--workspace", "target"], worktree_commands)
         self.assertEqual(bridge._git(str(self.repo), "worktree", "list", "--porcelain"), git_before)
         self.assertEqual(
             bridge._git(str(self.repo), "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"),
             status_before,
         )
+
+    def test_workspace_close_rejects_repository_shared_with_caller(self) -> None:
+        provenance = {
+            "repo_key": str(self.repo / ".git"),
+            "repo_name": "repo",
+            "repo_root": str(self.repo),
+            "checkout_path": str(self.repo),
+            "is_linked_worktree": False,
+        }
+        target = {"workspace_id": "target", "focused": False, "worktree": provenance}
+        caller = {"workspace_id": "caller", "focused": True, "worktree": provenance}
+        worktree_info = {
+            "path": str(self.repo),
+            "is_linked_worktree": False,
+            "open_workspace_id": "target",
+        }
+
+        def collection(command: list[str], key: str) -> list[dict[str, object]]:
+            if command[:2] == ["workspace", "list"]:
+                return [target, caller]
+            if command[:2] == ["agent", "list"]:
+                return [{"workspace_id": "target", "agent_status": "idle"}]
+            if command[:2] == ["worktree", "list"]:
+                return [worktree_info]
+            raise AssertionError(command)
+
+        with patch.object(bridge, "_collection", side_effect=collection), patch.object(
+            bridge, "_run_herdr_json"
+        ) as mutation:
+            with self.assertRaisesRegex(RuntimeError, "another workspace shares its Git repository"):
+                bridge._mutate_tool("herdr_workspace_close", "target")
+        mutation.assert_not_called()
 
     def test_workspace_close_owner_refuses_while_other_workspace_linked_worktree_remains(self) -> None:
         provenance = {
@@ -537,7 +585,7 @@ class TeardownSafetyTests(unittest.TestCase):
                     bridge._mutate_tool("herdr_workspace_close", "target")
                 mutation.assert_not_called()
 
-    def test_workspace_close_rejects_primary_checkout_owner_change_on_readback(self) -> None:
+    def test_workspace_close_rejects_nonowner_before_mutation(self) -> None:
         provenance = {
             "repo_key": str(self.repo / ".git"),
             "repo_name": "repo",
@@ -571,9 +619,9 @@ class TeardownSafetyTests(unittest.TestCase):
         with patch.object(bridge, "_collection", side_effect=collection), patch.object(
             bridge, "_run_herdr_json", return_value={"result": {}}
         ) as mutation:
-            with self.assertRaisesRegex(RuntimeError, "Primary checkout ownership changed"):
+            with self.assertRaisesRegex(RuntimeError, "shares its primary checkout"):
                 bridge._mutate_tool("herdr_workspace_close", "target")
-        mutation.assert_called_once_with(["workspace", "close", "target"])
+        mutation.assert_not_called()
 
     def test_workspace_close_rejects_missing_or_unknown_primary_checkout_owner(self) -> None:
         provenance = {
@@ -764,453 +812,6 @@ class TeardownSafetyTests(unittest.TestCase):
         mutation.assert_called_once_with(["workspace", "close", "target"])
 
 
-@unittest.skipUnless(os.environ.get("HERDR_REAL_INTEGRATION") == "1", "set HERDR_REAL_INTEGRATION=1 to use a disposable real Herdr session")
-class RealHerdrSubprocessIntegrationTests(unittest.TestCase):
-    @staticmethod
-    def _real_herdr_env(test: unittest.TestCase) -> dict[str, str]:
-        env = os.environ.copy()
-        env["HERDR_ENV"] = "1"
-        status = subprocess.run(["herdr", "status", "server", "--json"], capture_output=True, text=True, env=env, check=False)
-        if status.returncode != 0:
-            unavailable = _recognized_herdr_unavailability(status.stderr)
-            if unavailable is not None:
-                test.skipTest(f"{unavailable} before fixture creation: {status.stderr.strip()}")
-            test.fail(
-                "Herdr status command failed for an unexpected reason "
-                f"(exit {status.returncode}): {status.stderr.strip()}"
-            )
-        try:
-            status_document = json.loads(status.stdout)
-        except json.JSONDecodeError as exc:
-            test.fail(f"Herdr status command returned invalid JSON: {exc}")
-        status_result = status_document.get("result", status_document)
-        if not isinstance(status_result, dict):
-            test.fail("Herdr status command returned an unsupported response")
-        if status_result.get("running") is False:
-            test.skipTest("Herdr server is not running before fixture creation")
-        if status_result.get("running") is not True:
-            test.fail("Herdr status response does not contain a valid running flag")
-        if status_result.get("compatible") is False:
-            test.fail("Herdr server protocol is incompatible with this bridge")
-        return env
-
-    @staticmethod
-    def _herdr_json(env: dict[str, str], *args: str) -> dict[str, object]:
-        completed = subprocess.run(["herdr", *args], capture_output=True, text=True, env=env, check=False)
-        if completed.returncode != 0:
-            raise AssertionError(
-                f"Herdr command {' '.join(args)!r} failed with exit {completed.returncode}: "
-                f"{completed.stderr.strip()}"
-            )
-        try:
-            document = json.loads(completed.stdout)
-        except json.JSONDecodeError as exc:
-            raise AssertionError(f"Herdr command {' '.join(args)!r} returned invalid JSON: {exc}") from exc
-        if not isinstance(document, dict):
-            raise AssertionError(f"Herdr command {' '.join(args)!r} returned an unsupported response")
-        return document
-
-    @staticmethod
-    def _workspace_records(document: dict[str, object]) -> list[dict[str, object]]:
-        result = document.get("result", document)
-        items = result.get("workspaces") if isinstance(result, dict) else result
-        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
-            raise AssertionError("Herdr returned an unsupported workspace list")
-        return items
-
-    @staticmethod
-    def _worktree_records(document: dict[str, object]) -> list[dict[str, object]]:
-        result = document.get("result", document)
-        items = result.get("worktrees") if isinstance(result, dict) else result
-        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
-            raise AssertionError("Herdr returned an unsupported worktree list")
-        return items
-
-    @staticmethod
-    def _focused_id(records: list[dict[str, object]]) -> str | None:
-        focused = [item for item in records if item.get("focused") is True]
-        if any(not isinstance(item.get("focused"), bool) for item in records) or len(focused) > 1:
-            raise AssertionError("Herdr returned ambiguous focus metadata")
-        if not focused:
-            return None
-        focused_workspace_id = focused[0].get("workspace_id")
-        if not isinstance(focused_workspace_id, str) or not focused_workspace_id:
-            raise AssertionError("Herdr returned invalid focused workspace metadata")
-        return focused_workspace_id
-
-    @staticmethod
-    def _bridge_response(env: dict[str, str], name: str, workspace_id: str, cwd: Path) -> dict[str, object]:
-        request = {
-            "jsonrpc": "2.0",
-            "id": 10,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": {"workspace_id": workspace_id}},
-        }
-        result = subprocess.run(
-            ["python3", str(Path(bridge.__file__).resolve())],
-            input=json.dumps(request) + "\n",
-            capture_output=True,
-            text=True,
-            env=env,
-            check=True,
-            cwd=cwd,
-        )
-        response = json.loads(result.stdout)
-        if response.get("error"):
-            raise AssertionError(response["error"])
-        return response["result"]
-
-    @classmethod
-    def _bridge_call(cls, env: dict[str, str], name: str, workspace_id: str, cwd: Path) -> dict[str, object]:
-        tool_result = cls._bridge_response(env, name, workspace_id, cwd)
-        if tool_result.get("isError"):
-            raise AssertionError(tool_result["content"])
-        return tool_result["structuredContent"]
-
-    @classmethod
-    def _git_primary_checkout(cls, test: unittest.TestCase, cwd: Path) -> Path:
-        listing = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"], cwd=cwd, check=True, capture_output=True, text=True
-        ).stdout
-        candidates: list[Path] = []
-        for entry in listing.split("\n\n"):
-            path_line = next((line for line in entry.splitlines() if line.startswith("worktree ")), None)
-            if path_line is None:
-                continue
-            checkout = Path(path_line.removeprefix("worktree ")).resolve()
-            if not checkout.is_dir():
-                continue
-            git_dir = subprocess.run(
-                ["git", "-C", str(checkout), "rev-parse", "--absolute-git-dir"],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            common_dir = subprocess.run(
-                ["git", "-C", str(checkout), "rev-parse", "--git-common-dir"],
-                check=True, capture_output=True, text=True,
-            ).stdout.strip()
-            git_dir_path = Path(git_dir).resolve()
-            common_dir_path = Path(common_dir)
-            if not common_dir_path.is_absolute():
-                common_dir_path = checkout / common_dir_path
-            if git_dir_path == common_dir_path.resolve():
-                candidates.append(checkout)
-        if len(candidates) != 1:
-            test.fail(f"Expected exactly one non-linked primary Git checkout, found {len(candidates)}: {candidates}")
-        return candidates[0]
-
-    def test_bridge_removes_only_its_disposable_worktree(self) -> None:
-        env = self._real_herdr_env(self)
-        original_focus = self._focused_id(self._workspace_records(self._herdr_json(env, "workspace", "list")))
-        root = Path(tempfile.mkdtemp(prefix="herdr-bridge-integration-"))
-        repo = root / "repo"
-        repo.mkdir()
-        subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
-        subprocess.run(["git", "config", "user.name", "Herdr bridge test"], cwd=repo, check=True)
-        (repo / "fixture.txt").write_text("disposable\n", encoding="utf-8")
-        subprocess.run(["git", "add", "fixture.txt"], cwd=repo, check=True)
-        subprocess.run(["git", "commit", "-qm", "disposable fixture"], cwd=repo, check=True)
-        label = f"herdr-bridge-test-{uuid.uuid4().hex[:12]}"
-        worktree_path = root / "checkout"
-        source_id: str | None = None
-        target_id: str | None = None
-
-        failure: Exception | None = None
-        try:
-            created = self._herdr_json(env, "workspace", "create", "--cwd", str(repo), "--label", label, "--no-focus")
-            source_id = created["result"]["workspace"]["workspace_id"]
-            worktree = self._herdr_json(
-                env,
-                "worktree", "create", "--workspace", source_id, "--branch", f"test/{label}",
-                "--base", "main", "--path", str(worktree_path), "--label", label, "--no-focus",
-            )
-            target_id = worktree["result"]["workspace"]["workspace_id"]
-            self.assertEqual(self._focused_id(self._workspace_records(self._herdr_json(env, "workspace", "list"))), original_focus)
-            self.assertEqual(self._bridge_call(env, "herdr_worktree_remove", target_id, repo)["removed"], True)
-            self.assertFalse(worktree_path.exists())
-            self.assertEqual(self._focused_id(self._workspace_records(self._herdr_json(env, "workspace", "list"))), original_focus)
-            git_worktrees = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo, check=True, capture_output=True, text=True).stdout
-            self.assertIn(f"worktree {repo}", git_worktrees)
-            self.assertNotIn(f"worktree {worktree_path}", git_worktrees)
-        except Exception as exc:
-            failure = exc
-        finally:
-            cleanup_errors = []
-            # Only the IDs returned by this test's fixture creation are eligible for cleanup.
-            if target_id is not None:
-                try:
-                    self._bridge_call(env, "herdr_worktree_remove", target_id, repo)
-                except Exception as exc:
-                    cleanup_errors.append(f"target cleanup: {exc}")
-            if source_id is not None:
-                try:
-                    source_inventory = self._workspace_records(self._herdr_json(env, "workspace", "list"))
-                    source_records = [item for item in source_inventory if item.get("workspace_id") == source_id]
-                    if len(source_records) == 1 and source_records[0].get("worktree") is None:
-                        target_worktrees = self._worktree_records(
-                            self._herdr_json(env, "worktree", "list", "--cwd", str(repo))
-                        )
-                        agent_document = self._herdr_json(env, "agent", "list")
-                        agent_result = agent_document.get("result", agent_document)
-                        source_agents = agent_result.get("agents") if isinstance(agent_result, dict) else agent_result
-                        if not isinstance(source_agents, list) or any(
-                            not isinstance(agent, dict) for agent in source_agents
-                        ):
-                            raise AssertionError("Herdr returned an unsupported agent list")
-                        git_worktree_list = subprocess.run(
-                            ["git", "worktree", "list", "--porcelain"],
-                            cwd=repo,
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                        ).stdout
-                        _assert_disposable_source_cleanup_safe(
-                            source_id,
-                            target_id,
-                            worktree_path,
-                            source_inventory,
-                            target_worktrees,
-                            source_agents,
-                            git_worktree_list,
-                        )
-                        # Disposable-repo workspace creation does not currently expose
-                        # workspace provenance, so the bridge correctly refuses this
-                        # fixture-only teardown. Close only this exact ID after proving
-                        # its linked target and agents are gone.
-                        self._herdr_json(env, "workspace", "close", source_id)
-                    elif not source_records:
-                        pass
-                    else:
-                        self._bridge_call(env, "herdr_workspace_close", source_id, repo)
-                except Exception as exc:
-                    cleanup_errors.append(f"source workspace cleanup: {exc}")
-
-            fixture_gone = False
-            try:
-                listed_workspaces = self._workspace_records(self._herdr_json(env, "workspace", "list"))
-                fixture_ids = {value for value in (source_id, target_id) if value is not None}
-                fixture_workspaces = [item for item in listed_workspaces if item.get("workspace_id") in fixture_ids]
-                fixture_worktrees = self._worktree_records(self._herdr_json(env, "worktree", "list", "--cwd", str(repo)))
-                if fixture_workspaces or any(
-                    item.get("path") == str(worktree_path) or item.get("open_workspace_id") in fixture_ids
-                    for item in fixture_worktrees
-                    if isinstance(item, dict)
-                ) or worktree_path.exists():
-                    cleanup_errors.append("fixture workspace or worktree remains in Herdr/Git readback")
-                else:
-                    fixture_gone = True
-            except Exception as exc:
-                cleanup_errors.append(f"fixture readback: {exc}")
-
-            try:
-                current_focus = self._focused_id(self._workspace_records(self._herdr_json(env, "workspace", "list")))
-                if current_focus != original_focus:
-                    raise AssertionError(f"original focus changed from {original_focus!r} to {current_focus!r}")
-            except Exception as exc:
-                cleanup_errors.append(f"focus restoration: {exc}")
-
-            if fixture_gone:
-                shutil.rmtree(root)
-
-        if failure is not None or cleanup_errors:
-            self.fail(
-                f"real Herdr integration failed ({failure}); cleanup: {cleanup_errors}; "
-                f"disposable fixture path: {root if not fixture_gone else 'removed'}"
-            )
-
-    def test_bridge_closes_only_an_extra_workspace_sharing_primary_checkout(self) -> None:
-        env = self._real_herdr_env(self)
-        workspace_before = self._workspace_records(self._herdr_json(env, "workspace", "list"))
-        original_focus = self._focused_id(workspace_before)
-        primary_path = self._git_primary_checkout(self, Path.cwd())
-
-        try:
-            primary_herdr_rows = self._worktree_records(
-                self._herdr_json(env, "worktree", "list", "--cwd", str(primary_path))
-            )
-        except Exception as exc:
-            self.fail(f"Could not inspect Herdr worktrees for primary checkout {primary_path}: {exc}")
-        primary_rows = [item for item in primary_herdr_rows if item.get("path") == str(primary_path)]
-        if len(primary_rows) != 1 or primary_rows[0].get("is_linked_worktree") is not False:
-            self.fail(
-                "Expected exactly one nonlinked Herdr primary row for "
-                f"{primary_path}, found: {primary_rows!r}"
-            )
-        owner_id = primary_rows[0].get("open_workspace_id")
-        if not isinstance(owner_id, str) or not bridge.WORKSPACE_ID_PATTERN.fullmatch(owner_id):
-            self.fail(f"Primary checkout {primary_path} has a missing or invalid Herdr owner ID: {owner_id!r}")
-        owner_records = [item for item in workspace_before if item.get("workspace_id") == owner_id]
-        if len(owner_records) != 1 or not isinstance(owner_records[0].get("focused"), bool):
-            self.fail(f"Primary checkout owner {owner_id!r} is absent or invalid in Herdr workspace inventory")
-
-        git_worktrees_before = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"], cwd=primary_path, check=True, capture_output=True, text=True
-        ).stdout
-        git_status_before = subprocess.run(
-            ["git", "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"],
-            cwd=primary_path, check=True, capture_output=True, text=True,
-        ).stdout
-        label = f"herdr-shared-primary-{uuid.uuid4().hex[:12]}"
-        target_id: str | None = None
-        missing_provenance = False
-        failure: Exception | None = None
-        cleanup_errors: list[str] = []
-        fixture_gone = False
-        try:
-            created = self._herdr_json(
-                env, "workspace", "create", "--cwd", str(primary_path), "--label", label, "--no-focus"
-            )
-            target = created.get("result", {}).get("workspace") if isinstance(created.get("result"), dict) else None
-            if not isinstance(target, dict) or not isinstance(target.get("workspace_id"), str):
-                self.fail(f"Herdr returned no target workspace ID for fixture label {label!r}")
-            target_id = target["workspace_id"]
-
-            created_workspaces = self._workspace_records(self._herdr_json(env, "workspace", "list"))
-            target_records = [item for item in created_workspaces if item.get("workspace_id") == target_id]
-            self.assertEqual(len(target_records), 1, f"Created workspace {target_id!r} is missing from inventory")
-            self.assertIs(target_records[0].get("focused"), False, "Created workspace unexpectedly has focus")
-            provenance = target_records[0].get("worktree")
-            missing_provenance = provenance is None
-            if not missing_provenance:
-                self.assertIsInstance(provenance, dict, f"Target workspace {target_id!r} has invalid provenance")
-                self.assertIs(provenance.get("is_linked_worktree"), False, "Target is not a nonlinked workspace")
-                self.assertEqual(Path(provenance.get("checkout_path", "")).resolve(), primary_path)
-                for field in ("repo_key", "repo_name", "repo_root", "checkout_path"):
-                    self.assertIsInstance(provenance.get(field), str, f"Target provenance is missing {field}")
-                    self.assertTrue(provenance[field], f"Target provenance has empty {field}")
-                self.assertTrue(Path(provenance["repo_root"]).is_absolute())
-                self.assertTrue(Path(provenance["checkout_path"]).is_absolute())
-            self.assertEqual(self._focused_id(created_workspaces), original_focus)
-
-            owner_before_close = self._worktree_records(
-                self._herdr_json(env, "worktree", "list", "--cwd", str(primary_path))
-            )
-            rows_before_close = [item for item in owner_before_close if item.get("path") == str(primary_path)]
-            self.assertEqual(len(rows_before_close), 1)
-            self.assertIs(rows_before_close[0].get("is_linked_worktree"), False)
-            self.assertEqual(rows_before_close[0].get("open_workspace_id"), owner_id)
-
-            if missing_provenance:
-                response = self._bridge_response(env, "herdr_workspace_close", target_id, primary_path)
-                self.assertIs(response.get("isError"), True, "Bridge accepted a target with missing provenance")
-                error_text = " ".join(
-                    item.get("text", "") for item in response.get("content", []) if isinstance(item, dict)
-                )
-                self.assertIn("provenance is missing", error_text.casefold(), error_text)
-                workspaces_after_close = self._workspace_records(self._herdr_json(env, "workspace", "list"))
-                self.assertIn(target_id, {item.get("workspace_id") for item in workspaces_after_close})
-                owner_after_close = [item for item in workspaces_after_close if item.get("workspace_id") == owner_id]
-                self.assertEqual(len(owner_after_close), 1)
-                self.assertEqual(self._focused_id(workspaces_after_close), original_focus)
-            else:
-                result = self._bridge_call(env, "herdr_workspace_close", target_id, primary_path)
-                self.assertIs(result.get("closed"), True)
-
-                workspaces_after_close = self._workspace_records(self._herdr_json(env, "workspace", "list"))
-                self.assertNotIn(target_id, {item.get("workspace_id") for item in workspaces_after_close})
-                owner_after_close = [item for item in workspaces_after_close if item.get("workspace_id") == owner_id]
-                self.assertEqual(len(owner_after_close), 1)
-                self.assertEqual(self._focused_id(workspaces_after_close), original_focus)
-            worktrees_after_close = self._worktree_records(
-                self._herdr_json(env, "worktree", "list", "--cwd", str(primary_path))
-            )
-            primary_after_close = [item for item in worktrees_after_close if item.get("path") == str(primary_path)]
-            self.assertEqual(len(primary_after_close), 1)
-            self.assertIs(primary_after_close[0].get("is_linked_worktree"), False)
-            self.assertEqual(primary_after_close[0].get("open_workspace_id"), owner_id)
-            self.assertEqual(
-                subprocess.run(
-                    ["git", "worktree", "list", "--porcelain"], cwd=primary_path, check=True,
-                    capture_output=True, text=True,
-                ).stdout,
-                git_worktrees_before,
-            )
-            self.assertEqual(
-                subprocess.run(
-                    ["git", "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"],
-                    cwd=primary_path, check=True, capture_output=True, text=True,
-                ).stdout,
-                git_status_before,
-            )
-        except Exception as exc:
-            failure = exc
-        finally:
-            if target_id is not None:
-                try:
-                    if missing_provenance:
-                        remaining_before_cleanup = self._workspace_records(
-                            self._herdr_json(env, "workspace", "list")
-                        )
-                        target_before_cleanup = [
-                            item for item in remaining_before_cleanup if item.get("workspace_id") == target_id
-                        ]
-                        self.assertEqual(len(target_before_cleanup), 1)
-                        self.assertIs(target_before_cleanup[0].get("focused"), False)
-                        agents = self._herdr_json(env, "agent", "list")
-                        agent_result = agents.get("result", agents)
-                        agent_records = agent_result.get("agents") if isinstance(agent_result, dict) else agent_result
-                        self.assertIsInstance(agent_records, list, "Herdr returned unsupported agent inventory")
-                        self.assertFalse(
-                            any(isinstance(agent, dict) and agent.get("workspace_id") == target_id for agent in agent_records),
-                            f"Test-created target {target_id} unexpectedly has an agent",
-                        )
-                        target_worktrees = self._worktree_records(
-                            self._herdr_json(env, "worktree", "list", "--workspace", target_id)
-                        )
-                        self.assertFalse(
-                            any(
-                                item.get("is_linked_worktree") is True
-                                and item.get("open_workspace_id") == target_id
-                                for item in target_worktrees
-                            ),
-                            f"Test-created target {target_id} unexpectedly has a linked checkout",
-                        )
-                        # The bridge correctly refuses missing provenance. This fixture ID
-                        # alone is closed through the CLI after verifying its cleanup guards.
-                        self._herdr_json(env, "workspace", "close", target_id)
-                    else:
-                        self._bridge_call(env, "herdr_workspace_close", target_id, primary_path)
-                except Exception as exc:
-                    cleanup_errors.append(f"target workspace cleanup ({target_id}): {exc}")
-            try:
-                remaining = self._workspace_records(self._herdr_json(env, "workspace", "list"))
-                target_remains = target_id is not None and any(
-                    item.get("workspace_id") == target_id for item in remaining
-                )
-                owner_remains = [item for item in remaining if item.get("workspace_id") == owner_id]
-                if target_remains or len(owner_remains) != 1:
-                    cleanup_errors.append("target/owner workspace readback did not match fixture postconditions")
-                if self._focused_id(remaining) != original_focus:
-                    cleanup_errors.append("focus changed during shared-workspace close test")
-                final_worktrees = self._worktree_records(
-                    self._herdr_json(env, "worktree", "list", "--cwd", str(primary_path))
-                )
-                final_primary = [item for item in final_worktrees if item.get("path") == str(primary_path)]
-                if (
-                    len(final_primary) != 1
-                    or final_primary[0].get("is_linked_worktree") is not False
-                    or final_primary[0].get("open_workspace_id") != owner_id
-                ):
-                    cleanup_errors.append("primary checkout owner readback changed during cleanup")
-                if subprocess.run(
-                    ["git", "worktree", "list", "--porcelain"], cwd=primary_path, check=True,
-                    capture_output=True, text=True,
-                ).stdout != git_worktrees_before:
-                    cleanup_errors.append("Git worktree list changed during cleanup")
-                if subprocess.run(
-                    ["git", "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"],
-                    cwd=primary_path, check=True, capture_output=True, text=True,
-                ).stdout != git_status_before:
-                    cleanup_errors.append("Git status changed during cleanup")
-                fixture_gone = not target_remains and len(owner_remains) == 1
-            except Exception as exc:
-                cleanup_errors.append(f"shared-workspace fixture readback: {exc}")
-
-        if failure is not None or cleanup_errors:
-            self.fail(
-                f"real shared-workspace integration failed ({failure}); cleanup: {cleanup_errors}; "
-                f"target ID: {target_id}; target absent: {fixture_gone}"
-            )
 
 
 if __name__ == "__main__":

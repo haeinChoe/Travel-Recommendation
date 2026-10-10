@@ -40,7 +40,7 @@ Do not ask the user about routine implementation choices. Continue through the a
 
 ## Authorized cleanup
 
-Clean an Issue workspace only when the user explicitly requests cleanup or the Issue authorizes it. Follow the guarded MCP teardown sequence in [references/agent-loop.md](references/agent-loop.md). Do not close the caller, current focused workspace, or unrelated work. Report cleanup as complete only after Herdr inventory and Git worktree readback confirm the targets are absent. If a teardown tool is unavailable, denied, or returns an ambiguous result, preserve the remaining state and report the exact blocker; do not fall back to force or arbitrary shell deletion.
+Clean an Issue workspace only when the user explicitly requests cleanup or the Issue authorizes it. Follow the guarded MCP teardown sequence in [references/agent-loop.md](references/agent-loop.md). Do not close the caller, current focused workspace, or any workspace that shares a Git repository with the caller or another Herdr workspace. Use only the guarded MCP teardown tools; never fall back to `herdr workspace close` or another direct CLI mutation when the bridge refuses or is unavailable. Report cleanup as complete only after Herdr inventory and Git worktree readback confirm the targets are absent. If a teardown tool is unavailable, denied, or returns an ambiguous result, preserve the remaining state and report the exact blocker.
 
 ## Delivery
 
