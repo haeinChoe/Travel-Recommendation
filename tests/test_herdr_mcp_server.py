@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -146,6 +147,121 @@ class MCPProtocolTests(unittest.TestCase):
                     _assert_disposable_source_cleanup_safe(
                         "source", "target", target_path, workspaces, worktrees, agents, git_worktree_list
                     )
+
+
+class IsolatedMCPIntegrationTests(unittest.TestCase):
+    def test_stdio_bridge_blocks_shared_repository_close_before_cli_mutation(self) -> None:
+        """Exercise the MCP subprocess boundary with an isolated cascade-prone CLI fixture."""
+        with tempfile.TemporaryDirectory(prefix="herdr-mcp-isolated-") as temp_dir:
+            root = Path(temp_dir)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+            (repo / "tracked.txt").write_text("fixture\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+
+            provenance = {
+                "repo_key": "shared-fixture-repository",
+                "repo_name": "repo",
+                "repo_root": str(repo),
+                "checkout_path": str(repo),
+                "is_linked_worktree": False,
+            }
+            state_path = root / "herdr-state.json"
+            commands_path = root / "herdr-commands.jsonl"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "workspaces": [
+                            {"workspace_id": "caller", "focused": True, "worktree": provenance},
+                            {"workspace_id": "target", "focused": False, "worktree": provenance},
+                        ],
+                        "worktrees": [
+                            {
+                                "path": str(repo),
+                                "is_linked_worktree": False,
+                                "open_workspace_id": "target",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            fake_herdr = bin_dir / "herdr"
+            fake_herdr.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, pathlib, sys\n"
+                "state_path = pathlib.Path(os.environ['HERDR_TEST_STATE'])\n"
+                "commands_path = pathlib.Path(os.environ['HERDR_TEST_COMMANDS'])\n"
+                "args = sys.argv[1:]\n"
+                "with commands_path.open('a', encoding='utf-8') as stream: stream.write(json.dumps(args) + '\\n')\n"
+                "state = json.loads(state_path.read_text(encoding='utf-8'))\n"
+                "if args[:2] == ['workspace', 'list']:\n"
+                "    result = {'workspaces': state['workspaces']}\n"
+                "elif args[:2] == ['agent', 'list']:\n"
+                "    result = {'agents': []}\n"
+                "elif args[:2] == ['worktree', 'list']:\n"
+                "    result = {'worktrees': state['worktrees']}\n"
+                "elif args[:2] == ['workspace', 'close']:\n"
+                "    target = next(row for row in state['workspaces'] if row['workspace_id'] == args[2])\n"
+                "    repo_key = target['worktree']['repo_key']\n"
+                "    state['workspaces'] = [row for row in state['workspaces'] if row['worktree']['repo_key'] != repo_key]\n"
+                "    state_path.write_text(json.dumps(state), encoding='utf-8')\n"
+                "    result = {}\n"
+                "else:\n"
+                "    print('unsupported fixture command: ' + ' '.join(args), file=sys.stderr); sys.exit(2)\n"
+                "print(json.dumps({'result': result}))\n",
+                encoding="utf-8",
+            )
+            fake_herdr.chmod(0o755)
+
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PATH": f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}",
+                    "HERDR_ENV": "1",
+                    "HERDR_WORKSPACE_ID": "caller",
+                    "HERDR_TEST_STATE": str(state_path),
+                    "HERDR_TEST_COMMANDS": str(commands_path),
+                }
+            )
+            request = {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {"name": "herdr_workspace_close", "arguments": {"workspace_id": "target"}},
+            }
+            completed = subprocess.run(
+                [sys.executable, str(Path(bridge.__file__).resolve())],
+                input=json.dumps(request) + "\n",
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                env=environment,
+                cwd=root,
+                timeout=10,
+                check=True,
+            )
+
+            response = json.loads(completed.stdout)
+            self.assertTrue(response["result"]["isError"])
+            self.assertIn("another workspace shares its Git repository", response["result"]["content"][0]["text"])
+            after = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                [row["workspace_id"] for row in after["workspaces"]],
+                ["caller", "target"],
+                "both the invoking and target workspaces must survive the rejected close",
+            )
+            commands = [json.loads(line) for line in commands_path.read_text(encoding="utf-8").splitlines()]
+            self.assertNotIn(["workspace", "close", "target"], commands)
+            self.assertEqual((repo / "tracked.txt").read_text(encoding="utf-8"), "fixture\n")
 
 
 class TeardownSafetyTests(unittest.TestCase):

@@ -44,3 +44,7 @@ Restart or reload Codex and inspect `/mcp` to confirm that `herdr` is connected.
 - **Timeout:** check that the local Herdr server is responsive and retry; each CLI call is bounded to eight seconds.
 
 The installed Herdr CLI's local schema identifies workspace focus and attached worktree provenance, agent lifecycle values (`idle`, `working`, `blocked`, `done`, `unknown`), and Git worktree fields including branch, path, linked status, and open workspace ID. Herdr 0.8.2 help confirms removal takes `--workspace <ID>` and supports `--force`; the bridge never supplies the force flag. Socket access must be checked separately through the direct shell and local MCP paths. A direct shell `EPERM` does not establish internal sandbox details or mean MCP registration changed the direct shell's sandbox settings.
+
+## Regression tests
+
+Run `python3 -m unittest tests.test_herdr_mcp_server` from the repository root. The suite includes an isolated subprocess-level MCP regression test with a temporary Git repository and a fake Herdr CLI. The fixture models the observed shared-repository cascade behavior and verifies that the bridge rejects the close before invoking the CLI, preserving both the caller and target workspaces. It does not connect to or mutate a user's Herdr session.
