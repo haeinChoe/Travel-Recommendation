@@ -11,14 +11,14 @@ Run a complete, bounded implementation and review loop for an explicitly selecte
 
 1. Verify `HERDR_ENV=1`. If this is not a Herdr-managed session, do not control Herdr; report the limitation.
 2. Read the repository `AGENTS.md`, `docs/agent-workflow.md`, and the selected Issue. Treat the Issue as the source for purpose, scope, non-goals, acceptance criteria, validation, and data permissions.
-3. Before editing, inspect Herdr server, workspace, and agent state. Prefer the registered read-only Herdr MCP bridge when its tools are available in the current session; follow [references/agent-loop.md](references/agent-loop.md) for the CLI fallback. If neither path completes the state check, report the blocker before editing or creating work. Then check the clean/dirty state, current branch, existing Issue worktrees, and open PRs. Reuse or resume the same Issue's active work rather than creating duplicates. Never overwrite another worktree's changes.
+3. Before editing, inspect Herdr server, workspace, and agent state. Prefer the registered Herdr MCP bridge's read-only inspection tools when they are available in the current session; follow [references/agent-loop.md](references/agent-loop.md) for the CLI fallback. If neither path completes the state check, report the blocker before editing or creating work. Then check the clean/dirty state, current branch, existing Issue worktrees, and open PRs. Reuse or resume the same Issue's active work rather than creating duplicates. Never overwrite another worktree's changes.
 4. Do not start implementation if required scope, acceptance criteria, or data access permission is missing or contradictory. Use repository evidence to resolve routine details; do not invent data meanings, contracts, or architecture decisions.
 
 ## Worktree and agents
 
 Create one dedicated Issue worktree and branch from `dev`, following `docs/agent-workflow.md` (normally `agent/<issue>-<slug>`). Use Herdr and preserve the user's current focus. Keep every writer in a separate worktree when their file scopes are independent; use one lead implementer to integrate parallel work.
 
-The Herdr MCP bridge is read-only. Use the authorized Herdr orchestration path for worktree creation, agent start or prompts, and pane control; do not use MCP for these mutations.
+The Herdr MCP bridge provides read-only inspection plus narrowly scoped, explicitly authorized teardown tools. Use the existing authorized Herdr orchestration path for general workspace/worktree creation, agent start or prompts, and pane control. Use `herdr_worktree_remove` or `herdr_workspace_close` only when the user or Issue explicitly authorizes cleanup and the guarded procedure in [references/agent-loop.md](references/agent-loop.md) is satisfied.
 
 Use the path and naming returned by Herdr's configured worktree flow. If that location is inaccessible, identify the permission boundary and follow the repository or session's approved alternate-root procedure; do not silently choose a custom location.
 

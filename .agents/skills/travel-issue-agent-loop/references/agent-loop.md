@@ -4,7 +4,7 @@ Read this reference when running the Issue-to-PR loop.
 
 ## Reuse before creating
 
-Inspect Herdr logical state before editing or creating work. In the current session, use the registered read-only Herdr MCP bridge first when its tools are available:
+Inspect Herdr logical state before editing or creating work. In the current session, use the registered Herdr MCP bridge's read-only inspection tools first when they are available:
 
 - `herdr_server_status`
 - `herdr_workspace_list`
@@ -42,7 +42,7 @@ herdr worktree create --workspace "$WORKSPACE_ID" \
 
 Omit `--path` to use Herdr's configured worktree root and branch-derived directory name. If the returned path is outside the allowed write roots, identify the boundary and follow the repository or session's approved alternate-root procedure before starting agents. Do not silently select a custom path.
 
-The MCP bridge is read-only. Use the existing authorized Herdr orchestration path for workspace or worktree creation, agent start or prompts, and pane control; never use MCP for mutations.
+The Herdr MCP bridge provides read-only inspection plus narrowly scoped, explicitly authorized teardown tools. Use the existing authorized Herdr orchestration path for general workspace or worktree creation, agent start or prompts, and pane control. Use `herdr_worktree_remove` and `herdr_workspace_close` only for cleanup authorized by the user or Issue and only with the safeguards below; these tools do not authorize other Herdr mutations.
 
 Use the worktree returned by Herdr for the implementation branch. Confirm its branch, base, and clean state before starting agents. Use the returned shell pane when it is at an interactive prompt; otherwise split a pane with the worktree path as cwd and `--no-focus`. Start agents only in returned pane IDs and use unique names. Never start two agents in one pane.
 
