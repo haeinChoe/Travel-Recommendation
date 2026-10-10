@@ -4,14 +4,23 @@ Read this reference when running the Issue-to-PR loop.
 
 ## Reuse before creating
 
-Check the Herdr session and current work before changing its layout:
+Inspect the Herdr server, workspaces, and agents before editing or creating work. In the current session, use the registered read-only Herdr MCP bridge first when its tools are available:
+
+- `herdr_server_status`
+- `herdr_workspace_list`
+- `herdr_agent_list`
+
+If the bridge is unavailable or any MCP call fails, use the approved read-only CLI fallback:
 
 ```bash
-test "${HERDR_ENV:-}" = 1
+test "${HERDR_ENV:-}" = 1 || exit 1
+herdr status server
 herdr workspace list
 herdr agent list
 herdr worktree list --cwd "$REPO_ROOT"
 ```
+
+If the CLI path cannot complete the required state inspection, report the blocker before editing or creating work. Do not assume state that could not be inspected.
 
 Also check the Issue's open PRs and the repository's local branches/worktrees. Match work by Issue number and branch. If the same Issue is active, resume its workspace and agent. Do not close or repurpose unrelated workspaces. If Herdr state cannot be read, retry read-only inspection with the available authorized execution context and search Codex sessions when that tool is available. Do not create a new workspace while same-Issue work may still be active.
 
@@ -24,6 +33,8 @@ herdr worktree create --workspace "$WORKSPACE_ID" \
 ```
 
 Omit `--path` to use Herdr's configured worktree root and branch-derived directory name. If the returned path is outside the allowed write roots, identify the boundary and follow the repository or session's approved alternate-root procedure before starting agents. Do not silently select a custom path.
+
+The MCP bridge is read-only. Use the existing authorized Herdr orchestration path for workspace or worktree creation, agent start or prompts, and pane control; never use MCP for mutations.
 
 Use the worktree returned by Herdr for the implementation branch. Confirm its branch, base, and clean state before starting agents. Use the returned shell pane when it is at an interactive prompt; otherwise split a pane with the worktree path as cwd and `--no-focus`. Start agents only in returned pane IDs and use unique names. Never start two agents in one pane.
 
