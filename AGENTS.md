@@ -37,6 +37,12 @@
 - 병합은 사용자의 별도 명시 지시가 있을 때만 수행한다.
 - 리뷰·조사만 요청받으면 파일 변경이나 Git 작업을 하지 않는다.
 
+## Herdr 작업
+
+- 승인된 Issue 구현과 열린 PR의 후속 작업은 저장소 로컬 `.agents/skills/travel-issue-agent-loop/` 절차를 따른다.
+- Herdr 상태를 확인할 때 현재 세션에 등록된 읽기 전용 Herdr MCP bridge 도구가 있으면 우선 사용한다.
+- bridge는 읽기 전용이며 workspace/worktree 생성, agent 시작·prompt, pane 제어를 할 수 없다. bridge를 사용할 수 없거나 호출에 실패하면 skill에서 승인한 읽기 전용 CLI fallback을 사용한다.
+
 ## 상세 지침
 
 - 작업 요청, 권한 단계, 브랜치·커밋·PR 절차는 docs/agent-workflow.md를 따른다.
