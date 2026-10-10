@@ -482,6 +482,23 @@ class TeardownSafetyTests(unittest.TestCase):
         with mocks, self.assertRaisesRegex(RuntimeError, "provenance is invalid"):
             bridge._mutate_tool("herdr_workspace_close", "target")
 
+    def test_workspace_close_rejects_malformed_target_repository_key(self) -> None:
+        for repo_key in (" \t ", "target\nrepository"):
+            provenance = {
+                "repo_key": repo_key,
+                "repo_name": "repo",
+                "repo_root": str(self.repo),
+                "checkout_path": str(self.repo),
+                "is_linked_worktree": False,
+            }
+            mocks, *_ = self._setup_api(provenance=provenance)
+            with self.subTest(repo_key=repr(repo_key)), mocks, patch.object(
+                bridge, "_run_herdr_json"
+            ) as mutation:
+                with self.assertRaisesRegex(RuntimeError, "provenance is invalid"):
+                    bridge._mutate_tool("herdr_workspace_close", "target")
+                mutation.assert_not_called()
+
     def test_workspace_close_accepts_schema_valid_plain_workspace_provenance(self) -> None:
         provenance = {
             "repo_key": "repo",
@@ -667,6 +684,45 @@ class TeardownSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Cannot verify another workspace's repository identity"):
                 bridge._mutate_tool("herdr_workspace_close", "target")
         mutation.assert_not_called()
+
+    def test_workspace_close_rejects_malformed_other_repository_key(self) -> None:
+        target_provenance = {
+            "repo_key": "target-repository",
+            "repo_name": "repo",
+            "repo_root": str(self.repo),
+            "checkout_path": str(self.repo),
+            "is_linked_worktree": False,
+        }
+        worktree_info = {
+            "path": str(self.repo),
+            "is_linked_worktree": False,
+            "open_workspace_id": "target",
+        }
+        for repo_key in (" \t ", "invalid\nrepository"):
+            workspaces = [
+                {"workspace_id": "target", "focused": False, "worktree": target_provenance},
+                {
+                    "workspace_id": "other",
+                    "focused": True,
+                    "worktree": {"repo_key": repo_key},
+                },
+            ]
+
+            def collection(command: list[str], key: str) -> list[dict[str, object]]:
+                if command[:2] == ["workspace", "list"]:
+                    return workspaces
+                if command[:2] == ["agent", "list"]:
+                    return [{"workspace_id": "target", "agent_status": "idle"}]
+                if command[:2] == ["worktree", "list"]:
+                    return [worktree_info]
+                raise AssertionError(command)
+
+            with self.subTest(repo_key=repr(repo_key)), patch.object(
+                bridge, "_collection", side_effect=collection
+            ), patch.object(bridge, "_run_herdr_json") as mutation:
+                with self.assertRaisesRegex(RuntimeError, "Cannot verify another workspace's repository identity"):
+                    bridge._mutate_tool("herdr_workspace_close", "target")
+                mutation.assert_not_called()
 
     def test_workspace_close_owner_refuses_while_other_workspace_linked_worktree_remains(self) -> None:
         provenance = {

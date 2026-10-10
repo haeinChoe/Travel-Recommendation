@@ -333,6 +333,8 @@ def _assert_plain_workspace_provenance(
         raise RuntimeError("Herdr workspace worktree provenance is invalid; refusing close")
     if any(not isinstance(provenance[field], str) or not provenance[field] for field in required_fields[:-1]):
         raise RuntimeError("Herdr workspace worktree provenance is invalid; refusing close")
+    if not _valid_repository_key(provenance["repo_key"]):
+        raise RuntimeError("Herdr workspace worktree provenance is invalid; refusing close")
     if any(not Path(provenance[field]).is_absolute() for field in ("repo_root", "checkout_path")):
         raise RuntimeError("Herdr workspace worktree provenance is invalid; refusing close")
     if not isinstance(provenance["is_linked_worktree"], bool):
@@ -366,6 +368,10 @@ def _assert_plain_workspace_provenance(
     if len(owners) != 1 or not isinstance(owners[0].get("focused"), bool):
         raise RuntimeError("Primary checkout owner is missing or invalid in the workspace inventory; refusing close")
     return open_workspace_id, checkout_path
+
+
+def _valid_repository_key(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip()) and value.isprintable()
 
 
 def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
@@ -429,7 +435,7 @@ def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
             continue
         other_provenance = item.get("worktree")
         other_repo_key = other_provenance.get("repo_key") if isinstance(other_provenance, dict) else None
-        if not isinstance(other_repo_key, str) or not other_repo_key:
+        if not _valid_repository_key(other_repo_key):
             raise RuntimeError("Cannot verify another workspace's repository identity; refusing close")
         if other_repo_key == repo_key:
             raise RuntimeError("Refusing to close a workspace while another workspace shares its Git repository")
