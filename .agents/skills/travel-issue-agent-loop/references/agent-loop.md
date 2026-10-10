@@ -4,7 +4,7 @@ Read this reference when running the Issue-to-PR loop.
 
 ## Reuse before creating
 
-Inspect Herdr logical state before editing or creating work. In the current session, use the registered read-only Herdr MCP bridge first when its tools are available:
+Inspect Herdr logical state before editing or creating work. In the current session, use the registered Herdr MCP bridge's read-only inspection tools first when they are available:
 
 - `herdr_server_status`
 - `herdr_workspace_list`
@@ -42,7 +42,7 @@ herdr worktree create --workspace "$WORKSPACE_ID" \
 
 Omit `--path` to use Herdr's configured worktree root and branch-derived directory name. If the returned path is outside the allowed write roots, identify the boundary and follow the repository or session's approved alternate-root procedure before starting agents. Do not silently select a custom path.
 
-The MCP bridge is read-only. Use the existing authorized Herdr orchestration path for workspace or worktree creation, agent start or prompts, and pane control; never use MCP for mutations.
+The Herdr MCP bridge provides read-only inspection plus narrowly scoped, explicitly authorized teardown tools. Use the existing authorized Herdr orchestration path for general workspace or worktree creation, agent start or prompts, and pane control. Use `herdr_worktree_remove` and `herdr_workspace_close` only for cleanup authorized by the user or Issue and only with the safeguards below; these tools do not authorize other Herdr mutations.
 
 Use the worktree returned by Herdr for the implementation branch. Confirm its branch, base, and clean state before starting agents. Use the returned shell pane when it is at an interactive prompt; otherwise split a pane with the worktree path as cwd and `--no-focus`. Start agents only in returned pane IDs and use unique names. Never start two agents in one pane.
 
@@ -115,3 +115,15 @@ Explicitly instruct reviewers to remain read-only and report no findings when no
 7. Inspect the target repository's instructions and any applicable PR template. Use the conventions selected for that repository, preserving its required headings, checkboxes, and fields. Push the Issue branch and create or update one PR. If a PR already exists for the branch, update it instead of creating a duplicate. Inspect the resulting body against those conventions. Do not merge.
 
 If Herdr reports an agent as blocked, inspect its state and output before sending anything. Continue only when the request is clearly within the Issue authorization; stop on approval requests outside that scope. Never answer a security or data-permission prompt by guessing.
+## Authorized Issue workspace cleanup
+
+Only clean a workspace after explicit user authorization or an Issue that authorizes cleanup. Before calling a mutation tool:
+
+1. Confirm the PR is merged, or the user explicitly authorized abandoning the work. An open PR is not a cleanup signal.
+2. Confirm the target is an Issue workspace, is not the caller/current focused workspace, and is not needed by another task.
+3. Confirm all agents in the target are idle or done; stop if any agent is working, blocked, or unknown.
+4. For a linked worktree, confirm git status --porcelain is empty and the branch is not dev or main; call the explicit MCP tool herdr_worktree_remove without force.
+5. Close a workspace with herdr_workspace_close only after confirming it has no linked worktree.
+6. Read Herdr workspace/agent inventory and git worktree list --porcelain again. Report success only if every requested target is absent.
+
+If a tool is unavailable, denied, or returns a timeout/ambiguous result, read state before deciding what remains. Never blindly repeat a mutation, use --force, or substitute rm/raw API calls. Preserve unresolved work and report the exact result.

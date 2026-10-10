@@ -40,8 +40,9 @@
 ## Herdr 작업
 
 - 승인된 Issue 구현과 열린 PR의 후속 작업은 저장소 로컬 `.agents/skills/travel-issue-agent-loop/` 절차를 따른다.
-- Herdr 상태를 확인할 때 현재 세션에 등록된 읽기 전용 Herdr MCP bridge 도구가 있으면 우선 사용한다.
-- bridge는 읽기 전용이며 workspace/worktree 생성, agent 시작·prompt, pane 제어를 할 수 없다. bridge를 사용할 수 없거나 호출에 실패하면 skill에서 승인한 읽기 전용 CLI fallback을 사용한다.
+- Herdr 서버·workspace·agent 상태를 확인할 때 현재 세션에 등록된 Herdr MCP bridge의 읽기 전용 도구를 우선 사용한다. MCP 상태 확인이 성공하면 Herdr CLI를 같은 상태 확인 목적으로 다시 실행할 필요는 없다. worktree·branch·PR 상태는 Git과 GitHub에서 독립적으로 확인한다.
+- MCP bridge는 읽기 전용 상태 확인과 명시적으로 승인된 좁은 범위의 workspace/worktree teardown 도구를 제공한다. workspace/worktree 생성, agent 시작·prompt, pane 제어는 기존 승인된 Herdr orchestration 경로를 사용한다. MCP 상태 도구를 사용할 수 없거나 호출에 실패하면 skill에서 승인한 읽기 전용 Herdr CLI fallback을 사용한다.
+- `herdr_worktree_remove`와 `herdr_workspace_close`는 사용자 또는 Issue가 cleanup을 명시적으로 승인한 경우에만 사용할 수 있으며, 사전 조건과 사후 확인은 `.agents/skills/travel-issue-agent-loop/references/agent-loop.md`의 cleanup 절차를 따른다.
 
 ## 상세 지침
 
