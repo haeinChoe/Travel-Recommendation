@@ -156,6 +156,8 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
             root = Path(temp_dir)
             repo = root / "repo"
             repo.mkdir()
+            caller_repo = root / "caller-repo"
+            caller_repo.mkdir()
             subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo, check=True)
             subprocess.run(["git", "config", "core.autocrlf", "false"], cwd=repo, check=True)
             subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
@@ -171,14 +173,32 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
                 "checkout_path": str(repo),
                 "is_linked_worktree": False,
             }
+            caller_provenance = {
+                "repo_key": "caller-fixture-repository",
+                "repo_name": "caller-repo",
+                "repo_root": str(caller_repo),
+                "checkout_path": str(caller_repo),
+                "is_linked_worktree": False,
+            }
             state_path = root / "herdr-state.json"
             commands_path = root / "herdr-commands.jsonl"
             state_path.write_text(
                 json.dumps(
                     {
                         "workspaces": [
-                            {"workspace_id": "caller", "focused": True, "worktree": provenance},
-                            {"workspace_id": "target", "focused": False, "worktree": provenance},
+                            {
+                                "workspace_id": "caller",
+                                "focused": True,
+                                "worktree": caller_provenance,
+                                "_fixture_repo_key": "caller-fixture-repository",
+                            },
+                            {
+                                "workspace_id": "target",
+                                "focused": False,
+                                "worktree": provenance,
+                                "_fixture_repo_key": "shared-fixture-repository",
+                            },
+                            {"workspace_id": "unknown", "focused": False, "_fixture_repo_key": "shared-fixture-repository"},
                         ],
                         "worktrees": [
                             {
@@ -211,8 +231,8 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
                 "    result = {'worktrees': state['worktrees']}\n"
                 "elif args[:2] == ['workspace', 'close']:\n"
                 "    target = next(row for row in state['workspaces'] if row['workspace_id'] == args[2])\n"
-                "    repo_key = target['worktree']['repo_key']\n"
-                "    state['workspaces'] = [row for row in state['workspaces'] if row['worktree']['repo_key'] != repo_key]\n"
+                "    repo_key = target['_fixture_repo_key']\n"
+                "    state['workspaces'] = [row for row in state['workspaces'] if row['_fixture_repo_key'] != repo_key]\n"
                 "    state_path.write_text(json.dumps(state), encoding='utf-8')\n"
                 "    result = {}\n"
                 "else:\n"
@@ -252,12 +272,12 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
 
             response = json.loads(completed.stdout)
             self.assertTrue(response["result"]["isError"])
-            self.assertIn("another workspace shares its Git repository", response["result"]["content"][0]["text"])
+            self.assertIn("Cannot verify another workspace's repository identity", response["result"]["content"][0]["text"])
             after = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 [row["workspace_id"] for row in after["workspaces"]],
-                ["caller", "target"],
-                "both the invoking and target workspaces must survive the rejected close",
+                ["caller", "target", "unknown"],
+                "the invoking, target, and unclassified workspaces must survive the rejected close",
             )
             commands = [json.loads(line) for line in commands_path.read_text(encoding="utf-8").splitlines()]
             self.assertNotIn(["workspace", "close", "target"], commands)
@@ -601,6 +621,50 @@ class TeardownSafetyTests(unittest.TestCase):
             bridge, "_run_herdr_json"
         ) as mutation:
             with self.assertRaisesRegex(RuntimeError, "another workspace shares its Git repository"):
+                bridge._mutate_tool("herdr_workspace_close", "target")
+        mutation.assert_not_called()
+
+    def test_workspace_close_rejects_other_workspace_with_unknown_repository(self) -> None:
+        caller_repo = self.temp_root / "caller-repo"
+        caller_repo.mkdir()
+        target_provenance = {
+            "repo_key": "target-repository",
+            "repo_name": "repo",
+            "repo_root": str(self.repo),
+            "checkout_path": str(self.repo),
+            "is_linked_worktree": False,
+        }
+        caller_provenance = {
+            "repo_key": "caller-repository",
+            "repo_name": "caller-repo",
+            "repo_root": str(caller_repo),
+            "checkout_path": str(caller_repo),
+            "is_linked_worktree": False,
+        }
+        workspaces = [
+            {"workspace_id": "target", "focused": False, "worktree": target_provenance},
+            {"workspace_id": "caller", "focused": True, "worktree": caller_provenance},
+            {"workspace_id": "unknown", "focused": False},
+        ]
+        worktree_info = {
+            "path": str(self.repo),
+            "is_linked_worktree": False,
+            "open_workspace_id": "target",
+        }
+
+        def collection(command: list[str], key: str) -> list[dict[str, object]]:
+            if command[:2] == ["workspace", "list"]:
+                return workspaces
+            if command[:2] == ["agent", "list"]:
+                return [{"workspace_id": "target", "agent_status": "idle"}]
+            if command[:2] == ["worktree", "list"]:
+                return [worktree_info]
+            raise AssertionError(command)
+
+        with patch.object(bridge, "_collection", side_effect=collection), patch.object(
+            bridge, "_run_herdr_json"
+        ) as mutation:
+            with self.assertRaisesRegex(RuntimeError, "Cannot verify another workspace's repository identity"):
                 bridge._mutate_tool("herdr_workspace_close", "target")
         mutation.assert_not_called()
 

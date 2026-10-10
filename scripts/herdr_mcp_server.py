@@ -424,13 +424,15 @@ def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
     if checkout_owner_id != workspace_id:
         raise RuntimeError("Refusing to close a workspace that shares its primary checkout with another workspace")
     repo_key = workspace["worktree"]["repo_key"]
-    if any(
-        item.get("workspace_id") != workspace_id
-        and isinstance(item.get("worktree"), dict)
-        and item["worktree"].get("repo_key") == repo_key
-        for item in all_workspaces
-    ):
-        raise RuntimeError("Refusing to close a workspace while another workspace shares its Git repository")
+    for item in all_workspaces:
+        if item.get("workspace_id") == workspace_id:
+            continue
+        other_provenance = item.get("worktree")
+        other_repo_key = other_provenance.get("repo_key") if isinstance(other_provenance, dict) else None
+        if not isinstance(other_repo_key, str) or not other_repo_key:
+            raise RuntimeError("Cannot verify another workspace's repository identity; refusing close")
+        if other_repo_key == repo_key:
+            raise RuntimeError("Refusing to close a workspace while another workspace shares its Git repository")
     git_paths = [item["path"] for item in worktrees if isinstance(item.get("path"), str) and item.get("path")]
     git_before = _git_status_snapshot(git_paths)
     git_worktrees_before = _git_worktree_snapshot(git_paths)
