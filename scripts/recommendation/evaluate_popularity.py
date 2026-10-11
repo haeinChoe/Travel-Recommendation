@@ -18,7 +18,7 @@ import re
 import subprocess
 import sys
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
@@ -65,6 +65,7 @@ class SplitSummary:
     unmapped_trip_rows: int
     ambiguous_trip_rows: int
     visit_trip_keys: set[tuple[str, str, str]]
+    travel_ids: set[str] = field(default_factory=set)
 
 
 def has_symlink_component(path: Path) -> bool:
@@ -88,6 +89,15 @@ def within(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def approved_capital_filekey_root(region: str, role: str, root: Path) -> bool:
+    """Recognize the approved capital export layout without exposing its local key."""
+    if region != "capital" or not re.fullmatch(r"filekey-[A-Za-z0-9._-]+", root.name):
+        return False
+    if role == "TL":
+        return root.parent.name == "extracted" and root.parent.parent.name == "2023-travel-log-capital"
+    return root.parent.name == "2023-travel-log-capital"
 
 
 def parse_input_spec(value: str) -> tuple[str, str, Path]:
@@ -224,9 +234,11 @@ def _read_split(spec: InputSpec) -> SplitSummary:
             by_role[role].append(path)
     if not by_role["travel"]:
         raise ValueError("required travel table is missing")
-    owners, _ = _read_travel(by_role["travel"])
+    owners, travel_ids = _read_travel(by_role["travel"])
     # A missing visit table is an empty split. In particular, no POI identity is inferred.
-    return _read_visits(spec.region, by_role["visits"], owners)
+    summary = _read_visits(spec.region, by_role["visits"], owners)
+    summary.travel_ids = travel_ids
+    return summary
 
 
 def stable_tie_key(item: tuple[str, str]) -> bytes:
@@ -501,6 +513,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id", default=datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"))
     parser.add_argument("--k", nargs="+", type=int, default=list(DEFAULT_K))
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--allow-approved-capital-filekey-folders", action="store_true")
     parser.add_argument("--confirm-approved", action="store_true")
     parser.add_argument("--confirm-terms", action="store_true")
     parser.add_argument("--confirm-poi-candidate", action="store_true")
@@ -538,7 +551,12 @@ def main(argv: list[str] | None = None) -> int:
             root = Path(os.path.abspath(requested)).resolve()
             if not root.is_dir() or not within(root, raw_root):
                 raise ValueError("입력은 --raw-root 아래의 기존 role 폴더여야 합니다.")
-            if root.name != f"{role}_csv":
+            folder_matches = root.name == f"{role}_csv"
+            approved_capital_layout = (
+                args.allow_approved_capital_filekey_folders
+                and approved_capital_filekey_root(region, role, root)
+            )
+            if not folder_matches and not approved_capital_layout:
                 raise ValueError("입력 폴더 이름이 TL/VL role과 일치하지 않습니다.")
             if root in roots:
                 raise ValueError("권역·분할 입력에 같은 폴더를 지정할 수 없습니다.")
@@ -548,6 +566,24 @@ def main(argv: list[str] | None = None) -> int:
         split_data = {(item.region, item.role): _read_split(item) for item in specs}
         train_by_region = {region: split_data[(region, "TL")] for region in regions}
         val_by_region = {region: split_data[(region, "VL")] for region in regions}
+        overlap_counts = {
+            region: len(train_by_region[region].travel_ids & val_by_region[region].travel_ids)
+            for region in regions
+        }
+        overlapping_regions = {
+            region: count for region, count in overlap_counts.items() if count > 0
+        }
+        if overlapping_regions:
+            safe_summary = ", ".join(
+                f"{region}={count_bucket(count)}"
+                for region, count in sorted(overlapping_regions.items())
+            )
+            print(
+                f"[중단] TL/VL TRAVEL_ID overlap 발견 (region=count bucket): {safe_summary}",
+                file=sys.stderr,
+            )
+            return 2
+
         pooled_train_counts: Counter[tuple[str, str]] = Counter(
             event.item_key
             for region in regions
@@ -580,6 +616,21 @@ def main(argv: list[str] | None = None) -> int:
         rows.extend(_event_metrics(
             "", "aggregate", aggregate_train, aggregate_val, tuple(args.k), pooled_train_counts
         ))
+        for scope, count in [
+            *((region, overlap_counts[region]) for region in regions),
+            ("aggregate", sum(overlap_counts.values())),
+        ]:
+            bucket = count_bucket(count)
+            rows.append({
+                "model": "split_integrity",
+                "scope": scope,
+                "cohort": "all",
+                "metric": "train_validation_trip_id_overlap",
+                "k": "",
+                "value": bucket,
+                "cell_size": bucket,
+                "status": "observed",
+            })
         script_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         metadata: dict[str, object] = {
             "dataset": {"name": "AI Hub Domestic Travel Log", "version": "2023"},
@@ -598,6 +649,22 @@ def main(argv: list[str] | None = None) -> int:
                 "item_key": "(dataset_region, nonblank POI_ID)",
                 "evaluation_unit": "(dataset_region, TRAVELER_ID, TRAVEL_ID)",
                 "split": {"TL": "train", "VL": "validation", "test_metrics": "not_generated"},
+                "input_layout": (
+                    "approved capital filekey folders and region role folders"
+                    if args.allow_approved_capital_filekey_folders
+                    else "region role folders"
+                ),
+                "trip_id_overlap_check": {
+                    "checked_before_ranking": True,
+                    "status": "passed",
+                    "count_bucket_policy": "0, <10, 10+",
+                    "per_region": {
+                        region: count_bucket(count)
+                        for region, count in sorted(overlap_counts.items())
+                    },
+                    "aggregate": count_bucket(sum(overlap_counts.values())),
+                    "positive_overlap_policy": "fail before ranking",
+                },
                 "tie_break": "HMAC-SHA256 of namespaced item key; digest not serialized",
                 "count_policy": "train visit events; repeated events retained",
                 "positive_policy": "observed binary visit; trip metric relevance is distinct item set",

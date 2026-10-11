@@ -11,6 +11,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import Mock, patch
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts" / "recommendation"
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -294,6 +295,9 @@ class PopularityBaselineTests(unittest.TestCase):
                 self.assertEqual(metadata["config"]["split"]["VL"], "validation")
                 self.assertEqual(metadata["privacy"]["row_level_outputs"], False)
                 self.assertIn("global_diagnostic_limit", metadata["config"])
+                self.assertEqual(
+                    metadata["config"]["trip_id_overlap_check"]["per_region"], {"west": "0"}
+                )
             finally:
                 if output.exists():
                     for child in output.iterdir():
@@ -306,6 +310,77 @@ class PopularityBaselineTests(unittest.TestCase):
             code = main(["--input", "west:TL=/not-read"])
         self.assertEqual(code, 2)
         self.assertIn("확인 옵션", error.getvalue())
+
+    def test_cli_fails_on_train_validation_trip_id_overlap_without_leaking_id(self) -> None:
+        trip_id = "overlap-trip-raw-secret"
+        traveler_id = "overlap-traveler-raw-secret"
+        poi_id = "overlap-poi-raw-secret"
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "raw"
+            tl = raw_root / "west" / "TL_csv"
+            vl = raw_root / "west" / "VL_csv"
+            write_csv(tl / "TN_TRAVEL.csv", ["TRAVEL_ID", "TRAVELER_ID"], [(trip_id, traveler_id)])
+            write_csv(tl / "TN_VISIT_AREA_INFO.csv", ["TRAVEL_ID", "POI_ID"], [(trip_id, poi_id)])
+            write_csv(vl / "TN_TRAVEL.csv", ["TRAVEL_ID", "TRAVELER_ID"], [(trip_id, traveler_id)])
+            write_csv(vl / "TN_VISIT_AREA_INFO.csv", ["TRAVEL_ID", "POI_ID"], [(trip_id, poi_id)])
+
+            isolated_results_root = root / "results" / "experiments" / "popularity-baseline"
+            run_id = "overlap-rejected-run"
+            stderr = StringIO()
+            args = [
+                "--raw-root", str(raw_root),
+                "--input", f"west:TL={tl}", "--input", f"west:VL={vl}",
+                "--run-id", run_id,
+                "--confirm-approved", "--confirm-terms", "--confirm-poi-candidate",
+            ]
+            ranking = Mock(side_effect=AssertionError("ranking must not run"))
+            with (
+                patch.dict(main.__globals__, {
+                    "RESULTS_ROOT": isolated_results_root,
+                    "_event_metrics": ranking,
+                }),
+                redirect_stderr(stderr),
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(main(args), 2)
+                ranking.assert_not_called()
+
+            message = stderr.getvalue()
+            self.assertIn("west=<10", message)
+            for secret in (trip_id, traveler_id, poi_id, str(raw_root), str(tl), str(vl)):
+                self.assertNotIn(secret, message)
+            self.assertFalse((isolated_results_root / run_id).exists())
+
+    def test_cli_accepts_approved_capital_filekey_roots_without_recording_paths(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "raw"
+            tl = raw_root / "2023-travel-log-capital" / "extracted" / "filekey-111"
+            vl = raw_root / "2023-travel-log-capital" / "filekey-222"
+            write_csv(tl / "tn_travel_여행_E.csv", ["TRAVEL_ID", "TRAVELER_ID"], [("train-trip", "train-user")])
+            write_csv(tl / "tn_visit_area_info_방문지정보_E.csv", ["TRAVEL_ID", "POI_ID"], [("train-trip", "train-poi")])
+            write_csv(vl / "tn_travel_여행_E.csv", ["TRAVEL_ID", "TRAVELER_ID"], [("validation-trip", "validation-user")])
+            write_csv(vl / "tn_visit_area_info_방문지정보_E.csv", ["TRAVEL_ID", "POI_ID"], [("validation-trip", "train-poi")])
+            isolated_results_root = root / "results" / "experiments" / "popularity-baseline"
+            run_id = "capital-filekey-root-test"
+            args = [
+                "--raw-root", str(raw_root),
+                "--input", f"capital:TL={tl}", "--input", f"capital:VL={vl}",
+                "--run-id", run_id, "--k", "1",
+                "--allow-approved-capital-filekey-folders",
+                "--confirm-approved", "--confirm-terms", "--confirm-poi-candidate",
+            ]
+            with (
+                patch.dict(main.__globals__, {"RESULTS_ROOT": isolated_results_root}),
+                redirect_stderr(StringIO()),
+                redirect_stdout(StringIO()),
+            ):
+                self.assertEqual(main(args), 0)
+            metadata = (isolated_results_root / run_id / "run_metadata.json").read_text(encoding="utf-8")
+            self.assertNotIn("filekey-111", metadata)
+            self.assertNotIn("filekey-222", metadata)
+            self.assertNotIn(str(raw_root), metadata)
 
 
 if __name__ == "__main__":
