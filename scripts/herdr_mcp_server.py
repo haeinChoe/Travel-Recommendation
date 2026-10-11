@@ -47,7 +47,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "mutation": "worktree_remove",
     },
     "herdr_workspace_close": {
-        "description": "Close one plain Herdr workspace only when caller identity and exclusive repository ownership are verified.",
+        "description": "Close one eligible plain or linked Herdr workspace session without removing its Git worktree.",
         "input": "workspace_id",
         "mutation": "workspace_close",
     },
@@ -415,6 +415,68 @@ def _assert_plain_workspace_provenance(
     return open_workspace_id, checkout_path
 
 
+def _assert_linked_workspace_provenance(
+    workspace: dict[str, Any],
+    worktrees: list[dict[str, Any]],
+    workspace_id: str,
+) -> str:
+    provenance = workspace.get("worktree")
+    required_fields = ("repo_key", "repo_name", "repo_root", "checkout_path", "is_linked_worktree")
+    if not isinstance(provenance, dict) or any(field not in provenance for field in required_fields):
+        raise RuntimeError("Linked workspace provenance is missing or invalid; refusing close")
+    if (
+        any(not isinstance(provenance[field], str) or not provenance[field] for field in required_fields[:-1])
+        or not _valid_repository_key(provenance["repo_key"])
+        or any(not Path(provenance[field]).is_absolute() for field in ("repo_root", "checkout_path"))
+        or provenance["is_linked_worktree"] is not True
+    ):
+        raise RuntimeError("Linked workspace provenance is invalid; refusing close")
+
+    target_rows = [item for item in worktrees if item.get("open_workspace_id") == workspace_id]
+    if len(target_rows) != 1:
+        raise RuntimeError("Linked workspace mapping is missing or ambiguous; refusing close")
+    target = target_rows[0]
+    path = target.get("path")
+    branch = target.get("branch")
+    if (
+        target.get("is_linked_worktree") is not True
+        or not isinstance(path, str)
+        or not Path(path).is_absolute()
+        or not isinstance(branch, str)
+        or not branch
+        or Path(path).resolve() != Path(provenance["checkout_path"]).resolve()
+    ):
+        raise RuntimeError("Linked workspace path or branch mapping is invalid; refusing close")
+    resolved_path = str(Path(path).resolve())
+    path_rows = [
+        item
+        for item in worktrees
+        if isinstance(item.get("path"), str)
+        and Path(item["path"]).is_absolute()
+        and str(Path(item["path"]).resolve()) == resolved_path
+    ]
+    branch_rows = [item for item in worktrees if item.get("branch") == branch]
+    if len(path_rows) != 1 or path_rows[0] is not target or len(branch_rows) != 1 or branch_rows[0] is not target:
+        raise RuntimeError("Linked workspace path or branch mapping is ambiguous; refusing close")
+
+    if Path(_git(path, "rev-parse", "--show-toplevel")).resolve() != Path(resolved_path):
+        raise RuntimeError("Herdr linked workspace path does not match Git; refusing close")
+    if _git(path, "rev-parse", "--abbrev-ref", "HEAD") != branch:
+        raise RuntimeError("Herdr linked workspace branch does not match Git; refusing close")
+    if _git(path, "check-ref-format", "--branch", branch) != branch:
+        raise RuntimeError("Herdr linked workspace branch is invalid; refusing close")
+    entries = [entry for entry in _git(path, "worktree", "list", "--porcelain").split("\n\n") if entry.strip()]
+    git_matches = [
+        entry
+        for entry in entries
+        if f"worktree {resolved_path}" in entry.splitlines()
+        and f"branch refs/heads/{branch}" in entry.splitlines()
+    ]
+    if len(git_matches) != 1:
+        raise RuntimeError("Git does not confirm the exact linked workspace path and branch; refusing close")
+    return resolved_path
+
+
 def _valid_repository_key(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and value.isprintable()
 
@@ -481,9 +543,17 @@ def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
             raise RuntimeError("Git worktree status changed outside the requested checkout")
         return {"workspace_id": workspace_id, "removed": True, "already_absent": False}
 
-    checkout_owner_id, checkout_path = _assert_plain_workspace_provenance(
-        workspace, all_workspaces, worktrees, workspace_id
+    workspace_provenance = workspace.get("worktree")
+    linked_session_close = (
+        isinstance(workspace_provenance, dict) and workspace_provenance.get("is_linked_worktree") is True
     )
+    if linked_session_close:
+        checkout_owner_id = None
+        _assert_linked_workspace_provenance(workspace, worktrees, workspace_id)
+    else:
+        checkout_owner_id, checkout_path = _assert_plain_workspace_provenance(
+            workspace, all_workspaces, worktrees, workspace_id
+        )
     git_paths = []
     for item in worktrees:
         path = item.get("path")
@@ -499,7 +569,7 @@ def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
     actual_peers = [item for item in remaining if item.get("workspace_id") != workspace_id]
     if actual_peers != expected_peers:
         raise RuntimeError("Herdr workspace close changed another workspace; refusing success")
-    if checkout_owner_id != workspace_id:
+    if checkout_owner_id is not None and checkout_owner_id != workspace_id:
         owners_after = [item for item in remaining if item.get("workspace_id") == checkout_owner_id]
         if len(owners_after) != 1:
             raise RuntimeError("Primary checkout owner disappeared while closing the workspace")
