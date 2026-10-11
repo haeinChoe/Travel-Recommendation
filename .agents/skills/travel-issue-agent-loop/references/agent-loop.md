@@ -126,13 +126,37 @@ Explicitly instruct reviewers to remain read-only and report no findings when no
 If Herdr reports an agent as blocked, inspect its state and output before sending anything. Continue only when the request is clearly within the Issue authorization; stop on approval requests outside that scope. Never answer a security or data-permission prompt by guessing.
 ## Authorized Issue workspace cleanup
 
-Only clean a workspace after explicit user authorization or an Issue that authorizes cleanup. Before calling a mutation tool:
+Only clean a workspace after explicit user authorization or an Issue that authorizes cleanup. Treat linked worktree removal and plain workspace closure as different operations with different repository safeguards. An open PR is not a cleanup signal: confirm the target PR is merged, or that the user explicitly authorized abandoning the work.
 
-1. Confirm the PR is merged, or the user explicitly authorized abandoning the work. An open PR is not a cleanup signal.
-2. Confirm the target is an Issue workspace, is not the caller/current focused workspace, does not share a Git repository with the caller or any other Herdr workspace, and is not needed by another task.
-3. Confirm all agents in the target are idle or done; stop if any agent is working, blocked, or unknown.
-4. For a linked worktree, confirm git status --porcelain is empty and the branch is not dev or main; call the explicit MCP tool herdr_worktree_remove without force.
-5. Close a workspace with herdr_workspace_close only after confirming it has no linked worktree.
-6. Read Herdr workspace/agent inventory and git worktree list --porcelain again. Report success only if every requested target is absent and unrelated workspace IDs remain present.
+Before either operation, read Herdr workspace and agent inventories and Git state. Match the Issue to the exact workspace ID, worktree path (if any), and branch; verify the target is not the caller or current focused workspace; confirm no other task needs it; and confirm every attached agent is `idle` or `done`. Stop if an agent is `working`, `blocked`, `unknown`, missing a status, or otherwise unsettled. Record the current inventory and Git state so the post-operation check can detect unrelated changes.
 
-If a tool is unavailable, denied, or returns a timeout/ambiguous result, read state before deciding what remains. Never retry through direct Herdr CLI, blindly repeat a mutation, use --force, or substitute raw API calls. Preserve unresolved work and report the exact result.
+### Cleanup decision matrix
+
+This table is the compact policy source for operation-specific checks. Automated documentation tests parse these rows; keep the operation/guard keys stable when editing the policy.
+
+| Operation | Guard | Required condition |
+| --- | --- | --- |
+| linked worktree removal | target | One exact Issue workspace maps to one Herdr-linked worktree path and branch. |
+| linked worktree removal | authorization | The user or Issue explicitly authorizes cleanup; the PR is merged or abandonment is explicitly authorized. |
+| linked worktree removal | workspace | The target is neither caller nor focused, no other task needs it, and all attached agents are idle or done. |
+| linked worktree removal | git_clean | `git status --porcelain=v1 --untracked-files=all --ignored=matching` is empty for the target checkout. |
+| linked worktree removal | protected_branch | The target branch is not `dev`, `main`, or another branch protected by repository policy. |
+| linked worktree removal | common_git_dir | Linked worktrees normally share `.git` common-dir; that fact alone does not block removing this eligible checkout. |
+| linked worktree removal | mutation | Call `herdr_worktree_remove` for the exact workspace ID; do not pass force. |
+| linked worktree removal | local_branch | After successful removal, if the branch is merged and no worktree uses it, run `git branch -d <branch>` and verify the local ref is absent; do not delete the remote branch or use `-D`. |
+| linked worktree removal | readback | Confirm the requested workspace/path is absent from Herdr and `git worktree list --porcelain`; confirm unrelated workspace IDs and other worktree state remain. |
+| plain workspace closure | target | The exact Issue workspace is a plain workspace with no linked worktree; remove a linked worktree first through its separate procedure. |
+| plain workspace closure | authorization | The user or Issue explicitly authorizes cleanup; the PR is merged or abandonment is explicitly authorized. |
+| plain workspace closure | workspace | The target is neither caller nor focused, no other task needs it, and all attached agents are idle or done. |
+| plain workspace closure | repository_guard | `herdr_workspace_close` requires a valid caller identity and verified exclusive repository ownership. The bridge rejects closure if another Herdr workspace shares the target repository, or if another workspace's repository identity is missing/unknown. |
+| plain workspace closure | cascade_reason | Apply the repository exclusivity guard to workspace closure because `herdr workspace close <ID>` can cascade to multiple workspace records sharing that repository. This guard is not a blanket restriction on linked worktree removal. |
+| plain workspace closure | mutation | Call `herdr_workspace_close` for the exact plain workspace ID only after the bridge's ownership checks pass. |
+| plain workspace closure | readback | Confirm the target workspace is absent and Git worktree/status snapshots are unchanged; preserve the primary checkout owner and unrelated workspaces. |
+
+For linked worktree removal, the bridge verifies Herdr's linked-worktree mapping, absolute path, current branch, and Git's worktree list. It refuses `dev` and `main`, and checks tracked, untracked, and ignored state using the command in the matrix. A linked checkout normally shares a Git common directory with its primary checkout and sibling worktrees. Do not treat that normal Git arrangement as repository ownership of the Herdr workspace or as a removal blocker: the MCP removal guard is specific to the requested linked checkout and snapshots the other Git worktree/status state around removal.
+
+For plain workspace closure, the bridge requires a plain workspace provenance record and verifies that it owns its primary checkout. It also checks repository identities across Herdr workspaces. If another workspace shares the same repository, or the bridge cannot establish another workspace's repository identity, `herdr_workspace_close` refuses closure. This is the close-only ownership/cascade safeguard: the underlying close operation may remove multiple workspace records for a repository. It does not mean that linked worktrees sharing `.git` cannot be removed individually.
+
+After a successful `herdr_worktree_remove`, check whether the corresponding local branch remains. If the PR is merged, the branch is not checked out in another worktree, and repository policy permits deletion, delete it with `git branch -d <branch>` and verify `git branch --list -- <branch>` is empty. If Git refuses because it is not merged or is still checked out, preserve it and report why. Never use `git branch -D`, delete the remote branch, or use branch deletion to bypass a failed worktree-removal call.
+
+If either MCP mutation is refused, times out, or returns an ambiguous result, reread Herdr workspace/agent inventories and Git state (`git status`, `git worktree list --porcelain`, and branch state) before reporting what remains. Report the exact tool error and observed state. For example, the observed `herdr_worktree_remove` refusal for `w44` was `Caller workspace identity is unavailable; refusing teardown`; this is a caller-context failure, not a shared-`.git` refusal. Do not bypass an MCP refusal through direct Herdr CLI mutation, raw APIs, force options, or blind retries. Preserve unresolved state and report the exact blocker. If a call succeeds, report cleanup complete only after Herdr and Git readback confirm the requested target is absent and unrelated state is preserved.

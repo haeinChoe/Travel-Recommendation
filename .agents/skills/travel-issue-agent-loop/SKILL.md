@@ -42,7 +42,11 @@ Do not ask the user about routine implementation choices. Continue through the a
 
 ## Authorized cleanup
 
-Clean an Issue workspace only when the user explicitly requests cleanup or the Issue authorizes it. Follow the guarded MCP teardown sequence in [references/agent-loop.md](references/agent-loop.md). Do not close the caller, current focused workspace, or any workspace that shares a Git repository with the caller or another Herdr workspace. Use only the guarded MCP teardown tools; never fall back to `herdr workspace close` or another direct CLI mutation when the bridge refuses or is unavailable. Report cleanup as complete only after Herdr inventory and Git worktree readback confirm the targets are absent. If a teardown tool is unavailable, denied, or returns an ambiguous result, preserve the remaining state and report the exact blocker.
+Clean an Issue workspace only when the user explicitly requests cleanup or the Issue authorizes it. Follow the separate linked-worktree removal and plain-workspace closure procedures in [references/agent-loop.md](references/agent-loop.md). Confirm the Issue-to-workspace-to-worktree-to-branch mapping, merged PR or explicit abandonment, caller/focus protection, no remaining task need, and settled agents before either operation.
+
+For `herdr_worktree_remove`, a linked checkout's shared Git common directory is normal and is not, by itself, a reason to refuse removal. Verify that the exact linked checkout is clean, including untracked and ignored files, and is not on a protected branch. The repository ownership/cascade guard applies to `herdr_workspace_close`: the bridge requires caller identity and exclusive repository ownership because closing a workspace can cascade to other workspace records that share its repository. Do not apply that close-only guard to a clean linked worktree removal.
+
+Use only the guarded MCP teardown tools. If a call is refused or ambiguous, reread Herdr inventories and Git state, then report the exact blocker and preserve unresolved state. Do not bypass the refusal through CLI, raw APIs, force options, or blind retries. Report cleanup complete only after Herdr and Git readback confirm the requested targets are absent. After a successful linked-worktree removal, delete a merged local branch only with non-force `git branch -d` when no worktree still uses it; verify the local branch is absent and leave the remote branch untouched.
 
 ## Delivery
 
