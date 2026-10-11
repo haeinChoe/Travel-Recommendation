@@ -532,7 +532,7 @@ class TeardownSafetyTests(unittest.TestCase):
                 ]
             )
 
-    def test_workspace_close_rejects_linked_worktree_provenance(self) -> None:
+    def test_workspace_close_rejects_linked_worktree_without_exact_mapping(self) -> None:
         provenance = {
             "repo_key": "repo",
             "repo_name": "repo",
@@ -541,7 +541,7 @@ class TeardownSafetyTests(unittest.TestCase):
             "is_linked_worktree": True,
         }
         mocks, *_ = self._setup_api(provenance=provenance)
-        with mocks, self.assertRaisesRegex(RuntimeError, "Remove the linked worktree"):
+        with mocks, self.assertRaisesRegex(RuntimeError, "missing or ambiguous"):
             bridge._mutate_tool("herdr_workspace_close", "target")
 
     def test_workspace_close_rejects_missing_provenance_flag(self) -> None:
@@ -664,6 +664,176 @@ class TeardownSafetyTests(unittest.TestCase):
         mocks, *_ = self._setup_api(provenance=provenance, worktree=worktree_info)
         with mocks, self.assertRaisesRegex(RuntimeError, "inventories disagree"):
             bridge._mutate_tool("herdr_workspace_close", "target")
+
+    def test_workspace_close_closes_linked_session_and_preserves_dirty_checkout(self) -> None:
+        linked_path = self._git_worktree("linked-session", "linked-session-checkout")
+        (linked_path / "tracked.txt").write_text("dirty linked content\n", encoding="utf-8")
+        exclude_file = self.repo / ".git" / "info" / "exclude"
+        with exclude_file.open("a", encoding="utf-8") as stream:
+            stream.write("preserved-ignored.txt\n")
+        ignored_file = linked_path / "preserved-ignored.txt"
+        ignored_file.write_text("ignored results remain\n", encoding="utf-8")
+
+        provenance = {
+            "repo_key": str(self.repo / ".git"),
+            "repo_name": "repo",
+            "repo_root": str(self.repo),
+            "checkout_path": str(linked_path),
+            "is_linked_worktree": True,
+        }
+        caller = {"workspace_id": "caller", "focused": True, "worktree": {"repo_key": "caller-repo"}}
+        target = {"workspace_id": "target", "focused": False, "worktree": provenance}
+        peer = {"workspace_id": "peer", "focused": False}
+        linked_row = {
+            "path": str(linked_path),
+            "branch": "linked-session",
+            "is_linked_worktree": True,
+            "open_workspace_id": "target",
+        }
+        initial_workspaces = [caller, target, peer]
+        remaining_workspaces = [caller, peer]
+        workspace_reads = 0
+        commands: list[list[str]] = []
+
+        def collection(command: list[str], key: str) -> list[dict[str, object]]:
+            nonlocal workspace_reads
+            if command[:2] == ["workspace", "list"]:
+                workspace_reads += 1
+                return initial_workspaces if workspace_reads == 1 else remaining_workspaces
+            if command[:2] == ["agent", "list"]:
+                return [{"workspace_id": "target", "agent_status": "done"}]
+            if command[:2] == ["worktree", "list"]:
+                self.assertEqual(command, ["worktree", "list", "--workspace", "target"])
+                return [linked_row]
+            raise AssertionError(command)
+
+        def run(command: list[str]) -> dict[str, object]:
+            commands.append(command)
+            if command == ["workspace", "close", "target"]:
+                return {"result": {}}
+            raise AssertionError(command)
+
+        git_before = bridge._git_worktree_snapshot([str(linked_path)])
+        status_before = bridge._git_status_snapshot([str(linked_path)])
+        self.assertIn("M tracked.txt", status_before[str(linked_path.resolve())])
+        self.assertIn("!! preserved-ignored.txt", status_before[str(linked_path.resolve())])
+        with patch.object(bridge, "_collection", side_effect=collection), patch.object(
+            bridge, "_run_herdr_json", side_effect=run
+        ):
+            result = bridge._mutate_tool("herdr_workspace_close", "target")
+
+        self.assertEqual(result, {"workspace_id": "target", "closed": True, "already_absent": False})
+        self.assertEqual(commands, [["workspace", "close", "target"]])
+        self.assertEqual(workspace_reads, 2)
+        self.assertTrue(linked_path.is_dir())
+        self.assertEqual((linked_path / "tracked.txt").read_text(encoding="utf-8"), "dirty linked content\n")
+        self.assertEqual(ignored_file.read_text(encoding="utf-8"), "ignored results remain\n")
+        self.assertEqual(bridge._git_worktree_snapshot([str(linked_path)]), git_before)
+        self.assertEqual(bridge._git_status_snapshot([str(linked_path)]), status_before)
+
+    def test_workspace_close_refuses_linked_session_with_ambiguous_mapping(self) -> None:
+        linked_path = self._git_worktree("linked-session", "linked-session-checkout")
+        provenance = {
+            "repo_key": str(self.repo / ".git"),
+            "repo_name": "repo",
+            "repo_root": str(self.repo),
+            "checkout_path": str(linked_path),
+            "is_linked_worktree": True,
+        }
+        caller = {"workspace_id": "caller", "focused": True}
+        target = {"workspace_id": "target", "focused": False, "worktree": provenance}
+        linked_row = {
+            "path": str(linked_path),
+            "branch": "linked-session",
+            "is_linked_worktree": True,
+            "open_workspace_id": "target",
+        }
+
+        def collection(command: list[str], key: str) -> list[dict[str, object]]:
+            if command[:2] == ["workspace", "list"]:
+                return [caller, target]
+            if command[:2] == ["agent", "list"]:
+                return [{"workspace_id": "target", "agent_status": "done"}]
+            if command[:2] == ["worktree", "list"]:
+                return [linked_row, dict(linked_row, branch="ambiguous-branch")]
+            raise AssertionError(command)
+
+        with patch.object(bridge, "_collection", side_effect=collection), patch.object(
+            bridge, "_run_herdr_json"
+        ) as mutation:
+            with self.assertRaisesRegex(RuntimeError, "missing or ambiguous"):
+                bridge._mutate_tool("herdr_workspace_close", "target")
+        mutation.assert_not_called()
+
+    def test_workspace_close_refuses_linked_session_with_path_or_branch_mismatch(self) -> None:
+        linked_path = self._git_worktree("linked-session", "linked-session-checkout")
+        provenance = {
+            "repo_key": str(self.repo / ".git"),
+            "repo_name": "repo",
+            "repo_root": str(self.repo),
+            "checkout_path": str(linked_path),
+            "is_linked_worktree": True,
+        }
+        caller = {"workspace_id": "caller", "focused": True}
+        target = {"workspace_id": "target", "focused": False, "worktree": provenance}
+        for label, path, branch, message in (
+            ("path mismatch", str(self.repo), "linked-session", "path or branch mapping is invalid"),
+            ("branch mismatch", str(linked_path), "different-branch", "branch does not match Git"),
+        ):
+            linked_row = {
+                "path": path,
+                "branch": branch,
+                "is_linked_worktree": True,
+                "open_workspace_id": "target",
+            }
+
+            def collection(command: list[str], key: str) -> list[dict[str, object]]:
+                if command[:2] == ["workspace", "list"]:
+                    return [caller, target]
+                if command[:2] == ["agent", "list"]:
+                    return [{"workspace_id": "target", "agent_status": "done"}]
+                if command[:2] == ["worktree", "list"]:
+                    return [linked_row]
+                raise AssertionError(command)
+
+            with self.subTest(label=label), patch.object(bridge, "_collection", side_effect=collection), patch.object(
+                bridge, "_run_herdr_json"
+            ) as mutation:
+                with self.assertRaisesRegex(RuntimeError, message):
+                    bridge._mutate_tool("herdr_workspace_close", "target")
+                mutation.assert_not_called()
+
+    def test_workspace_close_refuses_linked_session_with_active_or_unknown_agent(self) -> None:
+        linked_path = self._git_worktree("linked-session", "linked-session-checkout")
+        provenance = {
+            "repo_key": str(self.repo / ".git"),
+            "repo_name": "repo",
+            "repo_root": str(self.repo),
+            "checkout_path": str(linked_path),
+            "is_linked_worktree": True,
+        }
+        worktree = {
+            "path": str(linked_path),
+            "branch": "linked-session",
+            "is_linked_worktree": True,
+            "open_workspace_id": "target",
+        }
+        for status in ("working", "unknown"):
+            def collection(command: list[str], key: str) -> list[dict[str, object]]:
+                if command[:2] == ["workspace", "list"]:
+                    return self._with_caller([{"workspace_id": "target", "focused": False, "worktree": provenance}])
+                if command[:2] == ["agent", "list"]:
+                    return [{"workspace_id": "target", "agent_status": status}]
+                if command[:2] == ["worktree", "list"]:
+                    raise AssertionError("linked worktree inventory must not be read before agent settlement")
+                raise AssertionError(command)
+
+            with self.subTest(status=status), patch.object(bridge, "_collection", side_effect=collection), patch.object(
+                bridge, "_run_herdr_json"
+            ) as mutation:
+                with self.assertRaisesRegex(RuntimeError, "working, blocked, or unknown agent"):
+                    bridge._mutate_tool("herdr_workspace_close", "target")
+                mutation.assert_not_called()
 
     def test_workspace_close_closes_secondary_plain_workspace_and_preserves_primary_owner(self) -> None:
         provenance = {
