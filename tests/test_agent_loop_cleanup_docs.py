@@ -43,6 +43,11 @@ class CleanupDocumentationTests(unittest.TestCase):
             for operation, guard in self.matrix
             if operation == "linked worktree removal"
         }
+        linked_session = {
+            guard
+            for operation, guard in self.matrix
+            if operation == "linked workspace-session closure"
+        }
         plain = {
             guard
             for operation, guard in self.matrix
@@ -61,6 +66,10 @@ class CleanupDocumentationTests(unittest.TestCase):
                 "local_branch",
                 "readback",
             },
+        )
+        self.assertEqual(
+            linked_session,
+            {"target", "authorization", "workspace", "checkout_preservation", "mutation", "readback"},
         )
         self.assertEqual(
             plain,
@@ -82,13 +91,29 @@ class CleanupDocumentationTests(unittest.TestCase):
         self.assertIn("alone does not block", condition)
         self.assertIn("not a blanket restriction", self.matrix[("plain workspace closure", "cascade_reason")].casefold())
 
-    def test_workspace_close_alone_has_repository_exclusivity_and_cascade_guard(self) -> None:
+    def test_plain_workspace_close_has_provenance_owner_and_group_close_guard(self) -> None:
         repository_guard = self.matrix[("plain workspace closure", "repository_guard")].casefold()
         cascade_reason = self.matrix[("plain workspace closure", "cascade_reason")].casefold()
         self.assertIn("valid caller identity", repository_guard)
-        self.assertIn("exclusive repository ownership", repository_guard)
-        self.assertIn("another herdr workspace shares", repository_guard)
-        self.assertIn("can cascade", cascade_reason)
+        self.assertIn("exact primary-checkout ownership", repository_guard)
+        self.assertIn("rejects mapped linked child rows owned by the target", repository_guard)
+        self.assertIn("other primary-close attempts may be refused", repository_guard)
+        self.assertIn("secondary plain workspace may close", repository_guard)
+        self.assertIn("never passes group intent", cascade_reason)
+
+    def test_linked_session_close_preserves_checkout_and_uses_guarded_mcp_only(self) -> None:
+        preservation = self.matrix[("linked workspace-session closure", "checkout_preservation")].casefold()
+        mutation = self.matrix[("linked workspace-session closure", "mutation")].casefold()
+        readback = self.matrix[("linked workspace-session closure", "readback")].casefold()
+        self.assertIn("git worktree list --porcelain", preservation)
+        self.assertIn("--untracked-files=all --ignored=matching", preservation)
+        self.assertIn("git worktree list --porcelain", readback)
+        self.assertIn("--untracked-files=all --ignored=matching", readback)
+        self.assertIn("unchanged", readback)
+        self.assertIn("guarded mcp", mutation)
+        self.assertIn("herdr_workspace_close", mutation)
+        self.assertIn("without `--group`", mutation)
+        self.assertIn("never use cli", mutation)
 
     def test_worktree_guard_covers_ignored_files_branch_deletion_and_readback(self) -> None:
         clean = self.matrix[("linked worktree removal", "git_clean")]
@@ -107,8 +132,9 @@ class CleanupDocumentationTests(unittest.TestCase):
         self.assertIn("raw APIs", self.reference)
 
     def test_skill_routes_to_the_operation_specific_reference(self) -> None:
-        self.assertIn("linked-worktree removal and plain-workspace closure", self.skill)
-        self.assertIn("Do not apply that close-only guard", self.skill)
+        self.assertIn("linked-worktree removal, linked workspace-session closure, and plain-workspace closure", self.skill)
+        self.assertIn("Use only the guarded MCP teardown tools", self.skill)
+        self.assertIn("never substitute CLI, group-close", self.skill)
 
     def test_local_markdown_links_resolve(self) -> None:
         for source in (SKILL, REFERENCE):
