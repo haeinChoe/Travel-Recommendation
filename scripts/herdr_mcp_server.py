@@ -369,6 +369,27 @@ def _assert_plain_workspace_provenance(
             continue
         linked_owner_id = item.get("open_workspace_id")
         if linked_owner_id is None:
+            linked_path = item.get("path")
+            if not isinstance(linked_path, str) or not Path(linked_path).is_absolute():
+                raise RuntimeError("Linked worktree ownership is ambiguous; refusing close")
+            linked_path = str(Path(linked_path).resolve())
+            path_owners = [
+                row
+                for row in workspaces
+                if isinstance(row.get("worktree"), dict)
+                and isinstance(row["worktree"].get("checkout_path"), str)
+                and Path(row["worktree"]["checkout_path"]).is_absolute()
+                and str(Path(row["worktree"]["checkout_path"]).resolve()) == linked_path
+            ]
+            if (
+                len(path_owners) != 1
+                or not isinstance(path_owners[0].get("workspace_id"), str)
+                or not WORKSPACE_ID_PATTERN.fullmatch(path_owners[0]["workspace_id"])
+                or not isinstance(path_owners[0].get("focused"), bool)
+            ):
+                raise RuntimeError("Linked worktree ownership is ambiguous; refusing close")
+            if path_owners[0].get("workspace_id") == workspace_id:
+                raise RuntimeError("Refusing to close a workspace that owns a linked worktree")
             continue
         if not isinstance(linked_owner_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(linked_owner_id):
             raise RuntimeError("Linked worktree owner identity is invalid; refusing close")
@@ -455,8 +476,6 @@ def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
     checkout_owner_id, checkout_path = _assert_plain_workspace_provenance(
         workspace, all_workspaces, worktrees, workspace_id
     )
-    if checkout_owner_id != workspace_id:
-        raise RuntimeError("Refusing to close a workspace that shares its primary checkout with another workspace")
     git_paths = []
     for item in worktrees:
         path = item.get("path")
