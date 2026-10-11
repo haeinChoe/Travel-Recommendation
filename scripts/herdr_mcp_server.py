@@ -258,6 +258,75 @@ def _assert_agents_settled(agents: list[dict[str, Any]], workspace_id: str) -> N
             raise RuntimeError("Refusing to close a workspace with a working, blocked, or unknown agent")
 
 
+def _workspace_peers_preserved(
+    before: list[dict[str, Any]],
+    after: list[dict[str, Any]],
+    closed_workspace_id: str,
+    *,
+    allow_linked_session_release: bool,
+) -> bool:
+    """Compare peer rows by ID, allowing only one released derived owner link."""
+
+    def index(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]] | None:
+        indexed = {}
+        for row in rows:
+            workspace_id = row.get("workspace_id")
+            if not isinstance(workspace_id, str) or not workspace_id or workspace_id in indexed:
+                return None
+            indexed[workspace_id] = row
+        return indexed
+
+    before_by_id = index(before)
+    after_by_id = index(after)
+    if before_by_id is None or after_by_id is None or before_by_id.keys() != after_by_id.keys():
+        return False
+
+    released_links = 0
+
+    def same_value(left: Any, right: Any, *, linked_worktree_row: bool = False) -> bool:
+        nonlocal released_links
+        if isinstance(left, dict) and isinstance(right, dict):
+            left_keys = set(left)
+            right_keys = set(right)
+            removed_keys = left_keys - right_keys
+            added_keys = right_keys - left_keys
+            if removed_keys or added_keys:
+                path = left.get("path")
+                if (
+                    not allow_linked_session_release
+                    or not linked_worktree_row
+                    or removed_keys != {"open_workspace_id"}
+                    or added_keys
+                    or left.get("open_workspace_id") != closed_workspace_id
+                    or left.get("is_linked_worktree") is not True
+                    or not isinstance(path, str)
+                    or not Path(path).is_absolute()
+                    or not isinstance(left.get("branch"), str)
+                    or not left["branch"]
+                ):
+                    return False
+                released_links += 1
+                if released_links > 1:
+                    return False
+            return all(
+                same_value(
+                    left[key],
+                    right[key],
+                    linked_worktree_row=key in {"worktrees", "linked_worktrees"}
+                    and isinstance(left[key], list)
+                    and isinstance(right[key], list),
+                )
+                for key in left_keys & right_keys
+            )
+        if isinstance(left, list) and isinstance(right, list):
+            return len(left) == len(right) and all(
+                same_value(a, b, linked_worktree_row=linked_worktree_row) for a, b in zip(left, right)
+            )
+        return type(left) is type(right) and left == right
+
+    return all(same_value(before_by_id[key], after_by_id[key]) for key in before_by_id)
+
+
 def _worktrees_for(workspace_id: str) -> list[dict[str, Any]]:
     return _collection(["worktree", "list", "--workspace", workspace_id], "worktrees")
 
@@ -567,7 +636,12 @@ def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
         raise RuntimeError("Herdr workspace close did not pass readback verification")
     expected_peers = [item for item in all_workspaces if item.get("workspace_id") != workspace_id]
     actual_peers = [item for item in remaining if item.get("workspace_id") != workspace_id]
-    if actual_peers != expected_peers:
+    if not _workspace_peers_preserved(
+        expected_peers,
+        actual_peers,
+        workspace_id,
+        allow_linked_session_release=linked_session_close,
+    ):
         raise RuntimeError("Herdr workspace close changed another workspace; refusing success")
     if checkout_owner_id is not None and checkout_owner_id != workspace_id:
         owners_after = [item for item in remaining if item.get("workspace_id") == checkout_owner_id]
