@@ -8,7 +8,7 @@ The bridge exposes three no-argument, read-only tools and two narrowly scoped te
 - `herdr_workspace_list` — workspace IDs, labels, and focused state.
 - `herdr_agent_list` — agent name, lifecycle status, and pane/workspace/tab IDs.
 - `herdr_worktree_remove(workspace_id)` — removes one clean Herdr-linked Git worktree without force.
-- `herdr_workspace_close(workspace_id)` — closes one eligible workspace only when the caller and no other workspace share its repository.
+- `herdr_workspace_close(workspace_id)` — closes one eligible plain-checkout workspace with verified caller and primary-checkout ownership, using Herdr 0.9.0+'s guarded single-ID close.
 
 The teardown input schema requires exactly one string `workspace_id` and rejects extra properties. The bridge invokes fixed `herdr` argument arrays, sets `HERDR_ENV=1`, and uses an eight-second timeout. It does not accept arbitrary commands, arguments, raw socket requests, force options, arbitrary paths, or pane controls. It does not change sandbox permissions. Treat the local MCP tool surface as a separate capability surface from direct shell commands.
 
