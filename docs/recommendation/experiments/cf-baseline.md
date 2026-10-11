@@ -76,12 +76,49 @@ PR #30's clean four-region reference used AI Hub Domestic Travel Log 2023, TL=tr
 | seen_positive | 0.053085 | 0.068287 | 0.079718 | 0.174903 |
 | cold_positive | suppressed | suppressed | suppressed | suppressed |
 
-The per-region K=10 values are recorded in PR #30 and its [`popularity-baseline.md`](popularity-baseline.md). Direct CF comparison requires both clean-commit CF runs on those exact inputs. Do not compare a partial region set as if it were the four-region reference.
+The per-region K=10 values are recorded in PR #30 and its [`popularity-baseline.md`](popularity-baseline.md). The Issue #31 local role mapping uses the approved 2023 capital TL/VL filekey roles and the documented `TL_csv`/`VL_csv` roles for west, east, and jeju-islands. A source-mapped popularity validation at the Issue #31 clean revision reproduced the documented PR #30 505-row metric checksum exactly (`ce1852436420a7c1896df304fbdeee8e3f2400311c81fb2561cafd5d087fb6f8`). Its protocol was TL=train, VL=validation, four regions, K=5/10/20, no test metrics, trip-level evaluation, and the same region-scoped TL candidate universe. This establishes metric parity for the mapped local corpus; the historical PR #30 metadata intentionally contains no source paths or raw-file checksums.
 
-## Run status and limitations
+## Four-region CF reference runs
 
-No CF real-data reference result is recorded in this change. The approved dataset identity, 2023 version, user-confirmed download approval, official source pages, and AI Hub open-data terms are documented in the [EDA provenance record](../../data/eda-travel-log-2023.md) and the four region manuals. During this implementation, the approved TL/VL files and the prior ignored popularity-run metadata were not found in the available local source locations searched, so no source bytes or records were opened and no actual-data run was attempted. The clean-commit run acceptance item therefore remains blocked on locating the approved local source and matching its provenance to those approval/terms records. Do not substitute data or infer CF results from the popularity metrics.
+Both reference runs used the already-approved AI Hub Domestic Travel Log 2023 TL/VL roles for capital, west, east, and jeju-islands. The inputs were read-only. Configuration was `--neighbors 30`, K=`5, 10, 20`, no seed, trip-level macro metrics, and the documented binary implicit contract. The evaluator checked TL/VL `TRAVEL_ID` overlap before ranking; the safe overlap bucket was `0` in each region and aggregate. Test metrics and post-event feedback were not generated or read.
 
-If completed later, append only privacy-audited aggregate metrics and safe run metadata: clean code commit, `code_worktree_dirty=false`, script hash, UTC run time, run IDs/configuration, suppression outcomes, overlap buckets, and per-region/aggregate comparison. Keep metrics and metadata under the ignored results directory; do not commit or upload those artifacts.
+| Model | Run ID | Code revision | Clean | Script SHA-256 | Started UTC | Finished UTC |
+| --- | --- | --- | --- | --- | --- | --- |
+| User-CF | `issue31-user-cf-four-region-clean-20261012` | `a771bfe49be8be91521429c8c034a48d39e32c0a` | true | `34fc3130813f37f0163eaf3fffaf79f0bea6bcd1de721c8e7e6f523e32d9ff6e` | `2026-10-11T15:30:37Z` | `2026-10-11T15:31:55Z` |
+| Item-CF | `issue31-item-cf-four-region-clean-20261012` | `a771bfe49be8be91521429c8c034a48d39e32c0a` | true | `34fc3130813f37f0163eaf3fffaf79f0bea6bcd1de721c8e7e6f523e32d9ff6e` | `2026-10-11T15:31:56Z` | `2026-10-11T15:33:11Z` |
 
-The comparison answers only validation ranking on the TL catalogue. Sparse history can leave many trips without a collaborative score, and unseen TL items cannot be recommended. A positive validation item is an observed event, not a confirmed negative for any unobserved candidate. These results do not establish production performance or cross-region POI identity. Matrix factorization, content/context models, and serving remain out of scope.
+The run metadata records model, region list, TL/VL roles, scoring and candidate policies, K, neighbor limit, safe overlap buckets, privacy flags, UTC times, the clean code revision, and script hash. It contains no local input paths or source filenames. Each run emitted only aggregate/per-region metrics and run metadata under the Git-ignored results area; those generated artifacts are not tracked.
+
+## Four-region results and comparison
+
+At K=10 the aggregate popularity reference is directly observed, while both CF results are suppressed by the shared retrieved-positive support rule. The CF ranking rows were likewise suppressed at K=5/10/20 in all five scopes (four regions plus aggregate) for `all`, `seen_positive`, and `cold_positive`. `user_history` has an empty evaluation cohort in every scope; `cold_start_user` has candidate-covered evaluation trips but zero CF hits and is suppressed. No ranking values are imputed from the zero-score tie order.
+
+| Model | Cohort | Precision@10 | Recall@10 | NDCG@10 | MRR@10 |
+| --- | --- | --- | --- | --- | --- |
+| Popularity (#30) | all | 0.050040 | 0.046788 | 0.068397 | 0.164868 |
+| User-CF | all | suppressed | suppressed | suppressed | suppressed |
+| Item-CF | all | suppressed | suppressed | suppressed | suppressed |
+| Popularity (#30) | seen_positive | 0.053085 | 0.068287 | 0.079718 | 0.174903 |
+| User-CF | seen_positive | suppressed | suppressed | suppressed | suppressed |
+| Item-CF | seen_positive | suppressed | suppressed | suppressed | suppressed |
+| Popularity (#30) | cold_positive | suppressed | suppressed | suppressed | suppressed |
+| User-CF | cold_positive | suppressed | suppressed | suppressed | suppressed |
+| Item-CF | cold_positive | suppressed | suppressed | suppressed | suppressed |
+
+Both CF models produced the same safe coverage and feasibility bands:
+
+| Scope | Positive coverage | Candidate coverage | Evaluation-trip coverage | CF recommendation coverage | User-history coverage | Cold-start-user share | Cold-start-item share | Cold-start-event share | Item identity coverage | TL/VL overlap |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| capital | 25–<50% | 90–100% | 90–100% | 0–<10% | 0–<10% | 90–100% | 50–<75% | 50–<75% | 50–<75% | 0 |
+| west | 50–<75% | 90–100% | 90–100% | 0–<10% | 0–<10% | 90–100% | 25–<50% | 25–<50% | 50–<75% | 0 |
+| east | 50–<75% | 90–100% | 90–100% | 0–<10% | 0–<10% | 90–100% | 25–<50% | 25–<50% | 75–<90% | 0 |
+| jeju-islands | 50–<75% | 90–100% | 90–100% | 0–<10% | 0–<10% | 90–100% | 25–<50% | 25–<50% | 75–<90% | 0 |
+| aggregate | 50–<75% | 90–100% | 90–100% | 0–<10% | 0–<10% | 90–100% | 25–<50% | 25–<50% | 75–<90% | 0 |
+
+Train-user history coverage was `90–100%` in every scope. In every scope, the bucketed train-user distinct-item distribution and train-item distinct-user distribution each contained `10+` entities in both the `<10` and `10+` degree bands. This coexists with validation user-history coverage below `10%` and an empty candidate-covered `user_history` evaluation cohort. Ranking cells with at least `10+` trips still had fewer than 10 retrieved positives and were therefore suppressed under the shared policy; cold-start-user ranking support was zero by definition. Run artifacts also apply count buckets, coarse rate bands, and `<10` suppression to other diagnostics.
+
+### Interpretation and limitations
+
+The run establishes a severe validation-history/collaborative-signal feasibility limitation for this split: both models have recommendation coverage below 10%, the candidate-covered user-history cohort is empty, and no CF ranking metric can be released under the existing support threshold. This does **not** establish that either CF ranking method is worse than popularity; a numerical quality comparison is unavailable because the CF ranking values are suppressed. It does show that this TL/VL identity overlap provides too little supported collaborative validation to justify broader CF tuning without first resolving the history/split feasibility question. Matrix factorization or serving conclusions do not follow from this experiment.
+
+The comparison answers only validation ranking on the TL catalogue. Sparse history can leave trips without a collaborative score, and unseen TL items cannot be recommended. Observed validation visits are not confirmed negatives for unobserved candidates. These results do not establish production performance or cross-region POI identity. No raw data, local source paths, source filenames, identifiers, or generated actual-data artifacts are included in Git.
