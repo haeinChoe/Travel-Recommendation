@@ -683,7 +683,29 @@ class TeardownSafetyTests(unittest.TestCase):
         }
         caller = {"workspace_id": "caller", "focused": True, "worktree": {"repo_key": "caller-repo"}}
         target = {"workspace_id": "target", "focused": False, "worktree": provenance}
-        peer = {"workspace_id": "peer", "focused": False}
+        peer_provenance = {
+            "repo_key": "peer-repository",
+            "repo_name": "repo",
+            "repo_root": str(self.repo),
+            "checkout_path": str(self.repo),
+            "is_linked_worktree": False,
+        }
+        derived_link = {
+            "path": str(self.repo / "peer-linked-checkout"),
+            "branch": "agent/29-popularity-baseline",
+            "is_linked_worktree": True,
+            "open_workspace_id": "target",
+        }
+        peer = {
+            "workspace_id": "peer",
+            "focused": False,
+            "worktree": peer_provenance,
+            "worktrees": [derived_link],
+        }
+        peer_after_close = {
+            **peer,
+            "worktrees": [{key: value for key, value in derived_link.items() if key != "open_workspace_id"}],
+        }
         linked_row = {
             "path": str(linked_path),
             "branch": "linked-session",
@@ -691,7 +713,7 @@ class TeardownSafetyTests(unittest.TestCase):
             "open_workspace_id": "target",
         }
         initial_workspaces = [caller, target, peer]
-        remaining_workspaces = [caller, peer]
+        remaining_workspaces = [caller, peer_after_close]
         workspace_reads = 0
         commands: list[list[str]] = []
 
@@ -730,6 +752,123 @@ class TeardownSafetyTests(unittest.TestCase):
         self.assertEqual(ignored_file.read_text(encoding="utf-8"), "ignored results remain\n")
         self.assertEqual(bridge._git_worktree_snapshot([str(linked_path)]), git_before)
         self.assertEqual(bridge._git_status_snapshot([str(linked_path)]), status_before)
+
+    def test_linked_session_peer_readback_allows_only_one_released_target_owner_link(self) -> None:
+        peer_before = {
+            "workspace_id": "peer",
+            "focused": False,
+            "worktree": {"repo_key": "peer-repository", "checkout_path": str(self.repo)},
+            "worktrees": [
+                {
+                    "path": str(self.repo / "peer-linked-checkout"),
+                    "branch": "agent/29-popularity-baseline",
+                    "is_linked_worktree": True,
+                    "open_workspace_id": "target",
+                }
+            ],
+        }
+        peer_after = {
+            **peer_before,
+            "worktrees": [
+                {
+                    key: value
+                    for key, value in peer_before["worktrees"][0].items()
+                    if key != "open_workspace_id"
+                }
+            ],
+        }
+
+        self.assertTrue(
+            bridge._workspace_peers_preserved(
+                [peer_before], [peer_after], "target", allow_linked_session_release=True
+            )
+        )
+        self.assertFalse(
+            bridge._workspace_peers_preserved(
+                [peer_before], [peer_after], "target", allow_linked_session_release=False
+            )
+        )
+
+        changed_focus = {**peer_after, "focused": True}
+        changed_provenance = {**peer_after, "worktree": {"repo_key": "changed", "checkout_path": str(self.repo)}}
+        changed_link = {
+            **peer_after,
+            "worktrees": [{**peer_after["worktrees"][0], "branch": "different-branch"}],
+        }
+        changed_path = {
+            **peer_after,
+            "worktrees": [{**peer_after["worktrees"][0], "path": str(self.repo / "other-checkout")}],
+        }
+        changed_linked_flag = {
+            **peer_after,
+            "worktrees": [{**peer_after["worktrees"][0], "is_linked_worktree": False}],
+        }
+        reassigned_link = {
+            **peer_before,
+            "worktrees": [{**peer_before["worktrees"][0], "open_workspace_id": "different-target"}],
+        }
+        second_released_link = {
+            **peer_before,
+            "worktrees": [
+                peer_before["worktrees"][0],
+                {**peer_before["worktrees"][0], "path": str(self.repo / "another-checkout")},
+            ],
+        }
+        second_released_after = {
+            **second_released_link,
+            "worktrees": [
+                {key: value for key, value in row.items() if key != "open_workspace_id"}
+                for row in second_released_link["worktrees"]
+            ],
+        }
+        missing_peer = {**peer_after, "workspace_id": "other"}
+        unrelated_owner_before = {"workspace_id": "peer", "focused": False, "open_workspace_id": "target"}
+        unrelated_owner_after = {"workspace_id": "peer", "focused": False}
+        self.assertFalse(
+            bridge._workspace_peers_preserved(
+                [peer_before], [changed_focus], "target", allow_linked_session_release=True
+            )
+        )
+        self.assertFalse(
+            bridge._workspace_peers_preserved(
+                [peer_before], [changed_provenance], "target", allow_linked_session_release=True
+            )
+        )
+        self.assertFalse(
+            bridge._workspace_peers_preserved(
+                [peer_before], [changed_link], "target", allow_linked_session_release=True
+            )
+        )
+        self.assertFalse(
+            bridge._workspace_peers_preserved(
+                [peer_before], [changed_path], "target", allow_linked_session_release=True
+            )
+        )
+        self.assertFalse(
+            bridge._workspace_peers_preserved(
+                [peer_before], [changed_linked_flag], "target", allow_linked_session_release=True
+            )
+        )
+        self.assertFalse(
+            bridge._workspace_peers_preserved(
+                [peer_before], [reassigned_link], "target", allow_linked_session_release=True
+            )
+        )
+        self.assertFalse(
+            bridge._workspace_peers_preserved(
+                [second_released_link], [second_released_after], "target", allow_linked_session_release=True
+            )
+        )
+        self.assertFalse(
+            bridge._workspace_peers_preserved(
+                [unrelated_owner_before], [unrelated_owner_after], "target", allow_linked_session_release=True
+            )
+        )
+        self.assertFalse(
+            bridge._workspace_peers_preserved(
+                [peer_before], [missing_peer], "target", allow_linked_session_release=True
+            )
+        )
 
     def test_workspace_close_refuses_linked_session_with_ambiguous_mapping(self) -> None:
         linked_path = self._git_worktree("linked-session", "linked-session-checkout")
