@@ -150,8 +150,8 @@ class MCPProtocolTests(unittest.TestCase):
 
 
 class IsolatedMCPIntegrationTests(unittest.TestCase):
-    def test_stdio_bridge_blocks_shared_repository_close_before_cli_mutation(self) -> None:
-        """Exercise the MCP subprocess boundary with an isolated cascade-prone CLI fixture."""
+    def test_stdio_bridge_preserves_herdr_primary_group_refusal(self) -> None:
+        """Exercise the MCP subprocess boundary with a guarded Herdr group-close refusal."""
         with tempfile.TemporaryDirectory(prefix="herdr-mcp-isolated-") as temp_dir:
             root = Path(temp_dir)
             repo = root / "repo"
@@ -165,6 +165,8 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
             (repo / "tracked.txt").write_text("fixture\n", encoding="utf-8")
             subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
             subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+            linked_path = root / "linked"
+            subprocess.run(["git", "worktree", "add", "-qb", "linked-fixture", str(linked_path)], cwd=repo, check=True)
 
             provenance = {
                 "repo_key": "shared-fixture-repository",
@@ -205,12 +207,21 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
                                 "path": str(repo),
                                 "is_linked_worktree": False,
                                 "open_workspace_id": "target",
-                            }
+                            },
+                            {"path": str(linked_path), "is_linked_worktree": True},
                         ],
                     }
                 ),
                 encoding="utf-8",
             )
+            worktrees_before = json.loads(state_path.read_text(encoding="utf-8"))["worktrees"]
+            git_worktrees_before = subprocess.run(
+                ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            git_status_before = bridge._git_status_snapshot([str(repo), str(linked_path)])
 
             bin_dir = root / "bin"
             bin_dir.mkdir()
@@ -223,18 +234,16 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
                 "args = sys.argv[1:]\n"
                 "with commands_path.open('a', encoding='utf-8') as stream: stream.write(json.dumps(args) + '\\n')\n"
                 "state = json.loads(state_path.read_text(encoding='utf-8'))\n"
-                "if args[:2] == ['workspace', 'list']:\n"
+                "if args[:2] == ['status', 'server']:\n"
+                "    result = {'status': 'running', 'running': True, 'version': '0.9.3', 'protocol': 22, 'compatible': True}\n"
+                "elif args[:2] == ['workspace', 'list']:\n"
                 "    result = {'workspaces': state['workspaces']}\n"
                 "elif args[:2] == ['agent', 'list']:\n"
                 "    result = {'agents': []}\n"
                 "elif args[:2] == ['worktree', 'list']:\n"
                 "    result = {'worktrees': state['worktrees']}\n"
                 "elif args[:2] == ['workspace', 'close']:\n"
-                "    target = next(row for row in state['workspaces'] if row['workspace_id'] == args[2])\n"
-                "    repo_key = target['_fixture_repo_key']\n"
-                "    state['workspaces'] = [row for row in state['workspaces'] if row['_fixture_repo_key'] != repo_key]\n"
-                "    state_path.write_text(json.dumps(state), encoding='utf-8')\n"
-                "    result = {}\n"
+                "    print(json.dumps({'error': {'code': 'workspace_group_close_required', 'message': 'close primary and linked workspaces together'}}), file=sys.stderr); sys.exit(1)\n"
                 "else:\n"
                 "    print('unsupported fixture command: ' + ' '.join(args), file=sys.stderr); sys.exit(2)\n"
                 "print(json.dumps({'result': result}))\n",
@@ -272,22 +281,53 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
 
             response = json.loads(completed.stdout)
             self.assertTrue(response["result"]["isError"])
-            self.assertIn("Cannot verify another workspace's repository identity", response["result"]["content"][0]["text"])
+            self.assertIn("Herdr refused to close a primary workspace", response["result"]["content"][0]["text"])
             after = json.loads(state_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 [row["workspace_id"] for row in after["workspaces"]],
                 ["caller", "target", "unknown"],
                 "the invoking, target, and unclassified workspaces must survive the rejected close",
             )
+            self.assertEqual(after["worktrees"], worktrees_before)
             commands = [json.loads(line) for line in commands_path.read_text(encoding="utf-8").splitlines()]
-            self.assertNotIn(["workspace", "close", "target"], commands)
+            close_commands = [command for command in commands if command[:2] == ["workspace", "close"]]
+            self.assertEqual(close_commands, [["workspace", "close", "target"]])
             self.assertEqual((repo / "tracked.txt").read_text(encoding="utf-8"), "fixture\n")
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout,
+                git_worktrees_before,
+            )
+            self.assertEqual(bridge._git_status_snapshot([str(repo), str(linked_path)]), git_status_before)
+
+
+class WorkspaceCloseVersionTests(unittest.TestCase):
+    def test_guarded_close_version_detection(self) -> None:
+        for version, expected in (("0.9.0", True), ("0.9.3", True), ("1.0.0", True), ("0.8.2", False)):
+            with self.subTest(version=version), patch.object(
+                bridge, "_run_herdr_json", return_value={"result": {"version": version}}
+            ) as status:
+                self.assertEqual(bridge._supports_guarded_workspace_close(), expected)
+                status.assert_called_once_with(["status", "server", "--json"])
+
+        for document in ({"result": {"version": "unknown"}}, {"result": {}}):
+            with self.subTest(document=document), patch.object(
+                bridge, "_run_herdr_json", return_value=document
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Cannot verify Herdr 0.9.0 or newer"):
+                    bridge._supports_guarded_workspace_close()
 
 
 class TeardownSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.caller_env = patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "caller"})
         self.caller_env.start()
+        self.safe_close_support = patch.object(bridge, "_supports_guarded_workspace_close", return_value=True)
+        self.safe_close_support.start()
         self.temp_root = Path(tempfile.mkdtemp(prefix="herdr-bridge-unit-"))
         self.repo = self.temp_root / "repo"
         self.repo.mkdir()
@@ -301,6 +341,7 @@ class TeardownSafetyTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_root)
+        self.safe_close_support.stop()
         self.caller_env.stop()
 
     def _git_worktree(self, branch: str = "feature") -> Path:
@@ -583,12 +624,13 @@ class TeardownSafetyTests(unittest.TestCase):
             "open_workspace_id": "target",
         }
         workspace_reads = 0
+        caller = {"workspace_id": "caller", "focused": True, "worktree": {"repo_key": "caller-fixture-repository"}}
 
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             nonlocal workspace_reads
             if command[:2] == ["workspace", "list"]:
                 workspace_reads += 1
-                return self._with_caller([{"workspace_id": "target", "focused": False, "worktree": provenance}]) if workspace_reads == 1 else []
+                return [{"workspace_id": "target", "focused": False, "worktree": provenance}, caller] if workspace_reads == 1 else [caller]
             if command[:2] == ["agent", "list"]:
                 return [{"workspace_id": "target", "agent_status": "idle"}]
             if command[:2] == ["worktree", "list"]:
@@ -674,9 +716,52 @@ class TeardownSafetyTests(unittest.TestCase):
             status_before,
         )
 
-    def test_workspace_close_rejects_repository_shared_with_caller(self) -> None:
+    def test_workspace_close_allows_shared_repository_and_missing_unrelated_owner(self) -> None:
+        linked_path = self._git_worktree("unrelated-linked")
         provenance = {
-            "repo_key": str(self.repo / ".git"),
+            "repo_key": "shared-repository",
+            "repo_name": "repo",
+            "repo_root": str(self.repo),
+            "checkout_path": str(self.repo),
+            "is_linked_worktree": False,
+        }
+        target = {"workspace_id": "target", "focused": False, "worktree": provenance}
+        caller = {"workspace_id": "caller", "focused": True, "worktree": provenance}
+        peer_with_unknown_repo = {"workspace_id": "peer-with-unknown-repo", "focused": False}
+        worktree_info = {
+            "path": str(self.repo),
+            "is_linked_worktree": False,
+            "open_workspace_id": "target",
+        }
+        unrelated_linked = {"path": str(linked_path), "is_linked_worktree": True}
+        workspace_reads = 0
+
+        def collection(command: list[str], key: str) -> list[dict[str, object]]:
+            nonlocal workspace_reads
+            if command[:2] == ["workspace", "list"]:
+                workspace_reads += 1
+                return [target, caller, peer_with_unknown_repo] if workspace_reads == 1 else [caller, peer_with_unknown_repo]
+            if command[:2] == ["agent", "list"]:
+                return [{"workspace_id": "target", "agent_status": "done"}]
+            if command[:2] == ["worktree", "list"]:
+                return [worktree_info, unrelated_linked]
+            raise AssertionError(command)
+
+        def run(command: list[str]) -> dict[str, object]:
+            if command == ["workspace", "close", "target"]:
+                return {"result": {}}
+            raise AssertionError(command)
+
+        with patch.object(bridge, "_collection", side_effect=collection), patch.object(
+            bridge, "_run_herdr_json", side_effect=run
+        ):
+            result = bridge._mutate_tool("herdr_workspace_close", "target")
+        self.assertTrue(result["closed"])
+        self.assertEqual(workspace_reads, 2)
+
+    def test_workspace_close_refuses_old_server_before_worktree_inspection_or_mutation(self) -> None:
+        provenance = {
+            "repo_key": "shared-repository",
             "repo_name": "repo",
             "repo_root": str(self.repo),
             "checkout_path": str(self.repo),
@@ -692,104 +777,81 @@ class TeardownSafetyTests(unittest.TestCase):
 
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             if command[:2] == ["workspace", "list"]:
-                return self._with_caller([target, caller])
+                return [target, caller]
             if command[:2] == ["agent", "list"]:
-                return [{"workspace_id": "target", "agent_status": "idle"}]
+                return [{"workspace_id": "target", "agent_status": "done"}]
             if command[:2] == ["worktree", "list"]:
                 return [worktree_info]
             raise AssertionError(command)
 
+        self.safe_close_support.stop()
         with patch.object(bridge, "_collection", side_effect=collection), patch.object(
-            bridge, "_run_herdr_json"
-        ) as mutation:
-            with self.assertRaisesRegex(RuntimeError, "another workspace shares its Git repository"):
+            bridge, "_run_herdr_json", return_value={"result": {"version": "0.8.2"}}
+        ) as command:
+            with self.assertRaisesRegex(RuntimeError, "0.9.0 or newer workspace-close guard"):
                 bridge._mutate_tool("herdr_workspace_close", "target")
-        mutation.assert_not_called()
+        command.assert_called_once_with(["status", "server", "--json"])
 
-    def test_workspace_close_rejects_other_workspace_with_unknown_repository(self) -> None:
-        caller_repo = self.temp_root / "caller-repo"
-        caller_repo.mkdir()
-        target_provenance = {
-            "repo_key": "target-repository",
+    def test_workspace_close_refuses_unknown_server_before_worktree_inspection_or_mutation(self) -> None:
+        provenance = {
+            "repo_key": "repository",
             "repo_name": "repo",
             "repo_root": str(self.repo),
             "checkout_path": str(self.repo),
             "is_linked_worktree": False,
-        }
-        caller_provenance = {
-            "repo_key": "caller-repository",
-            "repo_name": "caller-repo",
-            "repo_root": str(caller_repo),
-            "checkout_path": str(caller_repo),
-            "is_linked_worktree": False,
-        }
-        workspaces = [
-            {"workspace_id": "target", "focused": False, "worktree": target_provenance},
-            {"workspace_id": "caller", "focused": True, "worktree": caller_provenance},
-            {"workspace_id": "unknown", "focused": False},
-        ]
-        worktree_info = {
-            "path": str(self.repo),
-            "is_linked_worktree": False,
-            "open_workspace_id": "target",
         }
 
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             if command[:2] == ["workspace", "list"]:
-                return self._with_caller(workspaces)
+                return [
+                    {"workspace_id": "target", "focused": False, "worktree": provenance},
+                    {"workspace_id": "caller", "focused": True},
+                ]
             if command[:2] == ["agent", "list"]:
-                return [{"workspace_id": "target", "agent_status": "idle"}]
-            if command[:2] == ["worktree", "list"]:
-                return [worktree_info]
-            raise AssertionError(command)
+                return []
+            raise AssertionError(f"unexpected inventory read: {command}")
 
+        self.safe_close_support.stop()
         with patch.object(bridge, "_collection", side_effect=collection), patch.object(
-            bridge, "_run_herdr_json"
-        ) as mutation:
-            with self.assertRaisesRegex(RuntimeError, "Cannot verify another workspace's repository identity"):
+            bridge, "_run_herdr_json", return_value={"result": {"version": "unknown"}}
+        ) as command:
+            with self.assertRaisesRegex(RuntimeError, "Cannot verify Herdr 0.9.0 or newer"):
                 bridge._mutate_tool("herdr_workspace_close", "target")
-        mutation.assert_not_called()
+        command.assert_called_once_with(["status", "server", "--json"])
 
-    def test_workspace_close_rejects_malformed_other_repository_key(self) -> None:
-        target_provenance = {
-            "repo_key": "target-repository",
+    def test_workspace_close_readback_detects_missing_peer_workspace(self) -> None:
+        provenance = {
+            "repo_key": "repository",
             "repo_name": "repo",
             "repo_root": str(self.repo),
             "checkout_path": str(self.repo),
             "is_linked_worktree": False,
         }
-        worktree_info = {
-            "path": str(self.repo),
-            "is_linked_worktree": False,
-            "open_workspace_id": "target",
-        }
-        for repo_key in (" \t ", "invalid\nrepository"):
-            workspaces = [
-                {"workspace_id": "target", "focused": False, "worktree": target_provenance},
-                {
-                    "workspace_id": "other",
-                    "focused": True,
-                    "worktree": {"repo_key": repo_key},
-                },
-            ]
+        target = {"workspace_id": "target", "focused": False, "worktree": provenance}
+        caller = {"workspace_id": "caller", "focused": True}
+        peer = {"workspace_id": "peer", "focused": False}
+        worktree_info = {"path": str(self.repo), "is_linked_worktree": False, "open_workspace_id": "target"}
+        workspace_reads = 0
 
-            def collection(command: list[str], key: str) -> list[dict[str, object]]:
-                if command[:2] == ["workspace", "list"]:
-                    return self._with_caller(workspaces)
-                if command[:2] == ["agent", "list"]:
-                    return [{"workspace_id": "target", "agent_status": "idle"}]
-                if command[:2] == ["worktree", "list"]:
-                    return [worktree_info]
-                raise AssertionError(command)
+        def collection(command: list[str], key: str) -> list[dict[str, object]]:
+            nonlocal workspace_reads
+            if command[:2] == ["workspace", "list"]:
+                workspace_reads += 1
+                return [target, caller, peer] if workspace_reads == 1 else [caller]
+            if command[:2] == ["agent", "list"]:
+                return [{"workspace_id": "target", "agent_status": "done"}]
+            if command[:2] == ["worktree", "list"]:
+                return [worktree_info]
+            raise AssertionError(command)
 
-            with self.subTest(repo_key=repr(repo_key)), patch.object(
-                bridge, "_collection", side_effect=collection
-            ), patch.object(bridge, "_run_herdr_json") as mutation:
-                with self.assertRaisesRegex(RuntimeError, "Cannot verify another workspace's repository identity"):
-                    bridge._mutate_tool("herdr_workspace_close", "target")
-                mutation.assert_not_called()
+        with patch.object(bridge, "_collection", side_effect=collection), patch.object(
+            bridge, "_run_herdr_json", return_value={"result": {}}
+        ) as close:
+            with self.assertRaisesRegex(RuntimeError, "changed another workspace"):
+                bridge._mutate_tool("herdr_workspace_close", "target")
+        close.assert_called_once_with(["workspace", "close", "target"])
 
-    def test_workspace_close_owner_refuses_while_other_workspace_linked_worktree_remains(self) -> None:
+    def test_workspace_close_relinquishes_primary_group_refusal_to_herdr(self) -> None:
         provenance = {
             "repo_key": str(self.repo / ".git"),
             "repo_name": "repo",
@@ -805,8 +867,9 @@ class TeardownSafetyTests(unittest.TestCase):
             "is_linked_worktree": False,
             "open_workspace_id": "owner",
         }
+        linked_path = self._git_worktree("linked-agent-17")
         unrelated_linked_worktree = {
-            "path": str(self.repo / "linked-agent-17"),
+            "path": str(linked_path),
             "is_linked_worktree": True,
             "open_workspace_id": "agent-17",
         }
@@ -820,12 +883,17 @@ class TeardownSafetyTests(unittest.TestCase):
                 return [worktree_info, unrelated_linked_worktree]
             raise AssertionError(command)
 
+        def close(command: list[str]) -> dict[str, object]:
+            if command == ["workspace", "close", "owner"]:
+                raise RuntimeError("workspace_group_close_required")
+            raise AssertionError(command)
+
         with patch.object(bridge, "_collection", side_effect=collection), patch.object(
-            bridge, "_run_herdr_json"
+            bridge, "_run_herdr_json", side_effect=close
         ) as mutation:
-            with self.assertRaisesRegex(RuntimeError, "linked worktree remains"):
+            with self.assertRaisesRegex(RuntimeError, "workspace_group_close_required"):
                 bridge._mutate_tool("herdr_workspace_close", "owner")
-        mutation.assert_not_called()
+        mutation.assert_called_once_with(["workspace", "close", "owner"])
 
     def test_workspace_close_rejects_linked_rows_with_unknown_owners(self) -> None:
         provenance = {
@@ -843,24 +911,23 @@ class TeardownSafetyTests(unittest.TestCase):
             "open_workspace_id": "primary",
         }
         cases = (
-            ("missing owner", {"path": str(self.repo / "linked"), "is_linked_worktree": True}, [primary, target], "Linked worktree owner identity"),
             (
-                "invalid owner",
+                "invalid owner id",
                 {"path": str(self.repo / "linked"), "is_linked_worktree": True, "open_workspace_id": "agent 17"},
                 [primary, target],
-                "Linked worktree owner identity",
+                "owner identity is invalid",
             ),
             (
-                "missing owner workspace",
+                "owner is absent from workspace inventory",
                 {"path": str(self.repo / "linked"), "is_linked_worktree": True, "open_workspace_id": "agent-17"},
                 [primary, target],
-                "Linked worktree owner is missing",
+                "owner is missing or invalid in the workspace inventory",
             ),
             (
                 "target-owned linked row",
                 {"path": str(self.repo / "linked"), "is_linked_worktree": True, "open_workspace_id": "target"},
                 [primary, target],
-                "inventories disagree",
+                "owns a linked worktree",
             ),
             (
                 "null linked flag on nonprimary target-owned row",
@@ -1069,6 +1136,7 @@ class TeardownSafetyTests(unittest.TestCase):
             "is_linked_worktree": False,
         }
         workspace = {"workspace_id": "target", "focused": False, "worktree": provenance}
+        caller = {"workspace_id": "caller", "focused": True, "worktree": {"repo_key": "caller-fixture-repository"}}
         worktree_info = {
             "path": str(self.repo),
             "branch": "base",
@@ -1080,7 +1148,7 @@ class TeardownSafetyTests(unittest.TestCase):
             nonlocal call
             if command[:2] == ["workspace", "list"]:
                 call += 1
-                return self._with_caller([workspace]) if call == 1 else []
+                return [workspace, caller] if call == 1 else [caller]
             if command[:2] == ["agent", "list"]:
                 return []
             if command[:2] == ["worktree", "list"]:

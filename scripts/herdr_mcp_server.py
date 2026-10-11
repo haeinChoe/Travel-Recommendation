@@ -18,6 +18,7 @@ MAX_REQUEST_BYTES = 1_048_576
 HERDR_TIMEOUT_SECONDS = 8
 GIT_TIMEOUT_SECONDS = 5
 WORKSPACE_ID_PATTERN = re.compile(r"^[^\x00-\x20\x7f]{1,256}$")
+HERDR_VERSION_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 TOOLS: dict[str, dict[str, Any]] = {
     "herdr_server_status": {
@@ -129,6 +130,11 @@ def _run_herdr_json(command: list[str]) -> Any:
 
     if completed.returncode != 0:
         stderr = completed.stderr.casefold()
+        if "workspace_group_close_required" in stderr:
+            raise RuntimeError(
+                "Herdr refused to close a primary workspace with linked workspaces; "
+                "the bridge will not request a group close"
+            )
         if "operation not permitted" in stderr or "permissiondenied" in stderr or "eperm" in stderr:
             raise RuntimeError(
                 "Herdr socket access denied (EPERM). The current sandbox blocks this connection; "
@@ -362,13 +368,15 @@ def _assert_plain_workspace_provenance(
         if item["is_linked_worktree"] is False:
             continue
         linked_owner_id = item.get("open_workspace_id")
+        if linked_owner_id is None:
+            continue
         if not isinstance(linked_owner_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(linked_owner_id):
-            raise RuntimeError("Linked worktree owner identity is missing or invalid; refusing close")
+            raise RuntimeError("Linked worktree owner identity is invalid; refusing close")
         linked_owners = [row for row in workspaces if row.get("workspace_id") == linked_owner_id]
         if len(linked_owners) != 1 or not isinstance(linked_owners[0].get("focused"), bool):
             raise RuntimeError("Linked worktree owner is missing or invalid in the workspace inventory; refusing close")
         if linked_owner_id == workspace_id:
-            raise RuntimeError("Workspace and worktree inventories disagree; refusing close")
+            raise RuntimeError("Refusing to close a workspace that owns a linked worktree")
     open_workspace_id = matching[0].get("open_workspace_id")
     if not isinstance(open_workspace_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(open_workspace_id):
         raise RuntimeError("Primary checkout owner identity is missing or invalid; refusing close")
@@ -382,6 +390,18 @@ def _valid_repository_key(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip()) and value.isprintable()
 
 
+def _supports_guarded_workspace_close() -> bool:
+    document = _run_herdr_json(["status", "server", "--json"])
+    result = _unwrap_cli_result(document)
+    if isinstance(result, dict) and isinstance(result.get("server"), dict):
+        result = result["server"]
+    version = result.get("version") if isinstance(result, dict) else None
+    match = HERDR_VERSION_PATTERN.fullmatch(version) if isinstance(version, str) else None
+    if match is None:
+        raise RuntimeError("Cannot verify Herdr 0.9.0 or newer workspace-close safety version; refusing close")
+    return tuple(int(part) for part in match.groups()) >= (0, 9, 0)
+
+
 def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
     caller_workspace_id = _caller_workspace_id()
     workspace, all_workspaces, agents = _workspace_context(workspace_id, caller_workspace_id)
@@ -393,6 +413,8 @@ def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
     focused_workspace_id = _focused_workspace_id(all_workspaces)
     _assert_not_focused(workspace)
     _assert_agents_settled(agents, workspace_id)
+    if name == "herdr_workspace_close" and not _supports_guarded_workspace_close():
+        raise RuntimeError("Cannot verify Herdr 0.9.0 or newer workspace-close guard; refusing close")
     worktrees = _worktrees_for(workspace_id)
     linked = [item for item in worktrees if item.get("open_workspace_id") == workspace_id]
 
@@ -433,26 +455,23 @@ def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
     checkout_owner_id, checkout_path = _assert_plain_workspace_provenance(
         workspace, all_workspaces, worktrees, workspace_id
     )
-    if checkout_owner_id == workspace_id and any(item.get("is_linked_worktree") is not False for item in worktrees):
-        raise RuntimeError("Refusing to close a workspace while a linked worktree remains")
     if checkout_owner_id != workspace_id:
         raise RuntimeError("Refusing to close a workspace that shares its primary checkout with another workspace")
-    repo_key = workspace["worktree"]["repo_key"]
-    for item in all_workspaces:
-        if item.get("workspace_id") == workspace_id:
-            continue
-        other_provenance = item.get("worktree")
-        other_repo_key = other_provenance.get("repo_key") if isinstance(other_provenance, dict) else None
-        if not _valid_repository_key(other_repo_key):
-            raise RuntimeError("Cannot verify another workspace's repository identity; refusing close")
-        if other_repo_key == repo_key:
-            raise RuntimeError("Refusing to close a workspace while another workspace shares its Git repository")
-    git_paths = [item["path"] for item in worktrees if isinstance(item.get("path"), str) and item.get("path")]
+    git_paths = []
+    for item in worktrees:
+        path = item.get("path")
+        if not isinstance(path, str) or not Path(path).is_absolute():
+            raise RuntimeError("Worktree inventory has a missing or invalid path; refusing close")
+        git_paths.append(path)
     git_before = _git_status_snapshot(git_paths)
     git_worktrees_before = _git_worktree_snapshot(git_paths)
     remaining = _run_mutation_preserving_focus(["workspace", "close", workspace_id], focused_workspace_id)
     if any(item.get("workspace_id") == workspace_id for item in remaining):
         raise RuntimeError("Herdr workspace close did not pass readback verification")
+    expected_peers = [item for item in all_workspaces if item.get("workspace_id") != workspace_id]
+    actual_peers = [item for item in remaining if item.get("workspace_id") != workspace_id]
+    if actual_peers != expected_peers:
+        raise RuntimeError("Herdr workspace close changed another workspace; refusing success")
     if checkout_owner_id != workspace_id:
         owners_after = [item for item in remaining if item.get("workspace_id") == checkout_owner_id]
         if len(owners_after) != 1:
