@@ -168,13 +168,22 @@ def _validate_workspace_id(value: Any) -> str:
     return value
 
 
-def _workspace_context(workspace_id: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]]]:
+def _workspace_context(
+    workspace_id: str, caller_workspace_id: str
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]]]:
     workspaces = _collection(["workspace", "list"], "workspaces")
+    caller_matches = [item for item in workspaces if item.get("workspace_id") == caller_workspace_id]
+    if len(caller_matches) != 1:
+        raise RuntimeError("Caller workspace identity is missing from the Herdr inventory; refusing teardown")
+    if workspace_id == caller_workspace_id:
+        raise RuntimeError("Refusing to tear down the workspace running this caller")
     matches = [item for item in workspaces if item.get("workspace_id") == workspace_id]
     if len(matches) > 1:
         raise RuntimeError("Herdr returned duplicate workspace IDs")
+    if not matches:
+        return None, workspaces, []
     agents = _collection(["agent", "list"], "agents")
-    return (matches[0] if matches else None, workspaces, agents)
+    return matches[0], workspaces, agents
 
 
 def _assert_not_focused(workspace: dict[str, Any]) -> None:
@@ -182,12 +191,11 @@ def _assert_not_focused(workspace: dict[str, Any]) -> None:
         raise RuntimeError("Refusing to close the current or focused workspace")
 
 
-def _assert_not_caller_workspace(workspace_id: str) -> None:
+def _caller_workspace_id() -> str:
     caller_workspace_id = os.environ.get("HERDR_WORKSPACE_ID")
     if not isinstance(caller_workspace_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(caller_workspace_id):
         raise RuntimeError("Caller workspace identity is unavailable; refusing teardown")
-    if workspace_id == caller_workspace_id:
-        raise RuntimeError("Refusing to tear down the workspace running this caller")
+    return caller_workspace_id
 
 
 def _focused_workspace_id(workspaces: list[dict[str, Any]]) -> str | None:
@@ -375,8 +383,8 @@ def _valid_repository_key(value: Any) -> bool:
 
 
 def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
-    _assert_not_caller_workspace(workspace_id)
-    workspace, all_workspaces, agents = _workspace_context(workspace_id)
+    caller_workspace_id = _caller_workspace_id()
+    workspace, all_workspaces, agents = _workspace_context(workspace_id, caller_workspace_id)
     if workspace is None:
         if name == "herdr_worktree_remove":
             return {"workspace_id": workspace_id, "removed": False, "already_absent": True}

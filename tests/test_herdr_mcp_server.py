@@ -308,6 +308,18 @@ class TeardownSafetyTests(unittest.TestCase):
         subprocess.run(["git", "worktree", "add", "-qb", branch, str(path)], cwd=self.repo, check=True)
         return path
 
+    def _with_caller(self, workspaces: list[dict[str, object]]) -> list[dict[str, object]]:
+        if any(item.get("workspace_id") == "caller" for item in workspaces):
+            return workspaces
+        return [
+            *workspaces,
+            {
+                "workspace_id": "caller",
+                "focused": False,
+                "worktree": {"repo_key": "caller-fixture-repository"},
+            },
+        ]
+
     def _setup_api(
         self,
         *,
@@ -321,7 +333,7 @@ class TeardownSafetyTests(unittest.TestCase):
         worktrees = [worktree] if worktree is not None else []
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             if command[:2] == ["workspace", "list"]:
-                return [workspace]
+                return self._with_caller([workspace])
             if command[:2] == ["agent", "list"]:
                 return agents
             if command[:2] == ["worktree", "list"]:
@@ -335,23 +347,76 @@ class TeardownSafetyTests(unittest.TestCase):
             with mocks, self.assertRaises(RuntimeError):
                 bridge._mutate_tool("herdr_workspace_close", "target")
 
-    def test_rejects_caller_workspace_before_reading_or_mutating(self) -> None:
-        with patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "target"}), patch.object(
-            bridge, "_workspace_context"
-        ) as context, patch.object(bridge, "_run_herdr_json") as mutation:
-            with self.assertRaisesRegex(RuntimeError, "workspace running this caller"):
-                bridge._mutate_tool("herdr_workspace_close", "target")
-        context.assert_not_called()
-        mutation.assert_not_called()
+    def test_rejects_caller_workspace_before_reading_agents_or_mutating(self) -> None:
+        def collection(command: list[str], key: str) -> list[dict[str, object]]:
+            if command[:2] == ["workspace", "list"]:
+                return [{"workspace_id": "target", "focused": False}]
+            raise AssertionError(command)
+
+        for name in ("herdr_worktree_remove", "herdr_workspace_close"):
+            with self.subTest(name=name), patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "target"}), patch.object(
+                bridge, "_collection", side_effect=collection
+            ) as inventory, patch.object(bridge, "_run_herdr_json") as mutation:
+                with self.assertRaisesRegex(RuntimeError, "workspace running this caller"):
+                    bridge._mutate_tool(name, "target")
+            inventory.assert_called_once_with(["workspace", "list"], "workspaces")
+            mutation.assert_not_called()
 
     def test_rejects_teardown_without_caller_context(self) -> None:
-        with patch.dict(os.environ, {}, clear=True), patch.object(
-            bridge, "_workspace_context"
-        ) as context, patch.object(bridge, "_run_herdr_json") as mutation:
-            with self.assertRaisesRegex(RuntimeError, "Caller workspace identity is unavailable"):
-                bridge._mutate_tool("herdr_workspace_close", "target")
-        context.assert_not_called()
-        mutation.assert_not_called()
+        for name in ("herdr_worktree_remove", "herdr_workspace_close"):
+            with self.subTest(name=name), patch.dict(os.environ, {}, clear=True), patch.object(
+                bridge, "_collection"
+            ) as inventory, patch.object(bridge, "_run_herdr_json") as mutation:
+                with self.assertRaisesRegex(RuntimeError, "Caller workspace identity is unavailable"):
+                    bridge._mutate_tool(name, "target")
+            inventory.assert_not_called()
+            mutation.assert_not_called()
+
+    def test_rejects_malformed_caller_context_before_inventory_or_mutation(self) -> None:
+        for name in ("herdr_worktree_remove", "herdr_workspace_close"):
+            for caller_id in (" ", "bad\nidentity"):
+                with self.subTest(name=name, caller_id=repr(caller_id)), patch.dict(
+                    os.environ, {"HERDR_WORKSPACE_ID": caller_id}
+                ), patch.object(bridge, "_collection") as inventory, patch.object(
+                    bridge, "_run_herdr_json"
+                ) as mutation:
+                    with self.assertRaisesRegex(RuntimeError, "Caller workspace identity is unavailable"):
+                        bridge._mutate_tool(name, "target")
+                inventory.assert_not_called()
+                mutation.assert_not_called()
+
+    def test_rejects_stale_caller_identity_before_reading_agents_or_mutating(self) -> None:
+        def collection(command: list[str], key: str) -> list[dict[str, object]]:
+            if command[:2] == ["workspace", "list"]:
+                return [{"workspace_id": "target", "focused": False}]
+            raise AssertionError(command)
+
+        for name in ("herdr_worktree_remove", "herdr_workspace_close"):
+            with self.subTest(name=name), patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "stale-caller"}), patch.object(
+                bridge, "_collection", side_effect=collection
+            ) as inventory, patch.object(bridge, "_run_herdr_json") as mutation:
+                with self.assertRaisesRegex(RuntimeError, "missing from the Herdr inventory"):
+                    bridge._mutate_tool(name, "target")
+            inventory.assert_called_once_with(["workspace", "list"], "workspaces")
+            mutation.assert_not_called()
+
+    def test_missing_target_returns_noop_without_reading_agents_or_mutating(self) -> None:
+        def collection(command: list[str], key: str) -> list[dict[str, object]]:
+            if command[:2] == ["workspace", "list"]:
+                return [{"workspace_id": "caller", "focused": True}]
+            raise AssertionError(f"unexpected inventory read: {command}")
+
+        expected = {
+            "herdr_worktree_remove": {"workspace_id": "missing", "removed": False, "already_absent": True},
+            "herdr_workspace_close": {"workspace_id": "missing", "closed": False, "already_absent": True},
+        }
+        for name, result in expected.items():
+            with self.subTest(name=name), patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "caller"}), patch.object(
+                bridge, "_collection", side_effect=collection
+            ) as inventory, patch.object(bridge, "_run_herdr_json") as mutation:
+                self.assertEqual(bridge._mutate_tool(name, "missing"), result)
+            inventory.assert_called_once_with(["workspace", "list"], "workspaces")
+            mutation.assert_not_called()
 
     def test_rejects_unlinked_and_dirty_worktrees(self) -> None:
         path = self._git_worktree()
@@ -456,7 +521,7 @@ class TeardownSafetyTests(unittest.TestCase):
 
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             if command[:2] == ["workspace", "list"]:
-                return [workspace]
+                return self._with_caller([workspace])
             if command[:2] == ["agent", "list"]:
                 return [{"workspace_id": "target", "agent_status": "idle"}]
             if command[:2] == ["worktree", "list"]:
@@ -523,7 +588,7 @@ class TeardownSafetyTests(unittest.TestCase):
             nonlocal workspace_reads
             if command[:2] == ["workspace", "list"]:
                 workspace_reads += 1
-                return [{"workspace_id": "target", "focused": False, "worktree": provenance}] if workspace_reads == 1 else []
+                return self._with_caller([{"workspace_id": "target", "focused": False, "worktree": provenance}]) if workspace_reads == 1 else []
             if command[:2] == ["agent", "list"]:
                 return [{"workspace_id": "target", "agent_status": "idle"}]
             if command[:2] == ["worktree", "list"]:
@@ -585,7 +650,7 @@ class TeardownSafetyTests(unittest.TestCase):
 
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             if command[:2] == ["workspace", "list"]:
-                return [primary, target, linked_owner]
+                return self._with_caller([primary, target, linked_owner])
             if command[:2] == ["agent", "list"]:
                 return [{"workspace_id": "target", "agent_status": "idle"}]
             if command[:2] == ["worktree", "list"]:
@@ -627,7 +692,7 @@ class TeardownSafetyTests(unittest.TestCase):
 
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             if command[:2] == ["workspace", "list"]:
-                return [target, caller]
+                return self._with_caller([target, caller])
             if command[:2] == ["agent", "list"]:
                 return [{"workspace_id": "target", "agent_status": "idle"}]
             if command[:2] == ["worktree", "list"]:
@@ -671,7 +736,7 @@ class TeardownSafetyTests(unittest.TestCase):
 
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             if command[:2] == ["workspace", "list"]:
-                return workspaces
+                return self._with_caller(workspaces)
             if command[:2] == ["agent", "list"]:
                 return [{"workspace_id": "target", "agent_status": "idle"}]
             if command[:2] == ["worktree", "list"]:
@@ -710,7 +775,7 @@ class TeardownSafetyTests(unittest.TestCase):
 
             def collection(command: list[str], key: str) -> list[dict[str, object]]:
                 if command[:2] == ["workspace", "list"]:
-                    return workspaces
+                    return self._with_caller(workspaces)
                 if command[:2] == ["agent", "list"]:
                     return [{"workspace_id": "target", "agent_status": "idle"}]
                 if command[:2] == ["worktree", "list"]:
@@ -748,7 +813,7 @@ class TeardownSafetyTests(unittest.TestCase):
 
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             if command[:2] == ["workspace", "list"]:
-                return [owner, target, linked_owner]
+                return self._with_caller([owner, target, linked_owner])
             if command[:2] == ["agent", "list"]:
                 return []
             if command[:2] == ["worktree", "list"]:
@@ -807,7 +872,7 @@ class TeardownSafetyTests(unittest.TestCase):
         for label, linked_worktree, workspaces, expected_error in cases:
             def collection(command: list[str], key: str) -> list[dict[str, object]]:
                 if command[:2] == ["workspace", "list"]:
-                    return workspaces
+                    return self._with_caller(workspaces)
                 if command[:2] == ["agent", "list"]:
                     return [{"workspace_id": "target", "agent_status": "idle"}]
                 if command[:2] == ["worktree", "list"]:
@@ -843,7 +908,7 @@ class TeardownSafetyTests(unittest.TestCase):
             nonlocal workspace_reads
             if command[:2] == ["workspace", "list"]:
                 workspace_reads += 1
-                return [primary, target] if workspace_reads == 1 else [primary]
+                return self._with_caller([primary, target] if workspace_reads == 1 else [primary])
             if command[:2] == ["agent", "list"]:
                 return [{"workspace_id": "target", "agent_status": "idle"}]
             if command[:2] == ["worktree", "list"]:
@@ -876,7 +941,7 @@ class TeardownSafetyTests(unittest.TestCase):
         ):
             def collection(command: list[str], key: str) -> list[dict[str, object]]:
                 if command[:2] == ["workspace", "list"]:
-                    return workspaces
+                    return self._with_caller(workspaces)
                 if command[:2] == ["agent", "list"]:
                     return [{"workspace_id": "target", "agent_status": "idle"}]
                 if command[:2] == ["worktree", "list"]:
@@ -904,7 +969,7 @@ class TeardownSafetyTests(unittest.TestCase):
 
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             if command[:2] == ["workspace", "list"]:
-                return workspaces
+                return self._with_caller(workspaces)
             if command[:2] == ["agent", "list"]:
                 return [{"workspace_id": "target", "agent_status": "idle"}]
             if command[:2] == ["worktree", "list"]:
@@ -941,7 +1006,7 @@ class TeardownSafetyTests(unittest.TestCase):
             nonlocal workspace_reads, worktree_reads
             if command[:2] == ["workspace", "list"]:
                 workspace_reads += 1
-                return [workspace] if workspace_reads == 1 else []
+                return self._with_caller([workspace]) if workspace_reads == 1 else []
             if command[:2] == ["agent", "list"]:
                 return []
             if command[:2] == ["worktree", "list"]:
@@ -968,7 +1033,7 @@ class TeardownSafetyTests(unittest.TestCase):
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             nonlocal worktree_reads
             if command[:2] == ["workspace", "list"]:
-                return [workspace]
+                return self._with_caller([workspace])
             if command[:2] == ["agent", "list"]:
                 return []
             if command[:2] == ["worktree", "list"]:
@@ -1015,7 +1080,7 @@ class TeardownSafetyTests(unittest.TestCase):
             nonlocal call
             if command[:2] == ["workspace", "list"]:
                 call += 1
-                return [workspace] if call == 1 else []
+                return self._with_caller([workspace]) if call == 1 else []
             if command[:2] == ["agent", "list"]:
                 return []
             if command[:2] == ["worktree", "list"]:
