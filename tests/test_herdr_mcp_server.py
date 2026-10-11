@@ -348,8 +348,8 @@ class TeardownSafetyTests(unittest.TestCase):
         self.safe_close_support.stop()
         self.caller_env.stop()
 
-    def _git_worktree(self, branch: str = "feature") -> Path:
-        path = self.temp_root / "checkout"
+    def _git_worktree(self, branch: str = "feature", checkout_name: str = "checkout") -> Path:
+        path = self.temp_root / checkout_name
         subprocess.run(["git", "worktree", "add", "-qb", branch, str(path)], cwd=self.repo, check=True)
         return path
 
@@ -686,18 +686,15 @@ class TeardownSafetyTests(unittest.TestCase):
             "label": "repo",
             "open_workspace_id": "caller",
         }
-        unrelated_linked_path = self._git_worktree("linked-agent-17")
-        linked_owner = {
-            "workspace_id": "agent-17",
-            "focused": False,
-            "worktree": {"checkout_path": str(unrelated_linked_path)},
-        }
-        unrelated_linked_worktree = {
-            "path": str(unrelated_linked_path),
-            "is_linked_worktree": True,
-        }
-        initial_workspaces = [caller, target, linked_owner, peer]
-        remaining_workspaces = [caller, linked_owner, peer]
+        unrelated_linked_paths = [
+            self._git_worktree("linked-agent-17", "checkout-agent-17"),
+            self._git_worktree("linked-pilot-entry-read-only", "checkout-pilot-entry-read-only"),
+        ]
+        unrelated_linked_worktrees = [
+            {"path": str(path), "is_linked_worktree": True} for path in unrelated_linked_paths
+        ]
+        initial_workspaces = [caller, target, peer]
+        remaining_workspaces = [caller, peer]
         worktree_commands: list[list[str]] = []
         workspace_reads = 0
 
@@ -710,7 +707,7 @@ class TeardownSafetyTests(unittest.TestCase):
                 return [{"workspace_id": "target", "agent_status": "idle"}]
             if command[:2] == ["worktree", "list"]:
                 worktree_commands.append(command)
-                return [worktree_info, unrelated_linked_worktree]
+                return [worktree_info, *unrelated_linked_worktrees]
             raise AssertionError(command)
 
         close_commands: list[list[str]] = []
@@ -721,8 +718,9 @@ class TeardownSafetyTests(unittest.TestCase):
                 return {"result": {}}
             raise AssertionError(command)
 
-        git_before = bridge._git(str(self.repo), "worktree", "list", "--porcelain")
-        status_before = bridge._git(str(self.repo), "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching")
+        snapshot_paths = [str(self.repo), *(str(path) for path in unrelated_linked_paths)]
+        git_before = bridge._git_worktree_snapshot(snapshot_paths)
+        status_before = bridge._git_status_snapshot(snapshot_paths)
         with patch.object(bridge, "_collection", side_effect=collection), patch.object(
             bridge, "_run_herdr_json", side_effect=close
         ):
@@ -733,11 +731,8 @@ class TeardownSafetyTests(unittest.TestCase):
         self.assertIn(["worktree", "list", "--workspace", "target"], worktree_commands)
         self.assertIn(["worktree", "list", "--cwd", str(self.repo)], worktree_commands)
         self.assertEqual(workspace_reads, 2)
-        self.assertEqual(bridge._git(str(self.repo), "worktree", "list", "--porcelain"), git_before)
-        self.assertEqual(
-            bridge._git(str(self.repo), "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"),
-            status_before,
-        )
+        self.assertEqual(bridge._git_worktree_snapshot(snapshot_paths), git_before)
+        self.assertEqual(bridge._git_status_snapshot(snapshot_paths), status_before)
 
     def test_workspace_close_allows_shared_repository_and_missing_unrelated_owner(self) -> None:
         linked_path = self._git_worktree("unrelated-linked")
@@ -995,18 +990,65 @@ class TeardownSafetyTests(unittest.TestCase):
             "is_linked_worktree": False,
             "open_workspace_id": "target",
         }
-        linked_without_owner = {
-            "path": str(self.repo / "linked"),
-            "is_linked_worktree": True,
+        linked_rows = (
+            ({"path": str(self.repo / "unmapped"), "is_linked_worktree": True}, "ownership is ambiguous"),
+            (
+                {"path": str(self.repo / "target-owned"), "is_linked_worktree": True, "open_workspace_id": "target"},
+                "owns a linked worktree",
+            ),
+        )
+        for linked_row, expected_error in linked_rows:
+            def collection(command: list[str], key: str) -> list[dict[str, object]]:
+                if command[:2] == ["workspace", "list"]:
+                    return self._with_caller([primary])
+                if command[:2] == ["agent", "list"]:
+                    return []
+                if command[:2] == ["worktree", "list"]:
+                    return [primary_worktree, linked_row]
+                raise AssertionError(command)
+
+            with self.subTest(linked_row=linked_row), patch.object(
+                bridge, "_collection", side_effect=collection
+            ), patch.object(bridge, "_run_herdr_json") as mutation:
+                with self.assertRaisesRegex(RuntimeError, expected_error):
+                    bridge._mutate_tool("herdr_workspace_close", "target")
+                mutation.assert_not_called()
+
+    def test_workspace_close_rejects_ambiguous_ownerless_link_mapping(self) -> None:
+        provenance = {
+            "repo_key": str(self.repo / ".git"),
+            "repo_name": "repo",
+            "repo_root": str(self.repo),
+            "checkout_path": str(self.repo),
+            "is_linked_worktree": False,
         }
+        caller = {"workspace_id": "caller", "focused": True, "worktree": provenance}
+        target = {"workspace_id": "target", "focused": False, "worktree": provenance}
+        linked_path = self._git_worktree("ambiguous-ownerless")
+        linked_owner_a = {
+            "workspace_id": "linked-owner-a",
+            "focused": False,
+            "worktree": {"checkout_path": str(linked_path)},
+        }
+        linked_owner_b = {
+            "workspace_id": "linked-owner-b",
+            "focused": False,
+            "worktree": {"checkout_path": str(linked_path)},
+        }
+        primary_worktree = {
+            "path": str(self.repo),
+            "is_linked_worktree": False,
+            "open_workspace_id": "caller",
+        }
+        linked_worktree = {"path": str(linked_path), "is_linked_worktree": True}
 
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             if command[:2] == ["workspace", "list"]:
-                return self._with_caller([primary])
+                return [caller, target, linked_owner_a, linked_owner_b]
             if command[:2] == ["agent", "list"]:
-                return []
+                return [{"workspace_id": "target", "agent_status": "idle"}]
             if command[:2] == ["worktree", "list"]:
-                return [primary_worktree, linked_without_owner]
+                return [primary_worktree, linked_worktree]
             raise AssertionError(command)
 
         with patch.object(bridge, "_collection", side_effect=collection), patch.object(
