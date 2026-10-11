@@ -131,16 +131,19 @@ class CollaborativeFilteringTests(unittest.TestCase):
         zero_score_order = cf.rank_cf(candidates, {})
         self.assertEqual(zero_score_order, sorted(candidates, key=popularity.stable_tie_key))
 
-    def test_zero_scores_preserve_precision_denominator_and_signal_coverage(self):
+    def test_zero_scores_preserve_denominator_without_creating_no_signal_hits(self):
         train_events = [event("west", "u1", "t1", "a"), event("west", "u2", "t2", "b")]
-        validation_events = [event("west", f"v{i}", f"v{i}", "b") for i in range(10)]
+        candidates = {("west", "a"), ("west", "b")}
+        no_signal_order = cf.rank_cf(candidates, {})
+        # Make the arbitrary HMAC winner relevant: without the zero-signal guard,
+        # this fixture would report a perfect Precision@1.
+        validation_events = [event("west", f"v{i}", f"v{i}", no_signal_order[0][1]) for i in range(10)]
         train = popularity.SplitSummary(
             train_events, 2, 0, 0, 0, {("west", "u1", "t1"), ("west", "u2", "t2")},
         )
         validation = popularity.SplitSummary(
             validation_events, 10, 0, 0, 0, {e.trip_key for e in validation_events},
         )
-        candidates = {("west", "a"), ("west", "b")}
         rankings = {e.trip_key: cf.rank_cf(candidates, {("west", "a"): 1}) for e in validation_events}
         signal = {e.trip_key: True for e in validation_events}
         rows = cf._metric_rows("item-cf", "west", train, validation, (2,), rankings, set(), signal)
@@ -151,10 +154,17 @@ class CollaborativeFilteringTests(unittest.TestCase):
         no_signal_rankings = {e.trip_key: cf.rank_cf(candidates, {}) for e in validation_events}
         no_signal = {e.trip_key: False for e in validation_events}
         no_signal_rows = cf._metric_rows(
-            "item-cf", "west", train, validation, (2,), no_signal_rankings, set(), no_signal,
+            "item-cf", "west", train, validation, (1, 2), no_signal_rankings, set(), no_signal,
         )
         coverage = next(row for row in no_signal_rows if row["metric"] == "recommendation_coverage")
         self.assertEqual(coverage["value"], "0-<10%")
+        self.assertEqual(no_signal_rankings[validation_events[0].trip_key], no_signal_order)
+        no_signal_precision = next(
+            row for row in no_signal_rows if row["cohort"] == "all" and row["metric"] == "precision@1"
+        )
+        self.assertEqual(no_signal_precision["value"], "suppressed")
+        self.assertEqual(no_signal_precision["status"], "suppressed_k10")
+        self.assertEqual(no_signal_precision["cell_size"], "10+")
         self.assertEqual(len(no_signal_rankings[validation_events[0].trip_key]), len(candidates))
 
     def test_metrics_use_trip_units_cohorts_and_suppression(self):
@@ -168,10 +178,34 @@ class CollaborativeFilteringTests(unittest.TestCase):
         self.assertEqual(row["value"], "1.000000")
         self.assertEqual(row["cell_size"], "10+")
         self.assertIn("user_history", {r["cohort"] for r in rows})
+        self.assertIn("cold_start_user", {r["cohort"] for r in rows})
         user_rows = [r for r in rows if r["cohort"] == "user_history" and r["metric"] == "evaluation_trips"]
         self.assertEqual(user_rows[0]["cell_size"], "<10")
         self.assertEqual(user_rows[0]["status"], "suppressed_k10")
         self.assertEqual(user_rows[0]["value"], "suppressed")
+        cold_rows = [r for r in rows if r["cohort"] == "cold_start_user" and r["metric"] == "evaluation_trips"]
+        self.assertEqual(cold_rows[0]["cell_size"], "<10")
+        self.assertEqual(cold_rows[0]["status"], "suppressed_k10")
+        cold_precision = next(r for r in rows if r["cohort"] == "cold_start_user" and r["metric"] == "precision@1")
+        self.assertEqual(cold_precision["status"], "suppressed_k10")
+
+    def test_validation_user_coverage_includes_mapped_blank_poi_visits(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "raw"
+            tl = make_split(root, "west", "TL", [("tl-trip", "v0", ["known-poi"])])
+            vl_trips = [(f"val-trip-{i}", f"v{i}", ["known-poi"] if i == 0 else [""])
+                        for i in range(10)]
+            vl = make_split(root, "west", "VL", vl_trips)
+            validation = popularity._read_split(popularity.InputSpec("west", "VL", vl))
+            self.assertEqual(len(validation.events), 1)
+            self.assertEqual(len(validation.visit_trip_keys), 10)
+            train = popularity._read_split(popularity.InputSpec("west", "TL", tl))
+            rankings = {event.trip_key: [("west", "known-poi")] for event in validation.events}
+            rows = cf._metric_rows("item-cf", "west", train, validation, (1,), rankings, {("west", "v0")})
+            history = next(row for row in rows if row["metric"] == "user_history_coverage")
+            cold = next(row for row in rows if row["metric"] == "user_cold_start_share")
+            self.assertEqual(history["value"], "<10/suppressed")
+            self.assertEqual(cold["value"], "<10/suppressed")
 
     def test_candidate_coverage_matches_popularity_candidate_universe(self):
         train = popularity.SplitSummary([event("west", "u", "t", "a"), event("east", "u", "t", "b")], 2,0,0,0,{("west","u","t"),("east","u","t")})

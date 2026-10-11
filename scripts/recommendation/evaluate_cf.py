@@ -25,7 +25,7 @@ import evaluate_popularity as shared
 RESULTS_ROOT = shared.REPO_ROOT / "results" / "experiments" / "cf-baseline"
 MIN_CELL = shared.MIN_CELL
 USER_TIE_KEY = b"travel-recommendation-cf-user-tie-v1"
-COHORTS = ("all", "seen_positive", "cold_positive", "user_history")
+COHORTS = ("all", "seen_positive", "cold_positive", "user_history", "cold_start_user")
 
 
 def _cosine(common: int, left_size: int, right_size: int) -> float:
@@ -152,17 +152,19 @@ def _metric_rows(
                 positives & candidates,
                 rankings.get(trip, []),
                 trip[:2] in history_users,
+                True if recommendation_signal is None else recommendation_signal.get(trip, False),
             ))
 
     out = []
     for cohort in COHORTS:
         selected = []
-        for _trip, positives, seen, ranked, has_history in query_data:
+        for _trip, positives, seen, ranked, has_history, has_signal in query_data:
             include = (
                 cohort == "all"
                 or (cohort == "seen_positive" and bool(seen))
                 or (cohort == "cold_positive" and bool(positives - seen))
                 or (cohort == "user_history" and has_history)
+                or (cohort == "cold_start_user" and not has_history)
             )
             if include:
                 if cohort in ("all", "user_history"):
@@ -171,7 +173,10 @@ def _metric_rows(
                     relevant = seen
                 else:
                     relevant = positives - seen
-                selected.append((ranked, relevant))
+                # HMAC ties preserve the full candidate denominator, but are
+                # not evidence of ranking quality when CF has no positive signal.
+                metric_relevant = relevant if has_signal and cohort != "cold_start_user" else set()
+                selected.append((ranked, metric_relevant))
         for metric in ("precision", "recall", "ndcg", "mrr"):
             for k in k_values:
                 values = [
@@ -196,9 +201,10 @@ def _metric_rows(
     )
     recommendable = sum(
         bool(ranked) if recommendation_signal is None else recommendation_signal.get(trip, False)
-        for trip, _positives, _seen, ranked, _has_history in query_data
+        for trip, _positives, _seen, ranked, _has_history, _has_signal in query_data
     )
-    validation_users = {(event.region, event.user_id) for event in validation.events}
+    # Keep mapped visit owners in the denominator even when every POI is blank.
+    validation_users = {(region, user) for region, user, _trip in validation.visit_trip_keys}
     history_count = sum(user in history_users for user in validation_users)
     train_trip_users = {(r, user) for r, user, _trip in train.visit_trip_keys}
     usable_train_users = len(set(history_users) & train_trip_users)
@@ -440,9 +446,9 @@ def main(argv: list[str] | None = None) -> int:
                 "self_exclusion":"target user excluded from user neighbors; source item excluded from item neighbors",
                 "candidate_universe":"all nonblank region-scoped POI_ID items observed in TL; same universe as popularity",
                 "known_tl_item_policy":"included in recommendation candidates",
-                "zero_score_candidate_policy":"all TL candidates retained in metric rankings and ordered by deterministic HMAC tie break",
+                "zero_score_candidate_policy":"all TL candidates retained in metric rankings and ordered by deterministic HMAC tie break; for queries without positive CF signal, ranking metrics use zero relevant hits",
                 "recommendation_coverage":"validation queries with at least one positive collaborative score; distinct from full candidate ranking",
-                "cold_start_policy":"no positive CF signal is reported as zero recommendation coverage; cold items outside TL candidate universe",
+                "cold_start_policy":"no positive CF signal is reported as zero recommendation coverage and zero ranking hits; cold_start_user is candidate-covered validation trips without usable TL user history; cold items outside TL candidate universe",
                 "popularity_fallback":False,"tie_break":"HMAC-SHA256 of namespaced candidate key; digest not serialized",
                 "evaluation_unit":"(dataset_region, TRAVELER_ID, TRAVEL_ID)","ranking_metric_policy":"macro-average over candidate-covered trip units",
                 "trip_id_overlap_check":{"checked_before_ranking":True,"status":"passed","count_bucket_policy":"0, <10, 10+","per_region":{r:shared.count_bucket(n) for r,n in sorted(overlap.items())},"aggregate":shared.count_bucket(sum(overlap.values())),"positive_overlap_policy":"fail before ranking"},
@@ -458,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
             if row["model"] == args.model
             and row["scope"] == "aggregate"
             and (
-                row["cohort"] in {"all", "seen_positive", "user_history"}
+                row["cohort"] in {"all", "seen_positive", "user_history", "cold_start_user"}
                 and (str(row["metric"]).endswith("@10") or row["k"] == "")
             )
         ]
