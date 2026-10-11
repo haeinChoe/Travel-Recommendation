@@ -360,6 +360,7 @@ def _assert_plain_workspace_provenance(
     matching = [item for item in worktrees if item.get("path") == checkout_path]
     if len(matching) != 1 or matching[0].get("is_linked_worktree") is not False:
         raise RuntimeError("Workspace and worktree inventories disagree; refusing close")
+    linked_owner_unmapped = False
     for item in worktrees:
         if item.get("path") == checkout_path:
             continue
@@ -381,15 +382,20 @@ def _assert_plain_workspace_provenance(
                 and Path(row["worktree"]["checkout_path"]).is_absolute()
                 and str(Path(row["worktree"]["checkout_path"]).resolve()) == linked_path
             ]
-            if (
-                len(path_owners) != 1
-                or not isinstance(path_owners[0].get("workspace_id"), str)
-                or not WORKSPACE_ID_PATTERN.fullmatch(path_owners[0]["workspace_id"])
-                or not isinstance(path_owners[0].get("focused"), bool)
-            ):
+            if len(path_owners) > 1:
                 raise RuntimeError("Linked worktree ownership is ambiguous; refusing close")
-            if path_owners[0].get("workspace_id") == workspace_id:
-                raise RuntimeError("Refusing to close a workspace that owns a linked worktree")
+            if not path_owners:
+                linked_owner_unmapped = True
+            else:
+                path_owner_id = path_owners[0].get("workspace_id")
+                if (
+                    not isinstance(path_owner_id, str)
+                    or not WORKSPACE_ID_PATTERN.fullmatch(path_owner_id)
+                    or not isinstance(path_owners[0].get("focused"), bool)
+                ):
+                    raise RuntimeError("Linked worktree ownership is ambiguous; refusing close")
+                if path_owner_id == workspace_id:
+                    raise RuntimeError("Refusing to close a workspace that owns a linked worktree")
             continue
         if not isinstance(linked_owner_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(linked_owner_id):
             raise RuntimeError("Linked worktree owner identity is invalid; refusing close")
@@ -404,6 +410,8 @@ def _assert_plain_workspace_provenance(
     owners = [item for item in workspaces if item.get("workspace_id") == open_workspace_id]
     if len(owners) != 1 or not isinstance(owners[0].get("focused"), bool):
         raise RuntimeError("Primary checkout owner is missing or invalid in the workspace inventory; refusing close")
+    if linked_owner_unmapped and open_workspace_id == workspace_id:
+        raise RuntimeError("Linked worktree ownership is ambiguous for this primary workspace; refusing close")
     return open_workspace_id, checkout_path
 
 
