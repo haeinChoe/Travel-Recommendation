@@ -60,9 +60,7 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 
 ## 3. Product Vision
 
-사용자가 이번 여행의 상황과 취향을 입력하면, 서비스가 현재 여행 맥락과 관광지 카탈로그를 바탕으로 관련성이 높은 여행지를 빠르게 랭킹하고, 사용자의 실제 상호작용을 통해 추천 품질을 지속적으로 개선할 수 있는 구조를 만든다.
-
-장기 사용자 행동 이력은 개인화를 강화하는 선택적 정보로 활용할 수 있지만, 신규 사용자도 목적지·기간·동행자·명시적 여행 취향 등 현재 여행의 context만으로 핵심 추천 경험을 사용할 수 있어야 한다.
+사용자가 이번 여행의 상황과 취향을 입력하면, 서비스가 현재 여행 맥락과 관광지 카탈로그를 바탕으로 관련성이 높은 여행지를 빠르게 랭킹하는 구조를 만든다.
 
 장기적으로는 다음과 같은 경험을 지원할 수 있어야 한다.
 
@@ -77,9 +75,8 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 ### 4.1 Product Goals
 
 - 기존 TravelMate의 주요 사용자 플로우를 현대적인 UX/API 구조로 재구축한다.
-- 사용자 취향, 여행 맥락, 행동 이력을 이용한 개인화 여행지 추천을 제공한다.
+- 사용자 취향과 현재 여행 맥락을 이용한 개인화 여행지 추천을 제공한다.
 - 추천 결과에서 실제 존재하는 canonical 관광지만 반환한다.
-- 추천 결과에 대한 사용자의 반응을 추후 학습/평가에 사용할 수 있도록 interaction logging 구조를 마련한다.
 
 ### 4.2 Engineering Goals
 
@@ -98,7 +95,6 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 현재까지:
 
 - Popularity baseline을 공통 reference로 구축했다.
-- User-CF / Item-CF feasibility experiment를 통해 현재 공식 TL/VL 구조에서는 history-only CF의 적용 가능성이 낮음을 확인했다.
 - 이후 모델은 #41의 feature availability, cold-start, label, split 계약을 확정한 뒤 선택한다.
 
 후속 후보에는 feature-based ranking, Learning-to-Rank, feature-aware factorization, Two-Tower 등이 포함될 수 있으나 구현 순서를 PRD에서 고정하지 않는다.
@@ -133,7 +129,6 @@ LLM은 향후 preference extraction 또는 recommendation explanation의 인터�
 
 - 내 취향에 맞는 장소를 빠르게 찾고 싶다.
 - 동반자나 여행 시기 등 이번 여행의 맥락이 반영되길 원한다.
-- 과거 사용 이력이 없어도 현재 여행 정보를 입력해 추천을 시작하고 싶다.
 - 너무 많은 후보보다 신뢰할 만한 상위 추천을 원한다.
 
 ### 6.2 여행지 탐색 사용자
@@ -229,8 +224,7 @@ LLM은 향후 preference extraction 또는 recommendation explanation의 인터�
 ### FR-4 Recommendation
 
 - 사용자는 현재 여행 맥락과 명시적으로 제공한 취향을 기반으로 Top-K 관광지를 추천받을 수 있다.
-- 신규 사용자도 장기 user history 없이 핵심 추천 플로우를 사용할 수 있어야 한다.
-- 과거 행동 이력이 존재할 경우 이를 personalization enrichment로 사용할 수 있으나 필수 입력으로 요구하지 않는다.
+- 사용자는 현재 여행 맥락과 명시적으로 제공한 취향만으로 핵심 추천 플로우를 사용할 수 있어야 한다.
 - 여행 지역, 서비스 가능한 POI 등 명백한 product constraint는 가능한 경우 ranking 이전 candidate eligibility에 반영한다.
 - 추천의 primary product output은 ranked Top-K POI이며, 자동 일정 생성/동선 최적화는 별도 제품 기능으로 취급한다.
 - 추천된 POI는 사용자가 저장하거나 선택할 수 있고, 향후 itinerary 기능의 입력으로 연결할 수 있어야 한다.
@@ -259,41 +253,9 @@ modelVersion (내부 추적용)
 
 초기 MVP 범위에서 추천 시스템 개발보다 우선순위가 낮을 수 있으며, 기존 기능 복원 이슈에서 단계별 범위를 재조정한다.
 
-### FR-7 Interaction Logging
-
-향후 추천 학습과 성능 분석을 위해 다음 이벤트를 저장할 수 있는 구조를 마련한다.
-
-후보 이벤트:
-
-- RECOMMENDATION_IMPRESSION
-- VIEW
-- CLICK
-- LIKE
-- SAVE
-- ADD_TO_TRIP
-- SKIP 또는 DISMISS
-- REVIEW
-- VISIT
-
-추천 노출 로그는 최소한 다음을 연결할 수 있어야 한다.
-
-```text
-userId
-itemId
-modelVersion
-rank
-score
-context
-occurredAt
-```
-
-실제 수집 이벤트와 보존 정책은 MVP 범위에서 단계적으로 결정한다.
-
----
-
 ## 9. Recommendation Data Strategy
 
-### 9.1 Historical Dataset
+### 9.1 AI Hub Source Dataset
 
 기존 프로젝트에서 사용한 AI Hub 국내 여행로그 데이터를 재확보하고 원본 스키마를 분석한다.
 
@@ -430,7 +392,7 @@ NestJS API
                 +--> recommendation runtime
 
 Offline Recommendation Pipeline
-AI Hub / Product interactions / TourAPI catalog
+AI Hub / TourAPI catalog
   -> preprocessing
   -> training
   -> evaluation
@@ -547,12 +509,6 @@ AI Hub / Product interactions / TourAPI catalog
 - baseline 대비 ranking/coverage/cold-start 성능 비교
 - online artifact/serving contract 정의
 - NestJS와 recommendation service 연동
-
-### Phase 4 — Feedback Loop
-
-- recommendation impression logging
-- click/like/save/visit interaction logging
-- 실제 서비스 데이터 기반 평가 체계 준비
 
 ---
 
