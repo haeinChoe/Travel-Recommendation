@@ -62,8 +62,9 @@ Direct Herdr CLI calls are orchestration commands, not ordinary repository comma
 6. Do not change shell cwd into `$REPO_ROOT` merely because a Herdr command accepts `--cwd "$REPO_ROOT"`.
 7. Before starting an implementation agent, validate that the worktree path returned by Herdr falls under the writable roots of the `herdr-implementation` profile. Do not start the agent first and wait for an `EPERM` to discover the mismatch.
 8. Implementation commands run only in the exact Herdr-returned worktree. Never guess, move, synthesize, or substitute another path as a recovery mechanism.
-9. An `EPERM` from an invalid boundary, unnecessary optional discovery, or an ordinary-sandbox attempt of a command whose approved first-attempt route is already defined is an orchestration defect. Do not retry the denied invocation; use only the already-defined approved route if it has not yet been attempted. If that invocation is rejected or still returns `EPERM`, stop.
-10. Never introduce a broader permission route, unrestricted profile, sandbox bypass, force option, or blind retry as recovery.
+9. An `EPERM` from an invalid boundary, unnecessary optional discovery, or an ordinary-sandbox attempt of a command whose approved first-attempt route is already defined is an orchestration defect. Do not retry the denied invocation; correct the execution boundary and continue only through an authorized route. Use the already-defined approved route only if it has not yet been attempted.
+10. Treat the failure as an Issue-level blocker only when the workflow requires that Herdr capability and it remains unavailable through every authorized route. If the approved required invocation is rejected or still returns `EPERM`, stop and report that blocker.
+11. Never introduce a broader permission route, unrestricted profile, sandbox bypass, force option, or blind retry as recovery.
 
 ## Agent allocation
 
