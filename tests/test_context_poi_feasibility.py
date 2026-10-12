@@ -45,6 +45,85 @@ class ContextPoiSyntheticTests(unittest.TestCase):
             "insufficient-support",
         )
 
+    def test_predictive_majority_baseline_is_tl_label_accuracy_on_vl(self) -> None:
+        def row(label: str, index: int) -> dict[str, object]:
+            return {
+                "region": "west", "popularity_band": f"band-{index % 2}",
+                "context": {}, "demographics": {}, "companion_relations": (),
+                "month": "01", "elapsed_days": 1, "visit_area_type": "type",
+                "visit_sgg": "district", "master_sgg": "master", "poi_l1": "l1",
+                "poi_l2": "l2", "poi_l3": "l3", "feedback": {"DGSTFN": label},
+            }
+
+        train = [row("majority", index) for index in range(9)] + [row("minority", index) for index in range(3)]
+        validation = [row("majority", index) for index in range(3)] + [row("minority", index) for index in range(9)]
+        with patch.object(analysis, "_naive_bayes_predict", return_value="majority"):
+            result = analysis._predictive_rows("west", "DGSTFN", train, validation)[0]
+            empty_validation = analysis._predictive_rows("west", "DGSTFN", train, [])[0]
+
+        self.assertEqual(result["status"], "observed")
+        self.assertEqual(float(result["majority_accuracy"]), 0.25)
+        self.assertEqual(float(result["accuracy"]), 0.25)
+        self.assertEqual(float(result["delta_vs_majority"]), 0.0)
+        self.assertNotEqual(9 / 12, float(result["majority_accuracy"]))
+        self.assertEqual(empty_validation["status"], "insufficient-support")
+        self.assertEqual(empty_validation["validation_support"], "0")
+        self.assertEqual(empty_validation["delta_vs_majority"], "suppressed")
+
+    def test_common_cohort_sensitivity_uses_identical_vl_intersection(self) -> None:
+        def row(index: int, label: str, *, context: bool = True,
+                poi: bool = True, rich: bool = True) -> dict[str, object]:
+            return {
+                "region": "west", "popularity_band": "band-a",
+                "context": {"TRAVEL_STYL_1": "style-a" if context else None},
+                "demographics": {}, "companion_relations": ("relation-a",), "month": "01",
+                "elapsed_days": 1, "visit_area_type": "type-a" if poi else None,
+                "visit_sgg": "district-a" if poi else None,
+                "master_sgg": "master-a" if rich else None,
+                "poi_l1": "class-a" if rich else None,
+                "poi_l2": "subclass-a" if rich else None,
+                "poi_l3": "leaf-a" if rich else None,
+                "feedback": {"DGSTFN": label},
+                "synthetic_index": index,
+            }
+
+        train = [row(index, "A" if index < 18 else "B") for index in range(24)]
+        validation = [
+            row(index, "B" if index < 12 else "A",
+                context=True, poi=index < 20, rich=index < 12)
+            for index in range(24)
+        ]
+        with patch.object(analysis, "_naive_bayes_predict", return_value="A"):
+            output = analysis._common_cohort_rows("west", "DGSTFN", train, validation)
+            regular = analysis._predictive_rows("west", "DGSTFN", train, validation)
+        regular_accuracy = {row["ablation"]: row["accuracy"] for row in regular}
+
+        self.assertEqual({row["ablation"] for row in output}, set(analysis.COMMON_COHORT_ABLATIONS))
+        self.assertEqual({row["common_validation_support"] for row in output}, {"10+"})
+        self.assertTrue(all(row["status"] == "observed" for row in output))
+        self.assertEqual({row["accuracy"] for row in output}, {"0.000000"})
+        self.assertGreater(len({regular_accuracy[name] for name in analysis.COMMON_COHORT_ABLATIONS}), 1)
+        self.assertNotIn("synthetic_index", repr(output))
+
+        no_richer_training = [
+            row(index, "A" if index < 18 else "B", rich=False)
+            for index in range(24)
+        ]
+        limited = analysis._common_cohort_rows("west", "DGSTFN", no_richer_training, validation)
+        self.assertEqual({row["common_validation_support"] for row in limited}, {"10+"})
+        richer = next(row for row in limited if row["ablation"] == "context_plus_richer_poi")
+        self.assertEqual(richer["status"], "insufficient-support")
+        self.assertEqual(richer["delta_vs_majority"], "suppressed")
+
+        sparse = analysis._common_cohort_rows("west", "DGSTFN", train, validation[:8])
+        self.assertEqual({row["common_validation_support"] for row in sparse}, {"<10"})
+        self.assertTrue(all(row["status"] == "privacy-limited" for row in sparse))
+        self.assertTrue(all(
+            row[metric] == "suppressed"
+            for row in sparse
+            for metric in ("accuracy", "majority_accuracy", "delta_vs_majority")
+        ))
+
     def test_trip_pair_sensitivity_uses_trip_identity_and_buckets_missing_ids(self) -> None:
         rows = [
             {"region": "west", "role": "TL", "trip_id": "trip-a", "traveler_id": "owner-a", "x": "c", "y": "p"},
@@ -215,7 +294,7 @@ class ContextPoiSyntheticTests(unittest.TestCase):
             self.assertIn("observed", predictive)
             self.assertNotIn("2023-01-02", joined)
             self.assertNotIn("opaque-invalid-feedback", joined)
-            self.assertEqual(len(list(output.iterdir())), 4)
+            self.assertEqual(len(list(output.iterdir())), 5)
 
     def test_overlapping_trip_ids_between_tl_and_vl_fail_safely(self) -> None:
         with TemporaryDirectory(prefix="context-poi-overlap-") as temp:

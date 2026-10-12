@@ -57,7 +57,10 @@ MASTER_POI = (
 COMPANION_FIELDS = ("REL_CD", "COMPANION_GENDER", "COMPANION_AGE_GRP", "COMPANION_SITUATION")
 ALL_FEATURE_FIELDS = (*MASTER_CONTEXT, *TRIP_CONTEXT, *DEMOGRAPHICS, *VISIT_POI, *MASTER_POI,
                       *COMPANION_FIELDS)
-ARTIFACTS = ("availability_audit.csv", "associations.csv", "predictive_ablation.csv", "run_metadata.json")
+ARTIFACTS = (
+    "availability_audit.csv", "associations.csv", "predictive_ablation.csv",
+    "common_cohort_sensitivity.csv", "run_metadata.json",
+)
 
 
 @dataclass(frozen=True)
@@ -657,7 +660,11 @@ def _predictive_rows(region: str, target: str, train: Sequence[dict[str, object]
             if prediction is not None and label is not None:
                 eval_pairs.append((str(label), prediction))
         val_n = len(eval_pairs)
-        majority = max(model[0].values(), default=0) / train_events if train_events else 0.0
+        majority_label = max(model[0], key=model[0].get, default=None)
+        majority_accuracy = (
+            sum(actual == majority_label for actual, _ in eval_pairs) / val_n
+            if val_n and majority_label is not None else 0.0
+        )
         accuracy = sum(actual == pred for actual, pred in eval_pairs) / val_n if val_n else 0.0
         status = (
             "insufficient-support" if train_events == 0 or val_n == 0
@@ -668,11 +675,87 @@ def _predictive_rows(region: str, target: str, train: Sequence[dict[str, object]
             "scope": region, "target": target, "ablation": ablation,
             "train_support": count_bucket(train_events), "validation_support": count_bucket(val_n),
             "accuracy": f"{accuracy:.6f}" if status == "observed" else "suppressed",
-            "majority_accuracy": f"{majority:.6f}" if status == "observed" else "suppressed",
-            "delta_vs_majority": f"{accuracy - majority:.6f}" if status == "observed" else "suppressed",
+            "majority_accuracy": f"{majority_accuracy:.6f}" if status == "observed" else "suppressed",
+            "delta_vs_majority": f"{accuracy - majority_accuracy:.6f}" if status == "observed" else "suppressed",
             "status": status,
         })
     return output
+
+
+COMMON_COHORT_ABLATIONS = ("context_only", "context_plus_poi", "context_plus_richer_poi")
+
+
+def _common_cohort_rows(region: str, target: str, train: Sequence[dict[str, object]],
+                        validation: Sequence[dict[str, object]]) -> list[dict[str, object]]:
+    """Compare the context ablations on the intersection of their valid VL rows."""
+    train_sets = [(row, _feature_sets(row)) for row in train]
+    val_sets = [(row, _feature_sets(row)) for row in validation]
+    feature_names: dict[str, list[str]] = {}
+    for ablation in COMMON_COHORT_ABLATIONS:
+        source = train_sets or val_sets
+        feature_names[ablation] = sorted(source[0][1][ablation]) if source else []
+
+    train_usable: dict[str, list[tuple[dict[str, object], dict[str, object]]]] = {}
+    val_usable: dict[str, dict[int, tuple[dict[str, object], dict[str, object]]]] = {}
+    for ablation in COMMON_COHORT_ABLATIONS:
+        names = feature_names[ablation]
+        train_usable[ablation] = [
+            (row, feature_sets[ablation])
+            for row, feature_sets in train_sets
+            if row["feedback"].get(target) is not None  # type: ignore[union-attr]
+            and names
+            and all(feature_sets[ablation].get(name) is not None for name in names)
+        ]
+        val_usable[ablation] = {
+            index: (row, feature_sets[ablation])
+            for index, (row, feature_sets) in enumerate(val_sets)
+            if row["feedback"].get(target) is not None  # type: ignore[union-attr]
+            and names
+            and all(feature_sets[ablation].get(name) is not None for name in names)
+        }
+
+    common_indices = set.intersection(*(set(val_usable[name]) for name in COMMON_COHORT_ABLATIONS))
+    common_rows: list[dict[str, object]] = []
+    for ablation in COMMON_COHORT_ABLATIONS:
+        features = feature_names[ablation]
+        train_rows = [dict(row, **feature_values) for row, feature_values in train_usable[ablation]]
+        model = _naive_bayes_fit(train_rows, features, target)
+        eval_pairs = []
+        for index in sorted(common_indices):
+            row, feature_values = val_usable[ablation][index]
+            prediction = _naive_bayes_predict(feature_values, features, model)
+            label = row["feedback"].get(target)  # type: ignore[union-attr]
+            if prediction is not None and label is not None:
+                eval_pairs.append((str(label), prediction))
+
+        train_events = model[3]
+        validation_events = len(common_indices)
+        majority_label = max(model[0], key=model[0].get, default=None)
+        majority_accuracy = (
+            sum(actual == majority_label for actual, _ in eval_pairs) / validation_events
+            if validation_events and len(eval_pairs) == validation_events and majority_label is not None else 0.0
+        )
+        accuracy = (
+            sum(actual == prediction for actual, prediction in eval_pairs) / validation_events
+            if validation_events and len(eval_pairs) == validation_events else 0.0
+        )
+        status = (
+            "insufficient-support" if train_events == 0 or validation_events == 0 or len(eval_pairs) != validation_events
+            else "privacy-limited" if train_events < MIN_CELL or validation_events < MIN_CELL
+            else "observed"
+        )
+        common_rows.append({
+            "scope": region,
+            "target": target,
+            "ablation": ablation,
+            "train_support": count_bucket(train_events),
+            "common_validation_support": count_bucket(validation_events),
+            "accuracy": f"{accuracy:.6f}" if status == "observed" else "suppressed",
+            "majority_accuracy": f"{majority_accuracy:.6f}" if status == "observed" else "suppressed",
+            "delta_vs_majority": f"{accuracy - majority_accuracy:.6f}" if status == "observed" else "suppressed",
+            "status": status,
+        })
+    return common_rows
 
 
 def _join_specs(raw_root: Path, args) -> tuple[list[InputSpec], dict[str, Path]]:
@@ -710,7 +793,8 @@ def _join_specs(raw_root: Path, args) -> tuple[list[InputSpec], dict[str, Path]]
     return specs, poi_roots
 
 
-def _write_artifacts(output: Path, audit_rows, association_rows, predictive_rows, metadata,
+def _write_artifacts(output: Path, audit_rows, association_rows, predictive_rows,
+                     common_cohort_rows, metadata,
                      overwrite: bool) -> None:
     resolved = output.resolve()
     if output.is_symlink() or shared.has_symlink_component(output.absolute()) or not shared.within(resolved, RESULTS_ROOT.resolve()) or resolved == RESULTS_ROOT.resolve():
@@ -731,6 +815,7 @@ def _write_artifacts(output: Path, audit_rows, association_rows, predictive_rows
         (audit_rows, ("scope", "table", "field", "rows", "nonmissing", "missing_rate", "cardinality", "categories_below_k", "categories_at_least_k", "largest_category_share", "outside_documented_range", "outside_range_cardinality", "candidate_keys", "unique_keys", "duplicate_keys", "master_rows", "nonblank_candidate_keys", "unique_candidate_keys", "duplicate_candidate_keys", "keys_with_multiple_sgg_values", "visit_rows", "visit_candidate_keys", "visit_keys_with_multiple_rows", "visit_nonblank_poi_rows", "matched_visit_rows", "coverage", "status")),
         (association_rows, ("scope", "grain", "analysis", "feature", "target", "support", "feature_cardinality", "target_cardinality", "cramers_v", "chi_square_p", "missing_trip_id_exclusions", "status")),
         (predictive_rows, ("scope", "target", "ablation", "train_support", "validation_support", "accuracy", "majority_accuracy", "delta_vs_majority", "status")),
+        (common_cohort_rows, ("scope", "target", "ablation", "train_support", "common_validation_support", "accuracy", "majority_accuracy", "delta_vs_majority", "status")),
     )
     try:
         for name, (rows, fields) in zip(ARTIFACTS, tables):
@@ -888,15 +973,18 @@ def _analyze(specs: Sequence[InputSpec], poi_roots: dict[str, Path], run_id: str
                     ))
 
     predictive: list[dict[str, object]] = []
+    common_cohort: list[dict[str, object]] = []
     for region in regions:
         train = splits[(region, "TL")].observations
         validation = splits[(region, "VL")].observations
         # The Issue defines TL discovery and VL replication; no randomized row split is introduced.
         for target in TARGETS:
             predictive.extend(_predictive_rows(region, target, train, validation))
+            common_cohort.extend(_common_cohort_rows(region, target, train, validation))
     # Aggregate scope uses the same region-scoped keys and only adds summary rows.
     for target in TARGETS:
         predictive.extend(_predictive_rows("aggregate", target, tl_rows, vl_rows))
+        common_cohort.extend(_common_cohort_rows("aggregate", target, tl_rows, vl_rows))
 
     script_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     metadata = {
@@ -924,6 +1012,8 @@ def _analyze(specs: Sequence[InputSpec], poi_roots: dict[str, Path], run_id: str
             "demographics": "analyzed separately; excluded from the primary context feature ablations",
             "poi_join": "exact region-scoped POI_ID candidate; join quality audited; no canonical identity claim",
             "missing_feature_values": "reported; no imputation; associations use observed pairs; each predictive ablation uses its own complete-observed feature and target rows",
+            "common_cohort_sensitivity": "context_only, context_plus_poi, and context_plus_richer_poi evaluated on identical VL rows where target and every feature in all three sets are observed; TL training remains complete-case per ablation",
+            "common_cohort_support": "bucketed per target, scope, and ablation; metrics withheld below k=10; validation cohort identity is not emitted",
             "popularity_feature": "TL observed region-scoped POI_ID visit-count bands; ID not used as a predictor",
             "predictive_model": "categorical naive Bayes; Laplace alpha=1; no tuning; feedback codes treated nominally",
             "seed": None,
@@ -942,7 +1032,7 @@ def _analyze(specs: Sequence[InputSpec], poi_roots: dict[str, Path], run_id: str
         "policy": {"source_data_immutable": True, "external_transfer": False,
                     "test_metrics": "not generated"},
     }
-    return audit_rows, associations, predictive, metadata
+    return audit_rows, associations, predictive, common_cohort, metadata
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -969,9 +1059,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         specs, poi_roots = _join_specs(args.raw_root, args)
-        audit, associations, predictive, metadata = _analyze(specs, poi_roots, args.run_id)
+        audit, associations, predictive, common_cohort, metadata = _analyze(specs, poi_roots, args.run_id)
         output = RESULTS_ROOT / args.run_id
-        _write_artifacts(output, audit, associations, predictive, metadata, args.overwrite)
+        _write_artifacts(output, audit, associations, predictive, common_cohort, metadata, args.overwrite)
     except (OSError, UnicodeError, csv.Error, ValueError) as exc:
         print(f"[중단] context × POI 분석 실패: {type(exc).__name__}", file=sys.stderr)
         return 2
