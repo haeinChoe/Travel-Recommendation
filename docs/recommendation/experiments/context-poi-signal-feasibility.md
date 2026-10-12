@@ -1,71 +1,71 @@
-# Context × POI signal feasibility experiment
+# 여행 맥락 × POI 신호 타당성 실험
 
-Issue #45 defines this as a reproducible feasibility check before any context-aware ranking work. It tests statistical association and held-out predictive signal. It does not estimate causal effects.
+Issue #45는 맥락을 반영한 추천 순위 모델을 만들기 전에 재현 가능한 타당성 점검을 수행하도록 정의합니다. 이 실험은 통계적 연관성과 홀드아웃 예측 신호를 확인하며, 인과 효과를 추정하지 않습니다.
 
-The field scope follows the [recommendation training-data contract](../training-data-contract.md), the [2023 regional schema index](../../data/travel-log-2023/README.md), the [popularity baseline](popularity-baseline.md), and the [CF feasibility protocol](cf-baseline.md).
+사용 필드의 범위는 [추천 학습 데이터 계약](../training-data-contract.md), [2023 권역별 스키마 색인](../../data/travel-log-2023/README.md), [인기도 기준선](popularity-baseline.md), [CF 타당성 프로토콜](cf-baseline.md)을 따릅니다.
 
-## Current execution status
+## 현재 실행 상태
 
-Approval for the four 2023 regional datasets and the applicable AI Hub terms are recorded under [Issue #12](../../data/eda-travel-log-2023.md). The established Issue #31 TL/VL role mapping was exercised in PR #40's clean four-region runs; the [CF results](cf-baseline.md) record successful execution and zero TL/VL trip-ID overlap in every region and overall, alongside parity with the prior popularity baseline. The Issue #45 run completed locally as `context-poi-20261012-9c0b12` after the coordinator verified the original-shell preflight and approved source evidence. Bounded marker-only discovery under the mounted project-pilot data tree resolved the established four-region role folders. Header, containment/symlink, join-quality, and within-region TL/VL overlap checks passed; there were four regional TL roles and four external VL roles, with zero trip-ID overlap. Input paths and capital filekey values were not recorded. Run artifacts remain under the ignored local results directory and are not committed.
+2023년 4개 권역 데이터셋과 적용되는 AI Hub 이용 조건의 승인은 [Issue #12](../../data/eda-travel-log-2023.md)에 기록되어 있습니다. Issue #31에서 정한 TL/VL 역할 매핑은 PR #40의 4개 권역 정상 실행에서 사용되었으며, [CF 결과](cf-baseline.md)에는 권역별 및 전체 TL/VL 실행 성공, TL/VL 간 여행 ID 중복 0건, 기존 인기도 기준선과의 결과 일치가 기록되어 있습니다. Issue #45 실험은 조정자가 원래 셸 사전 점검과 승인 근거를 확인한 뒤 `context-poi-20261012-9c0b12` 실행 ID로 완료했습니다. 마운트된 project-pilot 데이터 트리에서 제한된 역할 표식만 확인하는 탐색을 수행해 기존 4개 권역의 역할 폴더를 찾았습니다. 헤더, 경로 포함 관계와 심볼릭 링크, 조인 품질, 권역별 TL/VL 중복 검사가 통과했습니다. 권역별 TL 역할 4개와 외부 재현용 VL 역할 4개를 사용했고, 여행 ID 중복은 0건이었습니다. 입력 경로와 capital 파일키 값은 기록하지 않았습니다. 실행 결과는 Git에서 제외되는 로컬 결과 디렉터리에 있으며 커밋하지 않았습니다.
 
-The run produced 4 observed context/POI association rows; 299 were k=10-suppressed, 116 had insufficient support, and one had sparse expected cells. All region-specific association rows lacked sufficient support or were suppressed; the four observed rows were from the pooled-region scope. Median Cramér's V among those four rows was 0.1704. Feedback associations had 20 observed rows (pooled-region scope), 855 k=10-suppressed rows, 174 insufficient-support rows, and one sparse-expected row; their median Cramér's V was 0.0268. All 180 joint context × POI × feedback distribution tables were suppressed at k=10. These summaries are descriptive, not causal, and chi-square p-values remain descriptive only.
+맥락/POI 연관 분석 행 중 4개가 관측되었고, 299개는 k=10 기준으로 억제되었으며, 116개는 지원량이 부족했고, 1개는 기대 셀 빈도가 희소했습니다. 권역별 연관 분석 행은 모두 지원량 부족 또는 억제 상태였으며, 관측된 4개 행은 권역 통합 범위에서 나왔습니다. 이 4개 행의 Cramér's V 중앙값은 0.1704였습니다. 피드백 연관 분석에서는 권역 통합 범위의 20개 행이 관측되었고, 855개는 k=10 기준으로 억제되었으며, 174개는 지원량이 부족했고, 1개는 기대 셀 빈도가 희소했습니다. 해당 분석의 Cramér's V 중앙값은 0.0268이었습니다. 맥락 × POI × 피드백 결합 분포표 180개는 모두 k=10 기준으로 억제되었습니다. 이 요약은 기술적 집계이며 인과적 해석이 아닙니다. 카이제곱 p-value는 기술적 참고값으로만 취급합니다.
 
-All 60 feedback ablation scores were available. Across 15 scope × outcome comparisons, context+POI had higher (worse) mean log loss than popularity-only in all 15 (mean difference +0.1124), and higher loss than POI-only in all 15 (+0.0976). This provides no held-out evidence for advancing context+POI in #41.
+피드백 특징 제거 비교 점수 60개는 모두 계산되었습니다. 범위 × 결과 비교 15개에서 context+POI의 평균 log loss는 popularity-only보다 모두 높았으며(평균 차이 +0.1124), POI-only보다도 모두 높았습니다(+0.0976). 따라서 이 결과는 #41에서 context+POI를 진행할 홀드아웃 예측 근거를 제공하지 않습니다.
 
-## Hypotheses and feature scope
+## 가설과 특징 범위
 
-The primary hypothesis is that documented trip context and visit-area attributes have measurable associations and can improve held-out prediction of each post-visit feedback field over popularity-only or single feature-family baselines. The script uses only fields whose join path is explicit in the current schemas/contracts:
+주요 가설은 문서화된 여행 맥락과 방문 영역 속성이 측정 가능한 연관성을 보이며, 각 방문 후 피드백 필드의 홀드아웃 예측에서 popularity-only 또는 단일 특징군 기준선보다 나은 신호를 제공한다는 것입니다. 스크립트는 현재 스키마와 계약에서 조인 경로가 명시된 필드만 사용합니다.
 
-| Role | Included fields | Handling |
+| 역할 | 포함 필드 | 처리 방식 |
 | --- | --- | --- |
-| Trip context | `TN_TRAVEL.TRAVEL_MISSION`, `TRAVEL_START_YMD` month | Mission is a categorical value; month is parsed from the documented `YYYY-MM-DD` date form. It does not infer season or ordinal meaning. |
-| POI / area | region source label, `TN_VISIT_AREA_INFO.SGG_CD`, `VISIT_AREA_TYPE_CD` | The region label and visit-area attributes are kept distinct; input codes remain categorical and are not cross-walked. |
-| Popularity | `POI_ID` grouped by `(region, POI_ID)` in TL | A region-scoped visit-frequency band only. `POI_ID` is never a model feature or output value. For a TL feedback row, visits from its own trip are excluded from its popularity feature. VL popularity uses TL counts only. |
-| Post-visit outcomes | `DGSTFN`, `REVISIT_INTENTION`, `RCMDTN_INTENTION` | Kept as three separate 1–5 categorical targets. No value is used as an input; no ordinal direction or common composite scale is assumed. |
+| 여행 맥락 | `TN_TRAVEL.TRAVEL_MISSION`, `TRAVEL_START_YMD` 월 | 미션은 범주형 값으로 취급합니다. 월은 문서화된 `YYYY-MM-DD` 형식의 날짜에서 파싱하며 계절이나 순서 의미를 추론하지 않습니다. |
+| POI / 영역 | 권역 원천 라벨, `TN_VISIT_AREA_INFO.SGG_CD`, `VISIT_AREA_TYPE_CD` | 권역 라벨과 방문 영역 속성을 각각 유지하고, 입력 코드를 범주형으로 취급하며 별도 코드 체계와 교차 매핑하지 않습니다. |
+| 인기도 | TL의 `(region, POI_ID)`별 `POI_ID` 집계 | 권역 내 방문 빈도 구간만 사용합니다. `POI_ID`는 모델 특징이나 출력 값으로 사용하지 않습니다. TL 피드백 행의 인기도를 계산할 때 해당 여행의 방문은 제외합니다. VL 인기도는 TL 집계만 사용합니다. |
+| 방문 후 결과 | `DGSTFN`, `REVISIT_INTENTION`, `RCMDTN_INTENTION` | 서로 독립된 1–5 범주형 타깃으로 유지합니다. 어떤 결과값도 입력으로 사용하지 않으며, 순서 방향이나 공통 복합 척도를 가정하지 않습니다. |
 
-`TRAVEL_MISSION` is named “individual mission” in the regional schema. Both `TRAVEL_MISSION` and `TRAVEL_START_YMD` are optional schema columns. Their availability is recorded per region/role in `column_availability.csv`; if either header is absent or partial, dependent context associations and ablations are marked unavailable rather than failed or populated with synthetic missing categories. When present, mission is treated as a category and month is parsed from the date without inferring category semantics. Travel-style/motive profile fields, companion fields, trip duration, and `TN_POI_MASTER` categories remain excluded: their serving availability, aggregation rules, or visit-to-master join are unresolved in the training-data contract. The schema says names and required flags do not establish key constraints. In particular, this experiment does not join `TN_POI_MASTER` to a visit using a guessed `POI_ID` relation.
+권역별 스키마에서 `TRAVEL_MISSION`은 “개별 여행 목적”으로 표시됩니다. `TRAVEL_MISSION`과 `TRAVEL_START_YMD`는 모두 선택 컬럼입니다. 컬럼 가용성은 `column_availability.csv`에 권역/역할별로 기록됩니다. 어느 한쪽의 헤더가 없거나 일부 파일에서만 발견되면, 관련 맥락 분석과 특징 제거 비교를 실패로 처리하거나 인위적인 결측 범주로 채우지 않고 사용 불가로 표시합니다. 컬럼이 있을 때는 미션을 범주로 취급하고 날짜에서 월을 파싱하되 범주 의미를 추론하지 않습니다. 학습 데이터 계약에서 서비스 시점 사용 가능성, 집계 규칙 또는 방문-마스터 조인이 확정되지 않은 여행 스타일/동기 프로필, 동행자 필드, 여행 기간, `TN_POI_MASTER` 범주는 제외합니다. 스키마에 컬럼 이름이나 필수 여부가 적혀 있다는 사실만으로 키 제약이 성립하지는 않습니다. 특히 추정한 `POI_ID` 관계를 사용해 `TN_POI_MASTER`를 방문 행과 조인하지 않습니다.
 
-## Outcomes and statistical tests
+## 결과와 통계 검정
 
-Observed visit rows are positives only. They are used for context × area contingency tests, not as “preference” labels. For each context/area pair, the script reports a safe contingency support table, Cramér's V, and a chi-square reference p-value when support and expected-cell assumptions allow it. The output field is named `p_value_descriptive`: repeated visits are clustered within trips, so ordinary row-level chi-square p-values are not calibrated independent-row inference. They are descriptive only, are not corrected for multiple comparisons, and are excluded from any #41 Go criterion. Contingency labels are opaque category indexes local to a region/role/feature/popularity group; raw category strings and area codes are not written. It reports each region and all-region scope separately, for TL and VL separately, and repeats associations within TL-derived popularity bands. The all-region view keeps region as an explicit POI feature; within-region views check whether an aggregate pattern is confined to one region. Small cells are suppressed at k=10; sparse expected cells are marked instead of assigned a p-value. Results are event-weighted and descriptive.
+관측된 방문 행은 양성 사례로만 취급합니다. 맥락 × 영역 분할표 검정에 사용하며 “선호” 라벨로 해석하지 않습니다. 각 맥락/영역 특징 쌍에 대해 안전하게 억제된 분할표 지원량, Cramér's V, 지원량과 기대 셀 조건이 허용하는 경우 카이제곱 기준 p-value를 출력합니다. 출력 필드 이름은 `p_value_descriptive`입니다. 반복 방문 행은 여행 단위로 군집되어 있으므로 일반 행 단위 카이제곱 p-value는 독립 행 추론에 맞게 보정된 값이 아닙니다. 이 값은 기술적 참고값일 뿐이며, 다중 비교 보정을 하지 않고 #41 Go 기준에서도 제외합니다. 분할표 범주 표시는 권역/역할/특징/인기도 그룹 안에서만 사용하는 불투명 범주 인덱스입니다. 원래 범주 문자열과 영역 코드는 기록하지 않습니다. 권역별 및 전체 권역 범위를 각각 TL과 VL로 나누어 보고하고, TL에서 계산한 인기도 구간별 연관성도 확인합니다. 전체 권역 결과에는 권역을 별도 POI 특징으로 유지합니다. 권역별 결과는 통합 패턴이 특정 한 권역에만 국한되는지 확인합니다. 소규모 셀은 k=10 기준으로 억제하며, 기대 빈도가 희소한 경우 p-value를 계산하지 않고 해당 상태로 표시합니다. 결과는 방문 행 가중 기술 통계입니다.
 
-Each feedback field is separately checked for missing, documented 1–5, and out-of-range categories, plus its category distribution across each included context/area feature. These checks run separately for each region and role, with an additional pooled-region view that retains region as an explicit area feature. Feature/outcome category labels in cross tables are opaque indexes, and small category counts and test cells are suppressed at k=10.
+세 피드백 필드는 각각 결측, 문서화된 1–5 범주, 범위 밖 범주를 확인하고, 포함된 각 맥락/영역 특징별 범주 분포도 점검합니다. 각 권역과 역할별로 별도 수행하며, 권역을 명시적 영역 특징으로 유지하는 전체 권역 통합 결과도 냅니다. 교차표의 특징/결과 범주 표시는 불투명 인덱스이며, 범주 수가 작거나 검정 셀이 작으면 k=10 기준으로 억제합니다.
 
-`feedback_context_poi_distributions.csv` adds joint context × POI × feedback contingency distributions for each of the three outcomes separately and every included context/POI feature pair. Context, POI, and feedback categories are represented only by opaque indexes. If any observed joint cell has support below k=10, the entire feature-pair/outcome table is suppressed; missing optional context, POI, or feedback headers are marked unavailable. This artifact reports distributions only and does not add inferential p-values.
+`feedback_context_poi_distributions.csv`에는 세 결과 각각과 포함된 모든 맥락/POI 특징 쌍에 대해 맥락 × POI × 피드백 결합 분포가 추가됩니다. 맥락, POI, 피드백 범주는 불투명 인덱스로만 표시합니다. 관측된 결합 셀 중 하나라도 지원량이 k=10보다 작으면 해당 특징 쌍/결과 표 전체를 억제합니다. 선택적 맥락, POI 또는 피드백 헤더가 없으면 사용 불가로 표시합니다. 이 산출물은 분포만 제공하며 추론용 p-value를 추가하지 않습니다.
 
-The visit-only data does not identify non-visits, opportunity-to-visit, or a negative sampling universe. Accordingly, no binary visit classifier, visit ranking metric, or claim about unobserved POI relevance is produced. Treating an unobserved POI as a negative would change the label contract and is not authorized by #45.
+방문 행만으로는 미방문, 방문 기회, 음성 표본 추출 모집단을 정의할 수 없습니다. 따라서 이 실험에서는 이진 방문 분류기, 방문 순위 지표, 관측되지 않은 POI 관련성에 대한 주장을 만들지 않습니다. 관측되지 않은 POI를 음성으로 간주하면 #45에서 승인하지 않은 라벨 계약 변경이 됩니다.
 
-## Predictive ablations
+## 예측 특징 제거 비교
 
-The script fits a deterministic categorical Naive Bayes model for each feedback outcome independently. This is a small predictive diagnostic, not a recommender or ranking model. It evaluates mean multiclass log loss on VL after fitting on TL, with a separate all-region fit and per-region fits. Missing optional feature/label headers are recorded in `column_availability.csv`; dependent analyses and ablations are marked `unavailable_missing_column` instead of treating absent columns as all-missing values. The four feature sets are:
+스크립트는 각 피드백 결과를 서로 독립적으로 다루는 결정론적 범주형 Naive Bayes 모델을 학습합니다. 이는 소규모 예측 진단이며 추천기나 순위 모델이 아닙니다. TL에서 학습한 뒤 VL에서 다중 클래스 log loss를 평가하고, 전체 권역 모델과 권역별 모델을 각각 냅니다. 선택 특징/라벨 헤더가 없으면 `column_availability.csv`에 기록하고, 결측 컬럼을 모두 결측으로 채운 것처럼 취급하지 않고 관련 분석과 특징 제거 비교를 `unavailable_missing_column`으로 표시합니다. 네 가지 특징군은 다음과 같습니다.
 
-1. popularity-only frequency band;
-2. context-only mission and start month;
-3. POI-only region, administrative-area code, and visit-area type;
-4. context plus POI features.
+1. popularity-only 방문 빈도 구간
+2. context-only 미션 및 시작 월
+3. POI-only 권역, 행정구역 코드, 방문 영역 유형
+4. context plus POI 특징
 
-Popularity is computed from TL, never VL. No TL/VL merge, random resplit, hyperparameter search, negative sampling, or row-level artifact is created. Insufficient train/validation support and any outcome class with support below k=10 are suppressed. An ablation is also suppressed when a VL outcome class has no TL support; it is not scored using an arbitrary probability floor. Log loss is not interpreted as a ranking metric. Compare context+POI against popularity-only and POI-only on the same VL role and report whether the direction is consistent across regions. The popularity-band association checks provide a coarse within-popularity sensitivity analysis; they do not eliminate all popularity confounding. A stronger claim needs a separately approved model/estimand.
+인기도는 TL에서만 계산하며 VL은 사용하지 않습니다. TL/VL을 합치거나 무작위로 다시 나누지 않으며, 하이퍼파라미터 탐색, 음성 표본 추출, 행 단위 산출물을 만들지 않습니다. 학습/검증 지원량이 부족하거나 결과 범주 하나라도 k=10 미만이면 억제합니다. VL에 있는 결과 범주가 TL에 없을 때도 해당 특징 제거 비교를 억제하며 임의의 확률 하한값을 사용해 점수를 계산하지 않습니다. log loss는 순위 지표로 해석하지 않습니다. 동일한 VL 역할에서 context+POI를 popularity-only 및 POI-only와 비교하고, 방향이 권역별로 일관적인지 보고합니다. 인기도 구간 연관성 분석은 인기도 교란을 거칠게 점검할 뿐 이를 모두 제거하지는 못합니다. 더 강한 주장을 하려면 별도 승인된 모델/추정 대상이 필요합니다.
 
-## Leakage and privacy checks
+## 누수 및 개인정보 보호 점검
 
-- `TRAVEL_ID` joins visit rows to trip context in memory and groups TL events to remove the current trip's events from its popularity feature. It is never included in a feature vector or serialized.
-- `POI_ID` is only a region-scoped grouping key for popularity, and is never included in a feature vector, log, metadata, or result file.
-- `VISIT_AREA_ID` and traveler IDs are not used as features. No traveler identifier or trip identifier is written.
-- Required ID/join headers are checked before any data rows are loaded. Optional candidate and trip-context columns (`TRAVEL_MISSION`, `TRAVEL_START_YMD`, `POI_ID`, `SGG_CD`, `VISIT_AREA_TYPE_CD`, and the three separate feedback labels) are reported as available, partial, or missing for each region/role/table.
-- Feedback is the prediction target only. Feedback fields, `REVISIT_YN`, visit order/time, names, coordinates, GPS, photos, captions, and consumption/event fields are not predictors.
-- The runner requires one TL and one VL folder for each of the four regions because regional consistency is part of this experiment. Source validation follows the established `evaluate_popularity.py`/`evaluate_cf.py` contract: every folder must exist under `--raw-root`, be distinct, and be named for its role (`TL_csv`/`VL_csv`); approved capital filekey folders are accepted only with `--allow-approved-capital-filekey-folders`. The runner does not infer region identity from a directory path. `capital`, `west`, `east`, and `jeju-islands` labels come from the explicit `--input` role mapping, which must be locally verified against the approved Issue #31 mapping before reading data. Paths and folder names are never written to reports. TL is training/development; VL is external replication. The code does not merge source roles or split rows.
-- Before analysis, `TRAVEL_ID` values are compared between TL and VL independently within each region. Any overlap aborts the run and reports only the region and a `<10` or `10+` count bucket; IDs and paths are never included in the error.
-- Before analysis, trip-context join integrity is checked per source role: missing travel IDs, trips with missing available context values, conflicting contexts for one trip ID, and visit rows with no unambiguous matching trip are counted separately. Any issue fails closed before feature analysis. The error contains only `<10`/`10+` buckets and region/role labels; it never contains identifiers or paths, and no unjoinable rows are silently dropped.
-- Results contain documented feature/outcome names, opaque category indexes, support bands, effect sizes, descriptive-only p-values, and aggregate log loss only. Small supports are suppressed at k=10. Raw category values, IDs, paths, filenames, and capital role-folder names are excluded from output metadata.
-- The runner requires explicit confirmation flags for dataset approval, terms, the original-shell preflight, and provisional POI-candidate handling. These flags record the operator's completed checks; they do not discover approval or inspect another shell.
+- `TRAVEL_ID`는 메모리 안에서 방문 행과 여행 맥락을 조인하고, TL 이벤트를 그룹화해 현재 여행의 방문이 해당 여행의 인기도 특징에 포함되지 않도록 하는 데 사용합니다. 특징 벡터나 직렬화 결과에는 포함하지 않습니다.
+- `POI_ID`는 권역별 인기도 집계를 위한 그룹 키로만 사용하며 특징 벡터, 로그, 메타데이터, 결과 파일에 포함하지 않습니다.
+- `VISIT_AREA_ID`와 여행자 ID는 특징으로 사용하지 않습니다. 여행자 또는 여행 식별자를 결과에 기록하지 않습니다.
+- 데이터 행을 읽기 전에 필수 ID/조인 헤더를 검사합니다. 선택 후보 및 여행 맥락 컬럼(`TRAVEL_MISSION`, `TRAVEL_START_YMD`, `POI_ID`, `SGG_CD`, `VISIT_AREA_TYPE_CD`, 세 피드백 라벨)은 권역/역할/테이블별로 사용 가능, 일부 파일에서만 사용 가능, 누락 상태를 기록합니다.
+- 피드백은 예측 타깃으로만 사용합니다. 피드백 필드, `REVISIT_YN`, 방문 순서/시간, 이름, 좌표, GPS, 사진, 설명문, 소비/이벤트 필드는 예측 변수로 사용하지 않습니다.
+- 권역 간 일관성을 보는 것이 이 실험의 일부이므로 네 권역 각각에 TL 하나와 VL 하나를 요구합니다. 소스 검증은 기존 `evaluate_popularity.py`/`evaluate_cf.py` 계약을 따릅니다. 각 폴더는 `--raw-root` 아래에 있고 서로 달라야 하며, 역할에 맞는 이름(`TL_csv`/`VL_csv`)을 가져야 합니다. 승인된 capital 파일키 폴더는 `--allow-approved-capital-filekey-folders` 옵션을 지정한 경우에만 허용합니다. 실행기는 디렉터리 경로에서 권역을 추론하지 않습니다. `capital`, `west`, `east`, `jeju-islands` 라벨은 명시한 `--input` 역할 매핑에서 오며, 데이터 읽기 전에 승인된 Issue #31 매핑과 로컬에서 대조해야 합니다. 경로와 폴더 이름은 보고서에 기록하지 않습니다. TL은 학습/개발, VL은 외부 재현입니다. 코드에서 두 역할을 합치거나 행을 재분할하지 않습니다.
+- 분석 전에 각 권역 안에서 TL과 VL의 `TRAVEL_ID`를 비교합니다. 하나라도 겹치면 실행을 중단하고 권역과 `<10` 또는 `10+`의 개인정보 보호용 개수 구간만 보고합니다. 오류에 ID나 경로는 포함하지 않습니다.
+- 분석 전에 각 소스 역할의 여행-방문 맥락 조인 무결성을 검사합니다. 여행 ID 누락, 사용 가능한 맥락 값이 없는 여행, 서로 다른 맥락으로 중복된 여행 ID, 정확히 연결할 수 없는 방문 행을 각각 셉니다. 문제가 하나라도 있으면 특징 분석 전에 실패 처리합니다. 오류에는 권역/역할과 `<10`/`10+` 구간만 포함하며 식별자나 경로를 포함하지 않습니다. 연결할 수 없는 행을 조용히 제외하지 않습니다.
+- 결과에는 문서화된 특징/결과 이름, 불투명 범주 인덱스, 지원량 구간, 효과 크기, 기술적 참고용 p-value, 집계 log loss만 포함합니다. 작은 지원량은 k=10 기준으로 억제합니다. 원래 범주 값, ID, 경로, 파일명, capital 역할 폴더 이름은 출력 메타데이터에 넣지 않습니다.
+- 실행기는 데이터셋 승인, 이용 조건, 원래 셸 사전 점검, 잠정 POI 후보 처리를 확인하는 명시적 확인 옵션을 요구합니다. 이 옵션들은 작업자가 확인 절차를 마쳤음을 기록할 뿐, 승인 내용을 발견하거나 다른 셸을 검사하지 않습니다.
 
-Limits include non-random exposure to places, trip-clustered visits, uncertain serving-time availability of survey/date context, provisional `POI_ID` identity, incomplete POI metadata linkage, missing/out-of-domain feedback, and observational confounding. Effects and predictive feature associations are not causal explanations.
+한계에는 장소 방문 기회의 비무작위성, 여행별 군집 방문, 설문/날짜 맥락의 서비스 시점 가용성 불확실성, 잠정적인 `POI_ID` 동일성, 불완전한 POI 메타데이터 연결, 결측/범위 밖 피드백, 관측 자료의 교란이 포함됩니다. 효과와 예측 특징 연관성을 인과적 설명으로 해석하지 않습니다.
 
-## Reproduction
+## 재현
 
-First read the selected source-role contract and inspect the following variables in the user's actual local shell, including non-exported variables: `RAW_ROOT`, `CAPITAL_TL`, `CAPITAL_VL`, `WEST_TL`, `WEST_VL`, `EAST_TL`, `EAST_VL`, `JEJU_TL`, and `JEJU_VL`. Record only set/unset, target existence/type, and expected TL/VL role structure; never print values or paths. Verify the four 2023 dataset identities, #12 approval and terms, and TL/VL roles before opening any CSV. This worktree shell is not a substitute for that check.
+먼저 선택한 소스 역할 계약을 읽고 사용자의 실제 로컬 셸에서 다음 변수를 확인합니다. 내보내지 않은 셸 변수도 포함합니다: `RAW_ROOT`, `CAPITAL_TL`, `CAPITAL_VL`, `WEST_TL`, `WEST_VL`, `EAST_TL`, `EAST_VL`, `JEJU_TL`, `JEJU_VL`. 변수 이름별 설정/미설정, 대상 존재 여부와 유형, 예상 TL/VL 역할 구조만 기록하고 값이나 경로는 절대 출력하지 않습니다. CSV를 열기 전에 2023년 4개 데이터셋의 신원, #12 승인과 이용 조건, TL/VL 역할을 확인합니다. 이 작업 트리 셸은 해당 확인을 대신하지 않습니다.
 
-After those checks pass, set local shell variables to the already-approved role folders using the same TL/VL role mapping as the Issue #31 popularity/CF runs. The evaluator contract requires role folder names, containment under `RAW_ROOT`, and distinct TL/VL paths; it does not derive region identity from folder location. Approved capital filekey folders use the established TL/VL mapping and require `--allow-approved-capital-filekey-folders`. Supply the locally verified `CAPITAL_TL` and `CAPITAL_VL` folders. The command below uses local shell variables:
+확인이 끝나면 Issue #31 인기도/CF 실행과 같은 TL/VL 역할 매핑을 사용해 이미 승인된 역할 폴더를 로컬 셸 변수에 지정합니다. 평가기 계약은 역할 폴더 이름, `RAW_ROOT` 아래 포함 관계, TL/VL 경로의 상이성을 요구하며 폴더 경로로 권역을 판별하지 않습니다. 승인된 capital 파일키 폴더를 사용할 때는 기존 TL/VL 매핑과 `--allow-approved-capital-filekey-folders` 옵션을 적용합니다. 로컬에서 확인한 `CAPITAL_TL`과 `CAPITAL_VL` 폴더를 사용합니다. 아래 명령은 로컬 셸 변수를 사용합니다.
 
 ```bash
 RUN_ID="context-poi-2023-YYYYMMDD"
@@ -82,14 +82,14 @@ python3 scripts/recommendation/experiment_context_poi_signal.py \
   --confirm-poi-candidate
 ```
 
-Use a fresh run ID. The output is under the ignored `results/experiments/context-poi-signal/` path and contains `associations.csv`, `context_poi_distributions.csv`, `column_availability.csv`, `feedback_distributions.csv`, `feedback_cross_distributions.csv`, `feedback_context_poi_distributions.csv`, `feedback_associations.csv`, `feedback_ablations.csv`, and `run_metadata.json`. The metadata records the dataset/version, roles, split policy, seed (none), code revision/dirty state, script hash, run times, outcome list, and privacy threshold without recording input paths, source filenames, or filekey values.
+매번 새 실행 ID를 사용합니다. 결과는 Git에서 제외되는 `results/experiments/context-poi-signal/` 아래에 저장되며 `associations.csv`, `context_poi_distributions.csv`, `column_availability.csv`, `feedback_distributions.csv`, `feedback_cross_distributions.csv`, `feedback_context_poi_distributions.csv`, `feedback_associations.csv`, `feedback_ablations.csv`, `run_metadata.json`을 포함합니다. 메타데이터에는 데이터셋/버전, 역할, 분할 정책, 난수 시드(없음), 코드 개정 정보와 작업 트리 변경 상태, 스크립트 해시, 실행 시간, 결과 필드 목록, 개인정보 보호 기준을 기록하되 입력 경로, 소스 파일명, 파일키 값은 기록하지 않습니다.
 
-Synthetic-only validation:
+합성 데이터만 사용하는 검증:
 
 ```bash
 python3 -m unittest tests.test_context_poi_signal -v
 ```
 
-## #41 recommendation
+## #41 권고
 
-Recommend **Reconsider** for #41 based on this run: regional context/POI tests did not have sufficient support, all joint context × POI × feedback distributions were suppressed, and context+POI worsened held-out feedback log loss against both popularity-only and POI-only in all 15 comparisons. Do not use descriptive row-level chi-square p-values as evidence for Go. A future Go decision would require supported, regionally consistent patterns and context+POI improvement over both baselines under the documented leakage checks; it would remain associational rather than causal.
+이번 실행 결과에 따라 #41에는 **Reconsider**를 권고합니다. 권역별 맥락/POI 검정은 지원량이 부족했고, 맥락 × POI × 피드백 결합 분포는 모두 억제되었으며, 15개 비교 모두에서 context+POI의 홀드아웃 log loss가 popularity-only와 POI-only보다 나빴습니다. 기술적 행 단위 카이제곱 p-value를 Go 판단의 근거로 사용하지 않습니다. 추후 Go를 고려하려면 충분한 지원량을 갖춘 권역 간 일관된 패턴과 두 기준선 대비 context+POI의 예측 개선이 필요하며, 이 경우에도 결과는 인과적 설명이 아니라 연관성으로 해석해야 합니다.
