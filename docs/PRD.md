@@ -1,7 +1,7 @@
 # Travel Recommendation PRD
 
 > 
-> Last updated: 2026-09-09
+> Last updated: 2026-10-12
 
 ## 1. Product Overview
 
@@ -60,7 +60,9 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 
 ## 3. Product Vision
 
-사용자가 여행 상황과 취향을 입력하면, 서비스가 최신 관광지 카탈로그와 사용자 선호/행동을 바탕으로 관련성이 높은 여행지를 빠르게 추천하고, 사용자의 실제 상호작용을 통해 추천 품질을 지속적으로 개선할 수 있는 구조를 만든다.
+사용자가 이번 여행의 상황과 취향을 입력하면, 서비스가 현재 여행 맥락과 관광지 카탈로그를 바탕으로 관련성이 높은 여행지를 빠르게 랭킹하고, 사용자의 실제 상호작용을 통해 추천 품질을 지속적으로 개선할 수 있는 구조를 만든다.
+
+장기 사용자 행동 이력은 개인화를 강화하는 선택적 정보로 활용할 수 있지만, 신규 사용자도 목적지·기간·동행자·명시적 여행 취향 등 현재 여행의 context만으로 핵심 추천 경험을 사용할 수 있어야 한다.
 
 장기적으로는 다음과 같은 경험을 지원할 수 있어야 한다.
 
@@ -89,23 +91,19 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 
 ### 4.3 Recommendation Goals
 
-첫 단계에서는 최신 모델 자체보다 평가 가능한 baseline을 만드는 것을 우선한다.
+추천의 제품 목표는 **현재 여행 맥락에서 고려 가능한 POI를 관련성 순으로 랭킹해 Top-K로 제공하는 것**이다.
 
-비교 후보:
+첫 단계에서는 특정 모델 계열을 제품 요구사항처럼 선결정하지 않고, 공통 데이터·평가 계약과 재현 가능한 baseline을 우선한다.
 
-1. Popularity
-2. Content-based
-3. Matrix Factorization
-4. Two-Tower retrieval
+현재까지:
 
-후속 후보:
+- Popularity baseline을 공통 reference로 구축했다.
+- User-CF / Item-CF feasibility experiment를 통해 현재 공식 TL/VL 구조에서는 history-only CF의 적용 가능성이 낮음을 확인했다.
+- 이후 모델은 #41의 feature availability, cold-start, label, split 계약을 확정한 뒤 선택한다.
 
-- 별도 ranking model
-- Sequential recommendation (예: SASRec 계열)
-- Graph recommendation (예: LightGCN 계열)
-- LLM 기반 preference extraction / recommendation explanation
+후속 후보에는 feature-based ranking, Learning-to-Rank, feature-aware factorization, Two-Tower 등이 포함될 수 있으나 구현 순서를 PRD에서 고정하지 않는다.
 
-후속 모델은 baseline 대비 개선을 확인할 수 있을 때만 도입한다.
+LLM은 향후 preference extraction 또는 recommendation explanation의 인터페이스 후보로 검토할 수 있으나, 검증 가능한 candidate/ranking 파이프라인을 대체하는 것을 기본 방향으로 두지 않는다.
 
 ---
 
@@ -135,6 +133,7 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 
 - 내 취향에 맞는 장소를 빠르게 찾고 싶다.
 - 동반자나 여행 시기 등 이번 여행의 맥락이 반영되길 원한다.
+- 과거 사용 이력이 없어도 현재 여행 정보를 입력해 추천을 시작하고 싶다.
 - 너무 많은 후보보다 신뢰할 만한 상위 추천을 원한다.
 
 ### 6.2 여행지 탐색 사용자
@@ -158,14 +157,15 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 ### 7.1 개인화 추천
 
 ```text
-로그인
+로그인 또는 추천 진입
  -> 여행 지역 선택
  -> 여행 기간 입력
- -> 여행 스타일/동반자 등 취향 입력
+ -> 여행 스타일/동반자 등 현재 여행의 취향·맥락 입력
  -> 추천 요청
- -> 개인화된 Top-K 관광지 조회
+ -> 현재 여행에 적합한 Top-K 관광지 조회
  -> 관광지 상세 확인
- -> 좋아요/저장/방문 등 상호작용
+ -> 저장/선택/방문 등 상호작용
+ -> 향후 일정 구성 기능과 연결 가능
 ```
 
 ### 7.2 관광지 탐색
@@ -228,9 +228,13 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 
 ### FR-4 Recommendation
 
-- 사용자는 현재 여행 맥락을 기반으로 Top-K 관광지를 추천받을 수 있다.
+- 사용자는 현재 여행 맥락과 명시적으로 제공한 취향을 기반으로 Top-K 관광지를 추천받을 수 있다.
+- 신규 사용자도 장기 user history 없이 핵심 추천 플로우를 사용할 수 있어야 한다.
+- 과거 행동 이력이 존재할 경우 이를 personalization enrichment로 사용할 수 있으나 필수 입력으로 요구하지 않는다.
+- 여행 지역, 서비스 가능한 POI 등 명백한 product constraint는 가능한 경우 ranking 이전 candidate eligibility에 반영한다.
+- 추천의 primary product output은 ranked Top-K POI이며, 자동 일정 생성/동선 최적화는 별도 제품 기능으로 취급한다.
+- 추천된 POI는 사용자가 저장하거나 선택할 수 있고, 향후 itinerary 기능의 입력으로 연결할 수 있어야 한다.
 - 이미 방문한 아이템 처리 방식은 evaluation 및 product rule에서 명시한다.
-- 신규 사용자에 대해서도 preference/content/popularity 기반 fallback을 제공한다.
 - 추천 API는 최소한 다음 정보를 반환할 수 있어야 한다.
 
 ```text
@@ -266,6 +270,8 @@ modelVersion (내부 추적용)
 - CLICK
 - LIKE
 - SAVE
+- ADD_TO_TRIP
+- SKIP 또는 DISMISS
 - REVIEW
 - VISIT
 
@@ -348,24 +354,23 @@ trip_context
 
 ### 10.1 Split
 
-가능하면 temporal split을 우선한다.
+split 방식은 temporal이라는 이유만으로 우선하지 않는다.
 
-예:
+현재 데이터의 traveler 반복성, trip 구조, feature availability와 평가하려는 cold-start 시나리오를 먼저 확인한 뒤 #41에서 model-development split을 확정한다.
 
-```text
-과거 interaction -> train
-그 이후 interaction -> validation/test
-```
-
-사용자별 데이터 밀도와 여행 단위 구조를 검토한 뒤 정확한 split 규칙을 결정한다.
+공식 VL은 높은 신규-user 비율이 확인된 만큼 삭제하거나 자동 병합하지 않고 external/cold-start evaluation 역할을 우선 검토한다.
 
 ### 10.2 Initial Metrics
 
+추천의 primary task는 Top-K ranking으로 두고 다음 지표를 공통 기준으로 검토한다.
+
+- Precision@K
 - Recall@K
 - NDCG@K
-- HitRate@K
+- MRR
+- recommendation coverage
 
-필요하면 Precision@K, coverage, diversity 등을 후속 추가한다.
+rating/preference prediction을 학습 과정에서 사용할 경우 RMSE/MAE를 diagnostic으로 추가할 수 있으나, 회귀 오차만으로 추천 모델 우수성을 결론 내리지 않는다.
 
 ### 10.3 Evaluation Requirements
 
@@ -393,11 +398,13 @@ raw data
 
 Online
 request
- -> user/context features
- -> candidate retrieval
- -> optional ranking
- -> filtering
+ -> traveler preference + trip context
+ -> product/trip constraints
+ -> eligible candidate POIs
+ -> ranking
  -> Top-K
+ -> save/select
+ -> optional future itinerary flow
 ```
 
 아이템 규모가 수만 개 수준이라면 복잡한 vector DB/ANN을 필수 조건으로 두지 않는다. brute-force vector scoring의 실제 latency를 먼저 측정한 뒤 필요할 때 ANN을 도입한다.
@@ -516,14 +523,14 @@ AI Hub / Product interactions / TourAPI catalog
 - AI Hub 데이터 재확보
 - AI Hub ↔ TourAPI mapping 과정 복원
 
-### Phase 1 — Recommendation Baseline
+### Phase 1 — Recommendation Baseline & Contract
 
 - canonical dataset 정의
-- evaluation protocol 구현
 - popularity baseline
-- content-based baseline
-- matrix factorization baseline
-- MLflow 기반 결과 비교
+- User-CF / Item-CF feasibility 검증
+- 제품/데이터 특성에 맞는 ranking task 정의
+- preference/label, feature availability, cold-start, evaluation protocol 확정
+- 후속 모델 후보를 동일한 계약에서 비교할 수 있는 실험 구조 마련
 
 ### Phase 2 — New Product Foundation
 
@@ -533,10 +540,11 @@ AI Hub / Product interactions / TourAPI catalog
 - Product DB 재설계
 - 인증 및 TourAPI integration 기본 구현
 
-### Phase 3 — Personalized Retrieval
+### Phase 3 — Personalized Ranking / Retrieval
 
-- Two-Tower 실험
-- baseline 대비 성능 비교
+- #41 계약에 맞는 feature-capable 모델 실험
+- 필요 시 Learning-to-Rank, feature-aware factorization, Two-Tower 등 후보 비교
+- baseline 대비 ranking/coverage/cold-start 성능 비교
 - online artifact/serving contract 정의
 - NestJS와 recommendation service 연동
 
@@ -555,8 +563,8 @@ AI Hub / Product interactions / TourAPI catalog
 다음 조건을 만족하는 것을 목표로 한다.
 
 1. 기존 추천 파이프라인의 문제와 개선 이유를 설명할 수 있다.
-2. 동일 데이터/동일 protocol에서 최소 3개 baseline을 비교할 수 있다.
-3. Two-Tower 또는 후속 모델이 baseline 대비 어떤 trade-off를 갖는지 수치로 설명할 수 있다.
+2. 동일 데이터/동일 protocol에서 서로 다른 추천 접근을 비교할 수 있다.
+3. 선택한 후속 모델이 baseline 대비 ranking, coverage, cold-start에서 어떤 trade-off를 갖는지 수치로 설명할 수 있다.
 4. 추천 serving이 요청마다 전체 데이터 전처리를 반복하지 않는다.
 5. 데이터셋/코드/모델/metric을 특정 experiment run으로 재현할 수 있다.
 6. Next.js/NestJS/Recommendation service 간 책임이 명확하다.
@@ -584,11 +592,14 @@ AI Hub / Product interactions / TourAPI catalog
 
 ### Recommendation
 
-- 추천 target을 `next visited attraction`으로 정의할지, 여행 단위의 `set of preferred attractions`으로 정의할지?
-- negative sampling을 어떻게 구성할 것인가?
-- region filtering을 retrieval 이전에 적용할지 이후에 적용할지?
-- Matrix Factorization baseline은 ALS/BPR 중 무엇을 우선할 것인가?
-- Two-Tower의 user history representation을 초기에는 어떤 방식으로 구성할 것인가?
+제품 수준의 방향은 현재 여행 맥락에서 eligible POI를 랭킹해 Top-K로 제공하는 것으로 정리했다. 다음 세부 계약은 #41에서 확정한다.
+
+- traveler preference와 trip context의 정확한 입력 feature는 무엇인가?
+- prediction unit을 어떤 schema로 고정할 것인가?
+- 방문/만족도 등 관측 신호를 relevance/preference label로 어떻게 정의할 것인가?
+- unobserved item과 pseudo-negative를 어떻게 구분하고, 필요한 모델에서 sampling을 어떻게 구성할 것인가?
+- 공식 VL과 TL 내부 split을 각각 어떤 평가 역할로 사용할 것인가?
+- user/item cold-start cohort를 어떤 기준으로 분리할 것인가?
 
 ### Architecture
 
@@ -614,7 +625,18 @@ AI Hub / Product interactions / TourAPI catalog
 
 ---
 
-## 19. PRD Change Policy
+## 19. Recommendation Product References
+
+유사 여행 추천 제품의 공개 사용자 경험과 이번 프로젝트에 대한 Adopt / Experiment / Defer 판단은 다음 문서에서 관리한다.
+
+- [Travel Recommendation Product Reference Analysis](recommendation/product-reference-analysis.md)
+- #41 — 여행 추천 제품·모델 계약 재정의
+
+제품 조사는 내부 알고리즘을 추측하기 위한 근거가 아니라, 사용자가 제공하는 입력과 서비스가 반환해야 하는 경험을 검증하기 위한 자료로 사용한다.
+
+---
+
+## 20. PRD Change Policy
 
 이 문서는 제품 요구사항과 기술 방향의 기준을 정리한다. 요구사항과 기술 선택은 기존 시스템 분석, 데이터셋 스키마 확인, 추천 baseline 실험, 기술·아키텍처 결정의 근거가 추가될 때 갱신한다.
 
