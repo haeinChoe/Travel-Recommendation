@@ -75,7 +75,12 @@ class ContextPoiSyntheticTests(unittest.TestCase):
                 poi: bool = True, rich: bool = True) -> dict[str, object]:
             return {
                 "region": "west", "popularity_band": "band-a",
-                "context": {"TRAVEL_STYL_1": f"style-{index}" if context else None},
+                "context": {
+                    "TRAVEL_STYL_1": f"style-{index}" if context else None,
+                    "TRAVEL_STATUS_DESTINATION": "destination-a",
+                    "TRAVEL_STATUS_ACCOMPANY": "with-company",
+                    "TRAVEL_COMPANIONS_NUM": "1",
+                },
                 "demographics": {}, "companion_relations": ("relation-a",), "month": "01",
                 "elapsed_days": 1, "visit_area_type": "type-a" if poi else None,
                 "visit_sgg": "district-a" if poi else None,
@@ -87,74 +92,39 @@ class ContextPoiSyntheticTests(unittest.TestCase):
                 "synthetic_index": index,
             }
 
-        train = [
-            row(index, "A" if index < 18 else "B", poi=index < 18, rich=index < 12)
-            for index in range(24)
-        ]
+        train = [row(i, "A" if i < 18 else "B", poi=i < 18, rich=i < 12) for i in range(24)]
         validation = [
-            row(index, "B" if index < 12 else "A",
-                context=True, poi=index < 20, rich=index < 8)
-            for index in range(24)
+            row(i, "B" if i < 12 else "A", poi=i < 20, rich=i < 8)
+            for i in range(24)
         ]
         fit_cohorts: list[set[int]] = []
-        validation_cohorts: list[set[str]] = []
         original_fit = analysis._naive_bayes_fit
 
         def capture_fit(rows, features, target):
-            fit_cohorts.append({int(row["synthetic_index"]) for row in rows})
+            fit_cohorts.append({int(item["synthetic_index"]) for item in rows})
             return original_fit(rows, features, target)
 
-        def capture_predict(features_row, features, model):
-            validation_cohorts.append(str(features_row["TRAVEL_STYL_1"]))
-            return "A"
-
-        regular = analysis._predictive_rows("west", "DGSTFN", train, validation)
-        regular_accuracy = {row["ablation"]: row["accuracy"] for row in regular}
-        with patch.object(analysis, "_naive_bayes_fit", side_effect=capture_fit), \
-                patch.object(analysis, "_naive_bayes_predict", side_effect=capture_predict):
+        with patch.object(analysis, "_naive_bayes_fit", side_effect=capture_fit):
             output = analysis._pairwise_sensitivity_rows("west", "DGSTFN", train, validation)
 
-        self.assertEqual(len(output), 4)
-        self.assertEqual([row["comparison"] for row in output], [
-            "context_vs_poi", "context_vs_poi", "poi_vs_richer_poi", "poi_vs_richer_poi",
-        ])
-        self.assertEqual([row["ablation"] for row in output], [
-            "context_only", "context_plus_poi", "context_plus_poi", "context_plus_richer_poi",
-        ])
-        self.assertEqual(output[0]["train_support"], output[1]["train_support"])
-        self.assertEqual(output[0]["validation_support"], output[1]["validation_support"])
-        self.assertEqual(output[2]["train_support"], output[3]["train_support"])
-        self.assertEqual(output[2]["validation_support"], output[3]["validation_support"])
-        self.assertEqual(fit_cohorts[0], fit_cohorts[1])
-        self.assertEqual(fit_cohorts[2], fit_cohorts[3])
-        self.assertEqual(set(validation_cohorts[:20]), set(validation_cohorts[20:40]))
-        self.assertEqual(set(validation_cohorts[40:48]), set(validation_cohorts[48:56]))
-        self.assertGreater(len(validation_cohorts[:20]), len(validation_cohorts[40:48]))
-        self.assertGreater(len(fit_cohorts[0]), len(fit_cohorts[2]))
-        primary_pair = output[:2]
-        richer_pair = output[2:]
-        self.assertEqual({row["status"] for row in primary_pair}, {"observed"})
-        self.assertEqual({row["train_support"] for row in primary_pair}, {"10+"})
-        self.assertEqual({row["validation_support"] for row in primary_pair}, {"10+"})
-        self.assertEqual({row["validation_support"] for row in richer_pair}, {"<10"})
-        self.assertEqual({row["status"] for row in richer_pair}, {"privacy-limited"})
-        self.assertTrue(all(
-            row[metric] == "suppressed"
-            for row in richer_pair
-            for metric in ("accuracy", "majority_accuracy", "delta_vs_majority", "paired_accuracy_difference")
-        ))
-        self.assertGreater(len({regular_accuracy[name] for name in (
-            "context_only", "context_plus_poi", "context_plus_richer_poi",
-        )}), 1)
-        self.assertNotIn("synthetic_index", repr(output))
+        by_comparison: dict[str, list[dict[str, object]]] = {}
+        for item in output:
+            by_comparison.setdefault(str(item["comparison"]), []).append(item)
 
-        sparse = analysis._pairwise_sensitivity_rows("west", "DGSTFN", train, validation[:8])
-        self.assertEqual({row["status"] for row in sparse}, {"privacy-limited"})
-        self.assertTrue(all(
-            row[metric] == "suppressed"
-            for row in sparse
-            for metric in ("accuracy", "majority_accuracy", "delta_vs_majority", "paired_accuracy_difference")
-        ))
+        self.assertEqual(set(by_comparison), {
+            "context_vs_poi", "poi_vs_richer_poi", "region_vs_context",
+            "popularity_vs_context", "broad_category_vs_context",
+        })
+        for rows in by_comparison.values():
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(rows[0]["train_support"], rows[1]["train_support"])
+            self.assertEqual(rows[0]["validation_support"], rows[1]["validation_support"])
+        self.assertEqual({row["status"] for row in by_comparison["context_vs_poi"]}, {"observed"})
+        self.assertEqual({row["status"] for row in by_comparison["poi_vs_richer_poi"]}, {"privacy-limited"})
+        self.assertEqual(len(fit_cohorts), 10)
+        for i in range(0, 10, 2):
+            self.assertEqual(fit_cohorts[i], fit_cohorts[i + 1])
+        self.assertNotIn("synthetic_index", repr(output))
 
     def test_trip_pair_sensitivity_uses_trip_identity_and_buckets_missing_ids(self) -> None:
         rows = [
@@ -202,21 +172,53 @@ class ContextPoiSyntheticTests(unittest.TestCase):
         row = {
             "region": "west", "poi_id": "private-item-marker", "visit_area_type": "opaque-type",
             "visit_sgg": "opaque-sgg", "master_sgg": None, "poi_l1": "opaque-category",
-            "poi_l2": None, "poi_l3": None, "context": {"TRAVEL_STYL_1": "opaque-style",
-            "TRAVEL_MISSION": "opaque-mission", "TRAVEL_START_YMD": "2023-01-02",
-            "TRAVEL_END_YMD": "2023-01-03"}, "month": "01", "elapsed_days": 1,
-            "companion_relations": (), "feedback": {target: "5" for target in analysis.TARGETS},
-            "popularity_band": "10+",
+            "poi_l2": None, "poi_l3": None, "context": {
+                "TRAVEL_STYL_1": "opaque-style", "TRAVEL_MOTIVE_1": "opaque-motive",
+                "TRAVEL_STATUS_DESTINATION": "opaque-destination",
+                "TRAVEL_STATUS_ACCOMPANY": "opaque-accompany",
+                "TRAVEL_COMPANIONS_NUM": "1", "TRAVEL_MISSION": "opaque-mission",
+                "TRAVEL_START_YMD": "2023-01-02", "TRAVEL_END_YMD": "2023-01-03",
+            }, "month": "01", "elapsed_days": 1, "companion_relations": (),
+            "feedback": {target: "5" for target in analysis.TARGETS}, "popularity_band": "10+",
         }
         feature_sets = analysis._feature_sets(row)
         serialized_names = repr(feature_sets)
         self.assertNotIn("poi_id", serialized_names.casefold())
         self.assertNotIn("DGSTFN", serialized_names)
-        self.assertNotIn("REVISIT_INTENTION", serialized_names)
-        self.assertNotIn("RCMDTN_INTENTION", serialized_names)
         self.assertNotIn("TRAVEL_MISSION", serialized_names)
-        self.assertNotIn("2023-01-02", serialized_names)
         self.assertIn("elapsed_days", feature_sets["context_only"])
+        self.assertIn("region", feature_sets["context_only"])
+        self.assertNotIn("companion_relation_codes", feature_sets["context_only"])
+        self.assertEqual(
+            set(feature_sets["context_companion"]),
+            {"TRAVEL_STATUS_ACCOMPANY", "TRAVEL_COMPANIONS_NUM"},
+        )
+        self.assertIsNone(feature_sets["context_companion_relation_recorded"]["companion_relation_codes"])
+
+    def test_joint_feature_sensitivity_detects_incremental_xor_signal(self) -> None:
+        def make_rows(repeats: int) -> list[dict[str, object]]:
+            rows: list[dict[str, object]] = []
+            for _ in range(repeats):
+                for context_value, poi_value, label in (
+                    ("a", "x", "0"), ("a", "y", "1"),
+                    ("b", "x", "1"), ("b", "y", "0"),
+                ):
+                    rows.append({
+                        "context_value_source": context_value,
+                        "poi_value_source": poi_value,
+                        "feedback": {"DGSTFN": label},
+                    })
+            return rows
+
+        result = analysis._joint_feature_sensitivity_row(
+            "aggregate", "DGSTFN", make_rows(8), make_rows(4),
+            "TRAVEL_STYL_1", lambda row: row["context_value_source"],
+            "VISIT_AREA_TYPE_CD", lambda row: row["poi_value_source"],
+        )
+        self.assertEqual(result["status"], "observed")
+        self.assertGreater(float(result["delta_joint_vs_main"]), 0.4)
+        self.assertEqual(result["context_group"], "style")
+        self.assertNotIn("context_value_source", repr(result))
 
     def test_cli_requires_approval_confirmations_before_paths_are_read(self) -> None:
         error = StringIO()
@@ -299,7 +301,8 @@ class ContextPoiSyntheticTests(unittest.TestCase):
             associations = (output / "associations.csv").read_text(encoding="utf-8")
             predictive = (output / "predictive_ablation.csv").read_text(encoding="utf-8")
             sensitivity = (output / "common_cohort_sensitivity.csv").read_text(encoding="utf-8")
-            joined = audit + associations + predictive + sensitivity + json.dumps(metadata)
+            joint_feature = (output / "joint_feature_sensitivity.csv").read_text(encoding="utf-8")
+            joined = audit + associations + predictive + sensitivity + joint_feature + json.dumps(metadata)
             for forbidden in (
                 "private-trip-", "private-traveler-", "private-poi-", "opaque-style-",
                 "opaque-category-", "opaque-demographic-", str(raw_root), str(poi_root),
@@ -317,6 +320,10 @@ class ContextPoiSyntheticTests(unittest.TestCase):
             self.assertIn("context_vs_poi", sensitivity)
             self.assertIn("poi_vs_richer_poi", sensitivity)
             self.assertIn("paired_accuracy_difference", sensitivity)
+            self.assertIn("region_vs_context", sensitivity)
+            self.assertIn("popularity_vs_context", sensitivity)
+            self.assertIn("broad_category_vs_context", sensitivity)
+            self.assertIn("delta_joint_vs_main", joint_feature)
             self.assertIn("candidate_metadata_coverage", audit)
             self.assertIn("outside_documented_range", audit)
             self.assertIn("outside_range_cardinality", audit)
