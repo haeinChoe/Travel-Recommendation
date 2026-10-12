@@ -32,12 +32,14 @@ If the actual user shell cannot be inspected, report that limitation and do not 
 Do not run Herdr CLI commands from an arbitrary repository or worktree cwd.
 
 - Use the registered Herdr MCP bridge for supported inspection operations. If that inspection succeeds, do not repeat it with the CLI.
+- `herdr pane list` and `herdr pane current --current` are optional discovery, not mandatory Issue-start preflight. If `HERDR_PANE_ID` and `HERDR_WORKSPACE_ID` are already set, do not call `pane current` only to reconfirm caller identity. An optional pane-discovery `EPERM` is not by itself an Issue-level blocker.
 - When a CLI fallback is actually required, keep the coordinator in its approved orchestration execution context. Pass repository targets explicitly with documented arguments such as `--cwd "$REPO_ROOT"`; this argument identifies the repository to Herdr and does not require changing the shell cwd into that repository.
+- For explicitly authorized state-changing Herdr commands with no MCP mutation equivalent (for example workspace/worktree creation, required pane creation/split, and agent start/prompt), use the global Herdr skill's approval-reviewed escalated execution route on the first attempt; do not probe them first in the ordinary command sandbox.
 - Do not `cd` into a repository or worktree merely to invoke Herdr.
 - After Herdr creates or resolves a worktree, verify the returned absolute path is inside the writable roots allowed by the `herdr-implementation` permission profile before starting an implementation agent.
 - Implementation commands execute only in the exact worktree path returned by Herdr. Never guess, synthesize, relocate, or substitute a worktree path to recover from a permission error.
-- If a denied CLI call used an invalid cwd or unapproved worktree path, do not retry that same call. Correct the orchestration boundary and continue only through an authorized path. If the required capability remains unavailable after the boundary is correct, report the actual blocker and stop.
-- Never use permission escalation, sandbox bypasses, force options, or unrestricted/default profiles to recover from `EPERM`.
+- If a denied CLI call used an invalid cwd or unapproved worktree path, do not retry that same call. Correct the orchestration boundary and continue only through an authorized path. If a state-changing command was wrongly attempted in the ordinary sandbox, use only its already-defined first-attempt approved route if that route has not yet been attempted; if the approved invocation is rejected or still returns `EPERM`, report the blocker and stop.
+- Never introduce a new or broader permission route, sandbox bypass, force option, or unrestricted/default profile to recover from `EPERM`; the predefined approval-reviewed first-attempt route is not an `EPERM` recovery bypass.
 
 ## Worktree and agents
 
@@ -46,6 +48,8 @@ Create one dedicated Issue worktree and branch from `dev`, following `docs/agent
 The Herdr MCP bridge provides read-only inspection plus narrowly scoped, explicitly authorized teardown tools. Use the existing authorized Herdr orchestration path for general workspace/worktree creation, agent start or prompts, and pane control. Use `herdr_worktree_remove` or `herdr_workspace_close` only when the user or Issue explicitly authorizes cleanup and the guarded procedure in [references/agent-loop.md](references/agent-loop.md) is satisfied.
 
 Use the path and naming returned by Herdr's configured worktree flow. Before starting the writer, verify the returned path is inside the `herdr-implementation` profile's writable roots. If that location is inaccessible, identify the permission boundary before starting any agent; do not silently choose, move, or synthesize a custom location.
+
+Do not infer that a workspace belongs to an Issue from its ID, focus state, or proximity alone. Reuse it only when the Issue branch, Git worktree path/branch, and Herdr metadata establish the mapping. Prefer a pane returned by the authorized orchestration flow; do not require a global pane-list scan merely to find a shell pane.
 
 Choose the number of agents to fit the task:
 
