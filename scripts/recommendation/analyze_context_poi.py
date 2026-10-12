@@ -28,13 +28,22 @@ RESULTS_ROOT = REPO_ROOT / "results" / "experiments" / "context-poi-signal"
 REGIONS = shared.REGIONS
 MIN_CELL = 10
 TARGETS = ("DGSTFN", "REVISIT_INTENTION", "RCMDTN_INTENTION")
+STYLE_CONTEXT = tuple(f"TRAVEL_STYL_{index}" for index in range(1, 9))
+MOTIVE_CONTEXT = tuple(f"TRAVEL_MOTIVE_{index}" for index in range(1, 4))
 MASTER_CONTEXT = (
-    *(f"TRAVEL_STYL_{index}" for index in range(1, 9)),
-    *(f"TRAVEL_MOTIVE_{index}" for index in range(1, 4)),
+    *STYLE_CONTEXT,
+    *MOTIVE_CONTEXT,
     "TRAVEL_STATUS_DESTINATION",
     "TRAVEL_STATUS_ACCOMPANY",
     "TRAVEL_COMPANIONS_NUM",
 )
+PRIMARY_CONTEXT_GROUPS = {
+    "style": STYLE_CONTEXT,
+    "motive": MOTIVE_CONTEXT,
+    "destination": ("TRAVEL_STATUS_DESTINATION", "region"),
+    "companion": ("TRAVEL_STATUS_ACCOMPANY", "TRAVEL_COMPANIONS_NUM"),
+    "temporal": ("month", "elapsed_days"),
+}
 TRIP_CONTEXT = (
     "TRAVEL_MISSION",
     "TRAVEL_START_YMD",
@@ -59,7 +68,8 @@ ALL_FEATURE_FIELDS = (*MASTER_CONTEXT, *TRIP_CONTEXT, *DEMOGRAPHICS, *VISIT_POI,
                       *COMPANION_FIELDS)
 ARTIFACTS = (
     "availability_audit.csv", "associations.csv", "predictive_ablation.csv",
-    "common_cohort_sensitivity.csv", "run_metadata.json",
+    "common_cohort_sensitivity.csv", "joint_feature_sensitivity.csv",
+    "run_metadata.json",
 )
 
 
@@ -594,39 +604,96 @@ def _naive_bayes_predict(row: dict[str, object], features: Sequence[str], model)
     return best_label
 
 
-def _feature_sets(row: dict[str, object]) -> dict[str, dict[str, object]]:
+def _primary_context_features(row: dict[str, object]) -> dict[str, object]:
+    """Return the primary context contract used by predictive ablations."""
     context = dict(row["context"])
-    # Explicit unresolved field names never become predictors.
-    context.pop("TRAVEL_MISSION", None)
-    context.pop("TRAVEL_MISSION_CHECK", None)
-    # The raw recorded dates are not predictors; only Issue-listed derived
-    # month and elapsed calendar-day values are eligible exploratory features.
-    context.pop("TRAVEL_START_YMD", None)
-    context.pop("TRAVEL_END_YMD", None)
+    for unresolved in (
+        "TRAVEL_MISSION", "TRAVEL_MISSION_CHECK",
+        "TRAVEL_START_YMD", "TRAVEL_END_YMD",
+    ):
+        context.pop(unresolved, None)
     context_features: dict[str, object] = {key: value for key, value in context.items()}
     context_features["month"] = row.get("month")
     context_features["elapsed_days"] = row.get("elapsed_days")
     context_features["region"] = row.get("region")
-    companion_values = row.get("companion_relations")
-    context_features["companion_relation_codes"] = (
-        "|".join(companion_values) if companion_values else None
-    )
+    return context_features
+
+
+def _context_group_for(feature: str) -> str:
+    if feature in STYLE_CONTEXT:
+        return "style"
+    if feature in MOTIVE_CONTEXT:
+        return "motive"
+    if feature in {"TRAVEL_STATUS_DESTINATION", "region"}:
+        return "destination"
+    if feature in {"TRAVEL_STATUS_ACCOMPANY", "TRAVEL_COMPANIONS_NUM", "companion_relation_codes"}:
+        return "companion"
+    if feature in {"month_from_TRAVEL_START_YMD", "month", "elapsed_calendar_days", "elapsed_days"}:
+        return "temporal"
+    return "other"
+
+
+def _feature_sets(row: dict[str, object]) -> dict[str, dict[str, object]]:
+    context_features = _primary_context_features(row)
+    relation_values = row.get("companion_relations")
+    relation_feature = "|".join(relation_values) if relation_values else None
+
+    group_features = {
+        "context_style": {name: context_features.get(name) for name in STYLE_CONTEXT},
+        "context_motive": {name: context_features.get(name) for name in MOTIVE_CONTEXT},
+        "context_destination": {
+            name: context_features.get(name) for name in PRIMARY_CONTEXT_GROUPS["destination"]
+        },
+        "context_companion": {
+            name: context_features.get(name) for name in PRIMARY_CONTEXT_GROUPS["companion"]
+        },
+        "context_temporal": {
+            name: context_features.get(name) for name in PRIMARY_CONTEXT_GROUPS["temporal"]
+        },
+        "context_companion_relation_recorded": {
+            "companion_relation_codes": relation_feature,
+        },
+    }
+
     base_poi = {key: row.get(key) for key in ("region", "visit_area_type", "visit_sgg")}
     rich_poi = {key: row.get(key) for key in ("master_sgg", "poi_l1", "poi_l2", "poi_l3")}
-    full = {**context_features, **base_poi, **rich_poi}
     return {
-        "popularity_only": {"region": row.get("region"), "popularity_band": row.get("popularity_band")},
+        "popularity_only": {
+            "region": row.get("region"),
+            "popularity_band": row.get("popularity_band"),
+        },
+        "region_only": {"region": row.get("region")},
+        "broad_category_only": {"poi_l1": row.get("poi_l1")},
+        **group_features,
         "poi_only": {**base_poi, **rich_poi},
         "context_only": context_features,
+        "context_plus_popularity": {
+            **context_features,
+            "popularity_band": row.get("popularity_band"),
+        },
+        "context_plus_broad_category": {
+            **context_features,
+            "poi_l1": row.get("poi_l1"),
+        },
         "context_plus_poi": {**context_features, **base_poi},
-        "context_plus_richer_poi": full,
+        "context_plus_richer_poi": {**context_features, **base_poi, **rich_poi},
     }
+
+
+PREDICTIVE_ABLATIONS = (
+    "popularity_only", "region_only", "broad_category_only",
+    "context_style", "context_motive", "context_destination",
+    "context_companion", "context_temporal",
+    "context_companion_relation_recorded", "poi_only", "context_only",
+    "context_plus_popularity", "context_plus_broad_category",
+    "context_plus_poi", "context_plus_richer_poi",
+)
 
 
 def _predictive_rows(region: str, target: str, train: Sequence[dict[str, object]],
                      validation: Sequence[dict[str, object]]) -> list[dict[str, object]]:
     output: list[dict[str, object]] = []
-    ablations = ("popularity_only", "poi_only", "context_only", "context_plus_poi", "context_plus_richer_poi")
+    ablations = PREDICTIVE_ABLATIONS
     train_sets = [(row, _feature_sets(row)) for row in train]
     val_sets = [(row, _feature_sets(row)) for row in validation]
     for ablation in ablations:
@@ -685,6 +752,9 @@ def _predictive_rows(region: str, target: str, train: Sequence[dict[str, object]
 PAIRWISE_SENSITIVITY = (
     ("context_vs_poi", "context_only", "context_plus_poi"),
     ("poi_vs_richer_poi", "context_plus_poi", "context_plus_richer_poi"),
+    ("region_vs_context", "region_only", "context_only"),
+    ("popularity_vs_context", "popularity_only", "context_plus_popularity"),
+    ("broad_category_vs_context", "broad_category_only", "context_plus_broad_category"),
 )
 
 
@@ -795,6 +865,91 @@ def _pairwise_sensitivity_rows(region: str, target: str, train: Sequence[dict[st
     return output
 
 
+def _joint_feature_sensitivity_row(
+    scope: str,
+    target: str,
+    train: Sequence[dict[str, object]],
+    validation: Sequence[dict[str, object]],
+    context_name: str,
+    context_getter,
+    poi_name: str,
+    poi_getter,
+) -> dict[str, object]:
+    """Compare context+POI main effects with an explicit joint categorical feature."""
+    def usable(rows: Sequence[dict[str, object]]) -> list[dict[str, object]]:
+        prepared: list[dict[str, object]] = []
+        for row in rows:
+            context_value = context_getter(row)
+            poi_value = poi_getter(row)
+            label = row["feedback"].get(target)  # type: ignore[union-attr]
+            if context_value is None or poi_value is None or label is None:
+                continue
+            prepared.append({
+                "feedback": row["feedback"],
+                "context_value": context_value,
+                "poi_value": poi_value,
+                "joint_value": f"{context_value}\x1f{poi_value}",
+            })
+        return prepared
+
+    train_rows = usable(train)
+    validation_rows = usable(validation)
+    main_features = ("context_value", "poi_value")
+    joint_features = (*main_features, "joint_value")
+    main_model = _naive_bayes_fit(train_rows, main_features, target)
+    joint_model = _naive_bayes_fit(train_rows, joint_features, target)
+    train_events = main_model[3]
+
+    eval_rows: list[tuple[str, str | None, str | None]] = []
+    for row in validation_rows:
+        label = row["feedback"].get(target)  # type: ignore[union-attr]
+        main_prediction = _naive_bayes_predict(row, main_features, main_model)
+        joint_prediction = _naive_bayes_predict(row, joint_features, joint_model)
+        if label is not None:
+            eval_rows.append((str(label), main_prediction, joint_prediction))
+
+    validation_events = len(validation_rows)
+    complete_eval = (
+        len(eval_rows) == validation_events
+        and all(main is not None and joint is not None for _, main, joint in eval_rows)
+    )
+    majority_label = max(main_model[0], key=main_model[0].get, default=None)
+    majority_accuracy = (
+        sum(actual == majority_label for actual, _, _ in eval_rows) / validation_events
+        if validation_events and complete_eval and majority_label is not None else 0.0
+    )
+    main_accuracy = (
+        sum(actual == main for actual, main, _ in eval_rows) / validation_events
+        if validation_events and complete_eval else 0.0
+    )
+    joint_accuracy = (
+        sum(actual == joint for actual, _, joint in eval_rows) / validation_events
+        if validation_events and complete_eval else 0.0
+    )
+    status = (
+        "insufficient-support"
+        if train_events == 0 or validation_events == 0 or not complete_eval
+        else "privacy-limited"
+        if train_events < MIN_CELL or validation_events < MIN_CELL
+        else "observed"
+    )
+    observed = status == "observed"
+    return {
+        "scope": scope, "target": target,
+        "context_group": _context_group_for(context_name),
+        "context_feature": context_name, "poi_feature": poi_name,
+        "train_support": count_bucket(train_events),
+        "validation_support": count_bucket(validation_events),
+        "majority_accuracy": f"{majority_accuracy:.6f}" if observed else "suppressed",
+        "main_effect_accuracy": f"{main_accuracy:.6f}" if observed else "suppressed",
+        "joint_feature_accuracy": f"{joint_accuracy:.6f}" if observed else "suppressed",
+        "main_delta_vs_majority": f"{main_accuracy - majority_accuracy:.6f}" if observed else "suppressed",
+        "joint_delta_vs_majority": f"{joint_accuracy - majority_accuracy:.6f}" if observed else "suppressed",
+        "delta_joint_vs_main": f"{joint_accuracy - main_accuracy:.6f}" if observed else "suppressed",
+        "status": status,
+    }
+
+
 def _join_specs(raw_root: Path, args) -> tuple[list[InputSpec], dict[str, Path]]:
     if shared.has_symlink_component(args.raw_root) or shared.has_symlink_component(RESULTS_ROOT.absolute()):
         raise ValueError("raw/output path contains a symlink")
@@ -831,7 +986,7 @@ def _join_specs(raw_root: Path, args) -> tuple[list[InputSpec], dict[str, Path]]
 
 
 def _write_artifacts(output: Path, audit_rows, association_rows, predictive_rows,
-                     common_cohort_rows, metadata,
+                     common_cohort_rows, joint_feature_rows, metadata,
                      overwrite: bool) -> None:
     resolved = output.resolve()
     if output.is_symlink() or shared.has_symlink_component(output.absolute()) or not shared.within(resolved, RESULTS_ROOT.resolve()) or resolved == RESULTS_ROOT.resolve():
@@ -853,6 +1008,7 @@ def _write_artifacts(output: Path, audit_rows, association_rows, predictive_rows
         (association_rows, ("scope", "grain", "analysis", "feature", "target", "support", "feature_cardinality", "target_cardinality", "cramers_v", "chi_square_p", "missing_trip_id_exclusions", "status")),
         (predictive_rows, ("scope", "target", "ablation", "train_support", "validation_support", "accuracy", "majority_accuracy", "delta_vs_majority", "status")),
         (common_cohort_rows, ("scope", "target", "comparison", "ablation", "train_support", "validation_support", "accuracy", "majority_accuracy", "delta_vs_majority", "paired_accuracy_difference", "status")),
+        (joint_feature_rows, ("scope", "target", "context_group", "context_feature", "poi_feature", "train_support", "validation_support", "majority_accuracy", "main_effect_accuracy", "joint_feature_accuracy", "main_delta_vs_majority", "joint_delta_vs_majority", "delta_joint_vs_main", "status")),
     )
     try:
         for name, (rows, fields) in zip(ARTIFACTS, tables):
@@ -929,6 +1085,7 @@ def _analyze(specs: Sequence[InputSpec], poi_roots: dict[str, Path], run_id: str
         "month_from_TRAVEL_START_YMD": lambda row: row.get("month"),
         "elapsed_calendar_days": lambda row: row.get("elapsed_days"),
         "companion_relation_codes": lambda row: "|".join(row.get("companion_relations", ())) or None,
+        "region": lambda row: row.get("region"),
     }
     demographic_getters = {
         name: (lambda row, field=name: row["demographics"].get(field)) for name in DEMOGRAPHICS
@@ -953,11 +1110,8 @@ def _analyze(specs: Sequence[InputSpec], poi_roots: dict[str, Path], run_id: str
     for scope_name, role_rows in analysis_scopes:
         for role, rows in role_rows.items():
             scope = f"{scope_name}:{role}"
-            pair_features = {**context_getters, **poi_getters}
-            for feature, getter in pair_features.items():
+            for feature, getter in context_getters.items():
                 for poi_feature, poi_getter in poi_getters.items():
-                    if feature == poi_feature:
-                        continue
                     association = _association(scope, "visit-row", "context_to_poi", feature,
                                                poi_feature, ((getter(r), poi_getter(r)) for r in rows))
                     associations.append(association)
@@ -1011,17 +1165,27 @@ def _analyze(specs: Sequence[InputSpec], poi_roots: dict[str, Path], run_id: str
 
     predictive: list[dict[str, object]] = []
     common_cohort: list[dict[str, object]] = []
-    for region in regions:
-        train = splits[(region, "TL")].observations
-        validation = splits[(region, "VL")].observations
-        # The Issue defines TL discovery and VL replication; no randomized row split is introduced.
+    joint_feature: list[dict[str, object]] = []
+    predictive_scopes = [
+        (region, splits[(region, "TL")].observations, splits[(region, "VL")].observations)
+        for region in regions
+    ]
+    predictive_scopes.append(("aggregate", tl_rows, vl_rows))
+
+    for scope_name, train, validation in predictive_scopes:
         for target in TARGETS:
-            predictive.extend(_predictive_rows(region, target, train, validation))
-            common_cohort.extend(_pairwise_sensitivity_rows(region, target, train, validation))
-    # Aggregate scope uses the same region-scoped keys and only adds summary rows.
-    for target in TARGETS:
-        predictive.extend(_predictive_rows("aggregate", target, tl_rows, vl_rows))
-        common_cohort.extend(_pairwise_sensitivity_rows("aggregate", target, tl_rows, vl_rows))
+            predictive.extend(_predictive_rows(scope_name, target, train, validation))
+            common_cohort.extend(
+                _pairwise_sensitivity_rows(scope_name, target, train, validation)
+            )
+            for context_name, context_getter in context_getters.items():
+                if context_name == "region" and scope_name != "aggregate":
+                    continue
+                for poi_name, poi_getter in poi_getters.items():
+                    joint_feature.append(_joint_feature_sensitivity_row(
+                        scope_name, target, train, validation,
+                        context_name, context_getter, poi_name, poi_getter,
+                    ))
 
     script_hash = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
     metadata = {
@@ -1049,10 +1213,18 @@ def _analyze(specs: Sequence[InputSpec], poi_roots: dict[str, Path], run_id: str
             "demographics": "analyzed separately; excluded from the primary context feature ablations",
             "poi_join": "exact region-scoped POI_ID candidate; join quality audited; no canonical identity claim",
             "missing_feature_values": "reported; no imputation; associations use observed pairs; each predictive ablation uses its own complete-observed feature and target rows",
-            "pairwise_sensitivity": "context_only vs context_plus_poi, and context_plus_poi vs context_plus_richer_poi; each pair uses identical complete-case TL training rows and identical valid VL evaluation rows where the target and both compared feature sets are observed",
+            "primary_context_features": [
+                *STYLE_CONTEXT, *MOTIVE_CONTEXT,
+                "TRAVEL_STATUS_DESTINATION", "TRAVEL_STATUS_ACCOMPANY",
+                "TRAVEL_COMPANIONS_NUM", "month", "elapsed_days", "region",
+            ],
+            "context_groups": {name: list(fields) for name, fields in PRIMARY_CONTEXT_GROUPS.items()},
+            "companion_relation": "recorded-only sensitivity; excluded from primary context_only because missing companion rows are semantically unresolved",
+            "pairwise_sensitivity": "context vs basic POI; basic vs richer POI; region vs context; popularity vs context; broad category vs context. Each pair uses identical complete-case TL/VL rows.",
             "pairwise_sensitivity_support": "bucketed per target, scope, comparison, and ablation; supports match within each pair; metrics and paired accuracy difference withheld below k=10; row identities are not emitted",
             "popularity_feature": "TL observed region-scoped POI_ID visit-count bands; ID not used as a predictor",
             "predictive_model": "categorical naive Bayes; Laplace alpha=1; no tuning; feedback codes treated nominally",
+            "joint_feature_sensitivity": "main-effects context+POI model versus the same model plus an explicit joint categorical feature on identical complete-case TL/VL rows; predictive sensitivity only",
             "seed": None,
             "ranking": "not evaluated; unvisited candidates are not negatives",
             "grain": "visit-row plus deduplicated trip-feature-pair association; feedback has no invented trip aggregation",
@@ -1069,7 +1241,7 @@ def _analyze(specs: Sequence[InputSpec], poi_roots: dict[str, Path], run_id: str
         "policy": {"source_data_immutable": True, "external_transfer": False,
                     "test_metrics": "not generated"},
     }
-    return audit_rows, associations, predictive, common_cohort, metadata
+    return audit_rows, associations, predictive, common_cohort, joint_feature, metadata
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1096,9 +1268,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         specs, poi_roots = _join_specs(args.raw_root, args)
-        audit, associations, predictive, common_cohort, metadata = _analyze(specs, poi_roots, args.run_id)
+        audit, associations, predictive, common_cohort, joint_feature, metadata = _analyze(
+            specs, poi_roots, args.run_id
+        )
         output = RESULTS_ROOT / args.run_id
-        _write_artifacts(output, audit, associations, predictive, common_cohort, metadata, args.overwrite)
+        _write_artifacts(
+            output, audit, associations, predictive, common_cohort,
+            joint_feature, metadata, args.overwrite,
+        )
     except (OSError, UnicodeError, csv.Error, ValueError) as exc:
         print(f"[중단] context × POI 분석 실패: {type(exc).__name__}", file=sys.stderr)
         return 2
