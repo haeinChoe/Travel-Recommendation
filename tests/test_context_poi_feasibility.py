@@ -70,12 +70,12 @@ class ContextPoiSyntheticTests(unittest.TestCase):
         self.assertEqual(empty_validation["validation_support"], "0")
         self.assertEqual(empty_validation["delta_vs_majority"], "suppressed")
 
-    def test_common_cohort_sensitivity_uses_identical_vl_intersection(self) -> None:
+    def test_pairwise_sensitivity_shares_tl_vl_and_base_pair_ignores_richer_coverage(self) -> None:
         def row(index: int, label: str, *, context: bool = True,
                 poi: bool = True, rich: bool = True) -> dict[str, object]:
             return {
                 "region": "west", "popularity_band": "band-a",
-                "context": {"TRAVEL_STYL_1": "style-a" if context else None},
+                "context": {"TRAVEL_STYL_1": f"style-{index}" if context else None},
                 "demographics": {}, "companion_relations": ("relation-a",), "month": "01",
                 "elapsed_days": 1, "visit_area_type": "type-a" if poi else None,
                 "visit_sgg": "district-a" if poi else None,
@@ -87,41 +87,73 @@ class ContextPoiSyntheticTests(unittest.TestCase):
                 "synthetic_index": index,
             }
 
-        train = [row(index, "A" if index < 18 else "B") for index in range(24)]
+        train = [
+            row(index, "A" if index < 18 else "B", poi=index < 18, rich=index < 12)
+            for index in range(24)
+        ]
         validation = [
             row(index, "B" if index < 12 else "A",
-                context=True, poi=index < 20, rich=index < 12)
+                context=True, poi=index < 20, rich=index < 8)
             for index in range(24)
         ]
-        with patch.object(analysis, "_naive_bayes_predict", return_value="A"):
-            output = analysis._common_cohort_rows("west", "DGSTFN", train, validation)
-            regular = analysis._predictive_rows("west", "DGSTFN", train, validation)
-        regular_accuracy = {row["ablation"]: row["accuracy"] for row in regular}
+        fit_cohorts: list[set[int]] = []
+        validation_cohorts: list[set[str]] = []
+        original_fit = analysis._naive_bayes_fit
 
-        self.assertEqual({row["ablation"] for row in output}, set(analysis.COMMON_COHORT_ABLATIONS))
-        self.assertEqual({row["common_validation_support"] for row in output}, {"10+"})
-        self.assertTrue(all(row["status"] == "observed" for row in output))
-        self.assertEqual({row["accuracy"] for row in output}, {"0.000000"})
-        self.assertGreater(len({regular_accuracy[name] for name in analysis.COMMON_COHORT_ABLATIONS}), 1)
+        def capture_fit(rows, features, target):
+            fit_cohorts.append({int(row["synthetic_index"]) for row in rows})
+            return original_fit(rows, features, target)
+
+        def capture_predict(features_row, features, model):
+            validation_cohorts.append(str(features_row["TRAVEL_STYL_1"]))
+            return "A"
+
+        regular = analysis._predictive_rows("west", "DGSTFN", train, validation)
+        regular_accuracy = {row["ablation"]: row["accuracy"] for row in regular}
+        with patch.object(analysis, "_naive_bayes_fit", side_effect=capture_fit), \
+                patch.object(analysis, "_naive_bayes_predict", side_effect=capture_predict):
+            output = analysis._pairwise_sensitivity_rows("west", "DGSTFN", train, validation)
+
+        self.assertEqual(len(output), 4)
+        self.assertEqual([row["comparison"] for row in output], [
+            "context_vs_poi", "context_vs_poi", "poi_vs_richer_poi", "poi_vs_richer_poi",
+        ])
+        self.assertEqual([row["ablation"] for row in output], [
+            "context_only", "context_plus_poi", "context_plus_poi", "context_plus_richer_poi",
+        ])
+        self.assertEqual(output[0]["train_support"], output[1]["train_support"])
+        self.assertEqual(output[0]["validation_support"], output[1]["validation_support"])
+        self.assertEqual(output[2]["train_support"], output[3]["train_support"])
+        self.assertEqual(output[2]["validation_support"], output[3]["validation_support"])
+        self.assertEqual(fit_cohorts[0], fit_cohorts[1])
+        self.assertEqual(fit_cohorts[2], fit_cohorts[3])
+        self.assertEqual(set(validation_cohorts[:20]), set(validation_cohorts[20:40]))
+        self.assertEqual(set(validation_cohorts[40:48]), set(validation_cohorts[48:56]))
+        self.assertGreater(len(validation_cohorts[:20]), len(validation_cohorts[40:48]))
+        self.assertGreater(len(fit_cohorts[0]), len(fit_cohorts[2]))
+        primary_pair = output[:2]
+        richer_pair = output[2:]
+        self.assertEqual({row["status"] for row in primary_pair}, {"observed"})
+        self.assertEqual({row["train_support"] for row in primary_pair}, {"10+"})
+        self.assertEqual({row["validation_support"] for row in primary_pair}, {"10+"})
+        self.assertEqual({row["validation_support"] for row in richer_pair}, {"<10"})
+        self.assertEqual({row["status"] for row in richer_pair}, {"privacy-limited"})
+        self.assertTrue(all(
+            row[metric] == "suppressed"
+            for row in richer_pair
+            for metric in ("accuracy", "majority_accuracy", "delta_vs_majority", "paired_accuracy_difference")
+        ))
+        self.assertGreater(len({regular_accuracy[name] for name in (
+            "context_only", "context_plus_poi", "context_plus_richer_poi",
+        )}), 1)
         self.assertNotIn("synthetic_index", repr(output))
 
-        no_richer_training = [
-            row(index, "A" if index < 18 else "B", rich=False)
-            for index in range(24)
-        ]
-        limited = analysis._common_cohort_rows("west", "DGSTFN", no_richer_training, validation)
-        self.assertEqual({row["common_validation_support"] for row in limited}, {"10+"})
-        richer = next(row for row in limited if row["ablation"] == "context_plus_richer_poi")
-        self.assertEqual(richer["status"], "insufficient-support")
-        self.assertEqual(richer["delta_vs_majority"], "suppressed")
-
-        sparse = analysis._common_cohort_rows("west", "DGSTFN", train, validation[:8])
-        self.assertEqual({row["common_validation_support"] for row in sparse}, {"<10"})
-        self.assertTrue(all(row["status"] == "privacy-limited" for row in sparse))
+        sparse = analysis._pairwise_sensitivity_rows("west", "DGSTFN", train, validation[:8])
+        self.assertEqual({row["status"] for row in sparse}, {"privacy-limited"})
         self.assertTrue(all(
             row[metric] == "suppressed"
             for row in sparse
-            for metric in ("accuracy", "majority_accuracy", "delta_vs_majority")
+            for metric in ("accuracy", "majority_accuracy", "delta_vs_majority", "paired_accuracy_difference")
         ))
 
     def test_trip_pair_sensitivity_uses_trip_identity_and_buckets_missing_ids(self) -> None:
@@ -266,7 +298,8 @@ class ContextPoiSyntheticTests(unittest.TestCase):
                 audit_rows = list(csv.DictReader(audit_file))
             associations = (output / "associations.csv").read_text(encoding="utf-8")
             predictive = (output / "predictive_ablation.csv").read_text(encoding="utf-8")
-            joined = audit + associations + predictive + json.dumps(metadata)
+            sensitivity = (output / "common_cohort_sensitivity.csv").read_text(encoding="utf-8")
+            joined = audit + associations + predictive + sensitivity + json.dumps(metadata)
             for forbidden in (
                 "private-trip-", "private-traveler-", "private-poi-", "opaque-style-",
                 "opaque-category-", "opaque-demographic-", str(raw_root), str(poi_root),
@@ -281,6 +314,9 @@ class ContextPoiSyntheticTests(unittest.TestCase):
             self.assertFalse(metadata["privacy"]["raw_identifiers_written"])
             self.assertIn("joint_context_poi_to_feedback", associations)
             self.assertIn("context_plus_richer_poi", predictive)
+            self.assertIn("context_vs_poi", sensitivity)
+            self.assertIn("poi_vs_richer_poi", sensitivity)
+            self.assertIn("paired_accuracy_difference", sensitivity)
             self.assertIn("candidate_metadata_coverage", audit)
             self.assertIn("outside_documented_range", audit)
             self.assertIn("outside_range_cardinality", audit)

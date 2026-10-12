@@ -54,7 +54,7 @@ The feature groups are:
 4. `context_plus_poi`: context plus visit-area type and district.
 5. `context_plus_richer_poi`: context plus visit-area and POI master categories/district.
 
-Each ablation's support is reported because optional-feature coverage can differ. `common_cohort_sensitivity.csv` also intersects VL observations that have the target and every feature in `context_only`, `context_plus_poi`, and `context_plus_richer_poi`; each model still uses its own complete-case TL training rows. It reports bucketed TL and identical common-VL support and suppresses all metrics below `k=10`. Accuracy deltas across the ordinary ablations use different cohorts and are not controlled incremental effects. Feedback prediction only establishes feedback-code predictability for observed visits; it does not establish POI-choice ranking value.
+Each ablation's support is reported because optional-feature coverage can differ. `common_cohort_sensitivity.csv` contains two pairwise comparisons: `context_only` vs `context_plus_poi`, then `context_plus_poi` vs `context_plus_richer_poi`. For each pair, the target's complete-case TL training rows and valid VL evaluation rows are intersected across only those two feature sets. Thus every model in a pair uses identical TL and VL observations, while the context-to-POI comparison is not restricted by richer-POI coverage. The file reports bucketed shared support, per-model accuracy and baseline deltas, plus the right-hand model's paired accuracy difference from the left-hand model. Metrics are suppressed below `k=10`. The ordinary ablation deltas still use different cohorts and are not controlled incremental effects. Feedback prediction only establishes feedback-code predictability for observed visits; it does not establish POI-choice ranking value.
 
 ### Dominant signals and dependence
 
@@ -82,7 +82,7 @@ python3 scripts/recommendation/analyze_context_poi.py \
   --confirm-approved --confirm-terms --confirm-poi-candidate
 ```
 
-The command writes `availability_audit.csv`, `associations.csv`, `predictive_ablation.csv`, `common_cohort_sensitivity.csv`, and `run_metadata.json` beneath ignored `results/experiments/context-poi-signal/<run-id>/`. Metadata records dataset/version, role labels, code revision, script hash, settings, timestamps, and policy; input paths and filenames are omitted. The raw source is read-only. Do not copy ignored results into Git or share them outside the authorized local analysis context.
+The command writes `availability_audit.csv`, `associations.csv`, `predictive_ablation.csv`, `common_cohort_sensitivity.csv` (pairwise shared-TL/VL sensitivity), and `run_metadata.json` beneath ignored `results/experiments/context-poi-signal/<run-id>/`. Metadata records dataset/version, role labels, code revision, script hash, settings, timestamps, and policy; input paths and filenames are omitted. The raw source is read-only. Do not copy ignored results into Git or share them outside the authorized local analysis context.
 
 Safe synthetic checks:
 
@@ -93,9 +93,9 @@ python3 -m py_compile scripts/recommendation/analyze_context_poi.py tests/test_c
 
 ## Results
 
-The corrected follow-up run reused the Issue #12 approved 2023 AI Hub Domestic Travel Log sources under Issue #45's read-only local-use authorization. Before opening rows, the current process variable check found all required variables unset. A bounded depth-five discovery under the permitted mounted candidate then verified the four exact 2023 region-root markers and one common raw root. One additional nested capital marker lacked the documented role layout and was excluded; the complete four-region mapping remained unique. The selected TL/VL roles matched the approved regional filekey inventory and schema suffixes; each `Other` role contained the unique `TN_POI_MASTER` marker. Issue #45, Issue #12 approval evidence, the documented filekey inventory, regional schema guides, and local-use terms were cross-checked. No interactive-shell check was claimed. TL remained discovery/training and VL replication/validation; no random split or seed was used. The trip-ID overlap gate passed in every region. No download or external transfer occurred.
+The latest run reused the Issue #12 approved 2023 AI Hub Domestic Travel Log sources under Issue #45's read-only local-use authorization. Before opening rows, the current-process variable check found all nine required variables unset. Bounded depth-five discovery under the permitted mounted candidate verified one common raw root with one direct 2023 region root for each of the four regions. The selected TL/VL roles matched the approved regional filekey inventory and schema suffixes; each region's unique `Other` candidate contained one POI-master marker. Issue #45, Issue #12 approval evidence, the documented filekey inventory, regional schema guides, and local-use terms were cross-checked. TL remained discovery/training and VL replication/validation; no random split or seed was used. The trip-ID overlap gate passed in every region. No download or external transfer occurred.
 
-Final corrected run ID: `issue45-context-poi-final-20261012T132926Z-873520`. Its metadata records the source/version, role labels, code revision, dirty-worktree status, script hash, and privacy policy, without local input paths or filenames. The script hash matches the code used for this run. The five expected ignored aggregate artifacts were written; earlier artifact sets remain unchanged. Metadata confirms no raw paths, identifiers, category values, coordinates, free text, or row-level outputs.
+Final pairwise-sensitivity run ID: `issue45-context-poi-pairs-20261012T141933Z-c6a1b9`. The run used the final script hash recorded in its metadata. It wrote the five expected ignored aggregate artifacts to a new run directory; earlier runs remain unchanged. Metadata confirms no raw paths, identifiers, category values, coordinates, free text, or row-level outputs.
 
 The evidence below uses only reviewed aggregate artifacts. Support is bucketed, no category values or contingency cells are reproduced, and effects are reported only where the script marked support as observed. `privacy-limited` remains distinct from `insufficient-support`.
 
@@ -157,17 +157,29 @@ These changes remove the prior use of the TL majority proportion as if it were v
 | `REVISIT_INTENTION` | -0.059 → -0.021 |
 | `RCMDTN_INTENTION` | -0.061 → -0.018 |
 
-The aggregate `10+` TL / `10+` VL support applied to popularity-only, context-only, and context-plus-POI rows for each target. POI-only and context-plus-richer-POI rows had `10+` TL support but `<10` VL support, so their metrics remain `privacy-limited` and suppressed. Per-ablation complete-case cohorts differ; deltas are not controlled incremental effects.
+The aggregate `10+` TL / `10+` VL support applied to popularity-only, context-only, and context-plus-POI rows for each target. POI-only and context-plus-richer-POI rows had `10+` TL support but `<10` VL support, so their ordinary metrics remain `privacy-limited` and suppressed. Ordinary per-ablation cohorts differ; their deltas are not controlled incremental effects.
 
-**Common-VL-cohort sensitivity.** The cohort is the intersection of valid VL observations with a nonmissing target and all eligible features present in each of the three context ablations. TL training remains complete-case per ablation.
+**Primary pairwise sensitivity: context vs context + POI.** For each target, both feature sets use the same complete-case TL rows and the same valid VL observations. Cohort membership requires the target and all feature values for both compared sets; richer-POI features do not enter this intersection.
 
-| Target | TL support per ablation | Shared VL support | Metric status |
+The Δ columns are model accuracy minus the constant-prediction accuracy for the majority label selected from the shared TL rows. The paired difference is context-plus-POI accuracy minus context-only accuracy on the shared VL observations.
+
+| Target | Shared TL | Shared VL | Context Δ | Context + POI Δ | Paired accuracy difference |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `DGSTFN` | `10+` | `10+` | 0.000 | +0.001 | +0.001 |
+| `REVISIT_INTENTION` | `10+` | `10+` | -0.006 | -0.021 | -0.016 |
+| `RCMDTN_INTENTION` | `10+` | `10+` | -0.013 | -0.018 | -0.006 |
+
+The paired differences are small to negative: the context-plus-POI model is marginally higher for `DGSTFN`, and lower for the other two targets. The shared-cohort majority baseline is the same within each pair because both models train on the same TL rows.
+
+**Richer-POI pair sensitivity: context + POI vs context + richer POI.** The comparison intersects complete-case TL and valid VL observations across only these two feature sets.
+
+| Target | Shared TL | Shared VL | Metric status |
 | --- | ---: | ---: | --- |
-| `DGSTFN` | `10+` | `<10` | Suppressed |
-| `REVISIT_INTENTION` | `10+` | `<10` | Suppressed |
-| `RCMDTN_INTENTION` | `10+` | `<10` | Suppressed |
+| `DGSTFN` | `10+` | `<10` | Privacy-limited |
+| `REVISIT_INTENTION` | `10+` | `<10` | Privacy-limited |
+| `RCMDTN_INTENTION` | `10+` | `<10` | Privacy-limited |
 
-The shared VL cohort falls below the publication threshold, so this sensitivity cannot resolve incremental effects. This is privacy-limited evidence, distinct from an empty or unusable cohort.
+All richer-POI pair metrics are suppressed because the shared VL support is below `k=10`. This is privacy-limited evidence, distinct from an empty or unusable cohort, and it does not constrain the primary context-versus-POI comparison.
 
 ### Other signals and overlap
 
@@ -190,11 +202,11 @@ Across regional runs, context-only and context + POI did not show consistent imp
 
 ### Conclusion
 
-**Inconclusive.** The corrected run reproduced nominal context–POI associations in TL and VL, though magnitudes varied between roles. Context-only feedback deltas remained negative; context-plus-POI was near zero for one target and negative for the other two. POI-only and richer-POI validation metrics remained privacy-limited, and the shared VL cohort for the three context ablations was below the reporting threshold. Candidate joins remained incomplete, cross-region candidate collisions existed, and POI master classification metadata remained sparse. These results do not support Go, while the restricted feature support and withheld common-cohort metrics do not justify Reconsider. Ranking was not evaluated, and this result does not establish absence of a context-aware ranking signal.
+**Inconclusive.** In the primary pairwise sensitivity, context-plus-POI accuracy was slightly higher for one target and lower for two on identical TL training and VL validation observations. The differences are small and do not establish reliable incremental value. The richer-POI pair could not be evaluated publicly because its shared VL support was below threshold. Candidate joins remain incomplete and noncanonical, cross-region candidate collisions exist, and POI master classification metadata is sparse. The evidence does not support Go; suppressed richer-POI support does not justify Reconsider. Ranking was not evaluated, and this result does not establish absence of a context-aware ranking signal.
 
 ## Limitations and remaining decisions
 
-- The corrected run used bounded local discovery because the required variables were unset in the current process. A later run should repeat the documented preflight and choose a new run ID; do not reuse or overwrite either artifact set.
+- The latest run used bounded local discovery because the required variables were unset in the current process. A later run should repeat the documented preflight and choose a new run ID; do not reuse or overwrite any artifact set.
 - Code mappings for `TRAVEL_MISSION`, a season definition, inclusive trip-duration semantics, and feedback ordinal direction are unresolved. The implementation does not guess them.
 - Candidate table links are audited empirically and remain noncanonical. The sparse POI master classification coverage limited the richer-POI feature subset; do not make a `Reconsider` conclusion from that subset.
 - The Naive Bayes ablation predicts feedback codes for observed visit rows. It is not an observed-choice ranking evaluation, an independent test set, or a causal analysis.
