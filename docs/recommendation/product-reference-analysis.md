@@ -16,7 +16,7 @@ AI Hub 제공 reference model/code는 이 문서의 제품 의사결정 근거�
 
 - 추천을 받기 전에 사용자가 어떤 정보를 제공하는가?
 - 추천 단위는 POI, 숙소/식당, waypoint, itinerary 중 무엇인가?
-- 장기 사용자 history 없이 첫 추천이 가능한가?
+- 첫 추천에 필요한 최소 입력은 무엇인가?
 - 현재 여행의 목적지·기간·동행자·예산·취향 같은 trip context가 어떻게 사용되는가?
 - 추천 결과를 사용자가 어떻게 선택, 저장, 제외, 일정화하는가?
 - 추천 이후 탐색·지도·일정 작성과 어떻게 연결되는가?
@@ -28,7 +28,7 @@ AI Hub 제공 reference model/code는 이 문서의 제품 의사결정 근거�
 | Tripadvisor AI | 호텔, 식당, Things to do, itinerary | 목적지, 날짜, 동행자 및 follow-up 조건 | 계정 없이도 계획 시작 가능 | 추천 저장, itinerary 편집·재배열·공유 | 현재 여행 context에서 선택지를 좁히고 추천한 뒤 일정으로 연결 |
 | Mindtrip | 장소, 이벤트, 숙박/식당, itinerary | 좋아하는 것/싫어하는 것, 예산, 동행자, 기타 선호 | 명시적 preference를 대화로 받아 첫 추천 가능 | 저장, 공유, itinerary 편집·협업 | 장기 history보다 현재 여행의 명시적 선호를 강하게 활용하는 UX |
 | Roadtrippers Autopilot | route waypoint / POI | 출발지, 목적지, 날짜, 차량, 동행자, 예산, 선호 장소 종류 | 몇 가지 질문 후 즉시 추천 | Add 또는 X(skip), 지도에서 계속 탐색 | context로 candidate space를 제한하고 선택/거절 feedback을 즉시 받는 패턴 |
-| Google Maps | 주변 장소 / POI | 현재 위치·검색 맥락, 선택적으로 계정 활동 | 개인화 history가 없어도 탐색 가능 | 저장, 평점, 리뷰, 검색·방문 활동 | history는 필수 시작점이 아니라 personalization enrichment로 볼 수 있음 |
+| Google Maps | 주변 장소 / POI | 현재 위치·검색 맥락 | 현재 맥락으로 탐색 가능 | 저장, 평점, 리뷰 | 위치와 검색 맥락 중심의 로컬 discovery UX 참고 |
 | 트리플 | 관광지·맛집·숙소 및 여행 일정 | 여행 일정/목적지, 취향, 현재 위치 등 | 장기 history 없이 여행 계획·추천 기능 진입 가능 | 장소 저장/일정 추가, 일정·동선 구성 | Top-K 장소 추천을 일정 작성의 입력 후보로 연결하는 국내 UX 참고 사례 |
 
 ## 4. 제품별 관찰
@@ -72,14 +72,14 @@ Autopilot은 출발지/목적지에서 시작해 날짜, 차량, 동행자, 식�
 
 ### 4.4 Google Maps
 
-Google Maps는 검색·길찾기·저장 목록·리뷰·평점 등 계정 활동을 개인화에 활용할 수 있다고 공식 문서에서 설명한다.
+Google Maps는 현재 위치와 검색 맥락을 중심으로 주변 장소를 탐색하는 대표적인 로컬 discovery UX를 제공한다.
 
-- Source: https://support.google.com/maps/answer/16833938
+- Source: https://support.google.com/maps/
 
 관찰:
 
-- 장기 history는 개인화 강화 수단으로 유용하지만, 장소 탐색 자체의 필수 전제는 아니다.
-- 서비스가 충분한 interaction을 축적하면 history를 optional enrichment로 추가하는 방향을 참고할 수 있다.
+- 현재 위치와 검색 조건이 장소 탐색의 직접적인 제품 맥락으로 작동한다.
+- 우리 서비스에는 위치·지역 기반 candidate scoping과 탐색 UX 관점만 참고한다.
 
 ### 4.5 트리플
 
@@ -99,14 +99,13 @@ Google Maps는 검색·길찾기·저장 목록·리뷰·평점 등 계정 활�
 
 ### 5.1 Cold-start를 예외가 아니라 핵심 사용자 시나리오로 정의
 
-신규 사용자가 장기 방문 history 없이도 다음 정보만으로 추천을 받을 수 있어야 한다.
+사용자가 다음 정보만으로 추천을 받을 수 있어야 한다.
 
 - 목적지/여행 지역
 - 여행 기간 또는 날짜
 - 동행자 맥락
 - 사용자가 명시적으로 제공한 여행 취향
 
-장기 user history는 존재할 경우 personalization을 강화하는 optional enrichment로 취급한다.
 
 ### 5.2 추천 문제를 current-trip contextual ranking으로 정의
 
@@ -141,20 +140,6 @@ Top-K POI recommendation
 자동 일정 생성이나 경로 최적화를 현재 추천 모델의 책임에 포함하지 않는다.
 
 ## 6. Experiment
-
-### 6.1 명시적 feedback
-
-향후 서비스 interaction logging에서 다음 이벤트의 의미를 검토한다.
-
-- IMPRESSION
-- CLICK / VIEW
-- SAVE
-- ADD_TO_TRIP
-- SKIP / DISMISS
-- VISIT
-- REVIEW
-
-특히 추천 노출 이후의 SKIP/DISMISS는 단순 unobserved item보다 강한 negative/preference 신호가 될 가능성이 있어 별도 실험한다.
 
 ### 6.2 Social / popularity signal
 
@@ -208,7 +193,6 @@ CF, MF, Learning-to-Rank, Two-Tower 등은 제품 조사 결과가 아니라 데
 
 - Primary product output: ranked Top-K POIs
 - Core request context: current trip context + explicit traveler preference
-- User history: optional enrichment
 - Cold-start: core supported scenario
 - Candidate space: product/trip constraints로 우선 제한
 - Recommendation result: 사용자가 선택/저장할 수 있고 향후 itinerary 기능으로 연결 가능
