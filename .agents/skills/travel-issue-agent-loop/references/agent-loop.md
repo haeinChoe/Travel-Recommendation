@@ -12,7 +12,7 @@ Inspect Herdr logical state before editing or creating work. In the current sess
 - `herdr_workspace_list`
 - `herdr_agent_list`
 
-When these MCP calls succeed, use their results for Herdr server, workspace, and agent state. A configured socket rule does not guarantee direct CLI access; validate CLI and MCP independently. Do not infer MCP failure from direct CLI failure. The bridge has no worktree-list tool, so independently inspect repository work state with Git and GitHub:
+When these MCP calls succeed, use their results for Herdr server, workspace, and agent state. Do not invoke the direct Herdr CLI as a second verification path for the same state. A configured socket rule does not guarantee direct CLI access; validate the CLI only when the approved fallback is actually required. Do not infer MCP failure from direct CLI failure. The bridge has no worktree-list tool, so independently inspect repository work state with Git and GitHub:
 
 ```bash
 git worktree list --porcelain
@@ -20,7 +20,7 @@ git branch --list
 gh pr list --state open
 ```
 
-Do not call the direct Herdr CLI only to obtain worktree information when the MCP state calls succeeded. If the bridge is unavailable or any MCP call fails, use the approved read-only Herdr CLI fallback:
+Do not call the direct Herdr CLI only to obtain worktree information when the MCP state calls succeeded. If the bridge is unavailable or a required MCP inspection fails, use the approved read-only Herdr CLI fallback. Keep the shell in its approved orchestration execution context; `--cwd "$REPO_ROOT"` tells Herdr which repository to inspect and is not an instruction to `cd` into that repository:
 
 ```bash
 test "${HERDR_ENV:-}" = 1 || exit 1
@@ -30,7 +30,7 @@ herdr agent list
 herdr worktree list --cwd "$REPO_ROOT"
 ```
 
-If a Herdr CLI call returns `EPERM` or `Operation not permitted`, report that exact blocker and stop; do not retry through escalation. A CLI failure alone does not establish that MCP failed.
+If a Herdr CLI call returns `EPERM` or `Operation not permitted`, do not retry that denied command through escalation. Classify the failure first. If the call was redundant after successful MCP inspection, or was launched from an invalid/unapproved execution boundary, treat it as an orchestration defect and continue only through the already-authorized path after correcting the boundary. If the required Herdr capability itself cannot be completed through any authorized route, report that exact blocker and stop. A CLI failure alone does not establish that MCP failed.
 
 If the required Herdr state cannot be inspected through either MCP or the CLI fallback, report the blocker before editing or creating work. Do not assume state that could not be inspected.
 
@@ -44,11 +44,24 @@ herdr worktree create --workspace "$WORKSPACE_ID" \
   --branch "agent/<N>-<slug>" --base dev --label "issue-<N>" --no-focus
 ```
 
-Omit `--path` to use Herdr's configured worktree root and branch-derived directory name. If the returned path is outside the allowed write roots, identify the boundary and follow the repository or session's approved alternate-root procedure before starting agents. Do not silently select a custom path.
+Omit `--path` to use Herdr's configured worktree root and branch-derived directory name. Before starting any writer, verify the returned path is inside the allowed write roots of the `herdr-implementation` profile. If it is outside, stop before agent startup and identify the configuration boundary. Do not silently select, relocate, or synthesize a custom path.
 
 The Herdr MCP bridge provides read-only inspection plus narrowly scoped, explicitly authorized teardown tools. Use the existing authorized Herdr orchestration path for general workspace or worktree creation, agent start or prompts, and pane control. Use `herdr_worktree_remove` and `herdr_workspace_close` only for cleanup authorized by the user or Issue and only with the safeguards below; these tools do not authorize other Herdr mutations.
 
 Use the worktree returned by Herdr for the implementation branch. Confirm its branch, base, and clean state before starting agents. Use the returned shell pane when it is at an interactive prompt; otherwise split a pane with the worktree path as cwd and `--no-focus`. Start agents only in returned pane IDs and use unique names. Never start two agents in one pane.
+
+## Herdr CLI execution boundary
+
+Direct Herdr CLI calls are fallback orchestration commands, not ordinary repository commands.
+
+1. Do not run them from an arbitrary repository or implementation-worktree cwd.
+2. Prefer the registered MCP bridge for every inspection capability it provides. Successful MCP inspection forbids a redundant CLI re-check for the same state.
+3. When a fallback CLI command needs a repository target, pass it explicitly with `--cwd "$REPO_ROOT"` or the documented equivalent while keeping the coordinator in its approved orchestration context.
+4. Do not change shell cwd into `$REPO_ROOT` merely because a Herdr command accepts `--cwd "$REPO_ROOT"`.
+5. Before starting an implementation agent, validate that the worktree path returned by Herdr falls under the writable roots of the `herdr-implementation` profile. Do not start the agent first and wait for an `EPERM` to discover the mismatch.
+6. Implementation commands run only in the exact Herdr-returned worktree. Never guess, move, synthesize, or substitute another path as a recovery mechanism.
+7. An `EPERM` caused by an invalid cwd/path is an orchestration configuration defect. Do not retry the failed command; correct the boundary and use the authorized route. An `EPERM` on a genuinely required capability after the boundary is correct is a real blocker.
+8. Never recover through permission escalation, unrestricted profiles, sandbox bypasses, force options, or blind retries.
 
 ## Agent allocation
 
