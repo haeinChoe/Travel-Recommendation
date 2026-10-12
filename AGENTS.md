@@ -51,7 +51,7 @@
 - 필요한 사용자 권한 프로필이 없거나 선택할 수 없으면 정확한 blocker를 보고하고 중단한다. 제한 없는 기본 쓰기 설정으로 조용히 대체하거나 조정자가 구현을 대신하지 않는다.
 - Herdr가 필수 구현 에이전트를 생성하거나 시작할 수 없으면 정확한 blocker를 보고하고, 조정자가 구현을 대신하지 않는다.
 - Herdr 서버·workspace·agent 상태를 확인할 때 현재 세션에 등록된 Herdr MCP bridge의 읽기 전용 도구를 우선 사용한다. MCP 상태 확인이 성공하면 Herdr CLI를 같은 상태 확인 목적으로 다시 실행할 필요는 없다. worktree·branch·PR 상태는 Git과 GitHub에서 독립적으로 확인한다.
-- MCP bridge는 읽기 전용 상태 확인과 명시적으로 승인된 좁은 범위의 workspace/worktree teardown 도구를 제공한다. workspace/worktree 생성, agent 시작·prompt, pane 제어는 기존 승인된 Herdr orchestration 경로를 사용한다. MCP 상태 도구를 사용할 수 없거나 호출에 실패하면 skill에서 승인한 읽기 전용 Herdr CLI fallback을 사용한다. Herdr CLI가 `EPERM` 또는 `Operation not permitted`를 반환하면 해당 blocker를 그대로 보고하고 중단하며, escalation으로 재시도하지 않는다. CLI 실패만으로 MCP 실패를 추정하지 않는다.
+- MCP bridge는 읽기 전용 상태 확인과 명시적으로 승인된 좁은 범위의 workspace/worktree teardown 도구를 제공한다. workspace/worktree 생성, agent 시작·prompt, pane 제어처럼 MCP mutation 대안이 없는 승인된 상태 변경 작업은 저장소 skill과 전역 Herdr skill이 정의한 approval-reviewed 실행 경로를 첫 시도부터 사용한다. MCP 상태 도구를 사용할 수 없거나 호출에 실패하면 skill에서 승인한 읽기 전용 Herdr CLI fallback을 사용한다. 상태 변경 명령을 ordinary sandbox에서 잘못 시도해 `EPERM` 또는 `Operation not permitted`가 발생한 경우 그 실패 자체를 Issue blocker로 보지 말고, 아직 시도하지 않은 이미 정의된 승인 경로로만 진행한다. 그 승인 경로가 거부되거나 동일 오류로 실패하면 blocker를 보고하고 중단한다. 새롭거나 더 넓은 escalation, sandbox bypass, force/unrestricted profile로 복구하지 않는다. CLI 실패만으로 MCP 실패를 추정하지 않는다.
 - `herdr_worktree_remove`와 `herdr_workspace_close`는 사용자 또는 Issue가 cleanup을 명시적으로 승인한 경우에만 사용할 수 있으며, 사전 조건과 사후 확인은 `.agents/skills/travel-issue-agent-loop/references/agent-loop.md`의 cleanup 절차를 따른다.
 
 ## 상세 지침
