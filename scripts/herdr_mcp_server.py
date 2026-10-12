@@ -137,8 +137,8 @@ def _run_herdr_json(command: list[str]) -> Any:
             )
         if "operation not permitted" in stderr or "permissiondenied" in stderr or "eperm" in stderr:
             raise RuntimeError(
-                "Herdr socket access denied (EPERM). The current sandbox blocks this connection; "
-                "confirm HERDR_ENV=1 and diagnose from the same sandbox context."
+                "Herdr socket access denied (EPERM) while the MCP bridge called the Herdr CLI; "
+                "diagnose this bridge execution path from its own returned error."
             )
         if "permission denied" in stderr or "eacces" in stderr:
             raise RuntimeError(
@@ -179,8 +179,10 @@ def _workspace_context(
 ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], list[dict[str, Any]]]:
     workspaces = _collection(["workspace", "list"], "workspaces")
     caller_matches = [item for item in workspaces if item.get("workspace_id") == caller_workspace_id]
-    if len(caller_matches) != 1:
+    if not caller_matches:
         raise RuntimeError("Caller workspace identity is missing from the Herdr inventory; refusing teardown")
+    if len(caller_matches) > 1:
+        raise RuntimeError("Caller workspace identity is ambiguous in the Herdr inventory; refusing teardown")
     if workspace_id == caller_workspace_id:
         raise RuntimeError("Refusing to tear down the workspace running this caller")
     matches = [item for item in workspaces if item.get("workspace_id") == workspace_id]
@@ -198,10 +200,34 @@ def _assert_not_focused(workspace: dict[str, Any]) -> None:
 
 
 def _caller_workspace_id() -> str:
-    caller_workspace_id = os.environ.get("HERDR_WORKSPACE_ID")
-    if not isinstance(caller_workspace_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(caller_workspace_id):
-        raise RuntimeError("Caller workspace identity is unavailable; refusing teardown")
-    return caller_workspace_id
+    caller_pane_id = os.environ.get("HERDR_PANE_ID")
+    if not isinstance(caller_pane_id, str) or not WORKSPACE_ID_PATTERN.fullmatch(caller_pane_id):
+        raise RuntimeError("Caller pane identity is unavailable; refusing teardown")
+
+    document = _run_herdr_json(["pane", "current", "--current"])
+    result = document.get("result") if isinstance(document, dict) else None
+    pane = result.get("pane") if isinstance(result, dict) and result.get("type") == "pane_info" else None
+    if not isinstance(pane, dict):
+        raise RuntimeError("Herdr returned invalid caller pane context; refusing teardown")
+    try:
+        return _validate_workspace_id(pane.get("workspace_id"))
+    except ValueError as exc:
+        raise RuntimeError("Herdr returned invalid caller pane workspace context; refusing teardown") from exc
+
+
+def _assert_caller_context_unchanged(caller_workspace_id: str, target_workspace_id: str) -> None:
+    current_workspace_id = _caller_workspace_id()
+    if current_workspace_id != caller_workspace_id:
+        raise RuntimeError("Caller workspace changed during teardown checks; refusing mutation")
+    if current_workspace_id == target_workspace_id:
+        raise RuntimeError("Refusing to tear down the workspace running this caller")
+
+    workspaces = _collection(["workspace", "list"], "workspaces")
+    matches = [item for item in workspaces if item.get("workspace_id") == current_workspace_id]
+    if not matches:
+        raise RuntimeError("Caller workspace identity is missing from the Herdr inventory; refusing teardown")
+    if len(matches) > 1:
+        raise RuntimeError("Caller workspace identity is ambiguous in the Herdr inventory; refusing teardown")
 
 
 def _focused_workspace_id(workspaces: list[dict[str, Any]]) -> str | None:
@@ -596,6 +622,7 @@ def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
             raise RuntimeError("Git did not report a primary worktree for this linked checkout")
         primary_path = primary_paths[0]
         git_before = _git_status_snapshot([primary_path])
+        _assert_caller_context_unchanged(caller_workspace_id, workspace_id)
         remaining_workspaces = _run_mutation_preserving_focus(
             ["worktree", "remove", "--workspace", workspace_id], focused_workspace_id
         )
@@ -631,6 +658,7 @@ def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
         git_paths.append(path)
     git_before = _git_status_snapshot(git_paths)
     git_worktrees_before = _git_worktree_snapshot(git_paths)
+    _assert_caller_context_unchanged(caller_workspace_id, workspace_id)
     remaining = _run_mutation_preserving_focus(["workspace", "close", workspace_id], focused_workspace_id)
     if any(item.get("workspace_id") == workspace_id for item in remaining):
         raise RuntimeError("Herdr workspace close did not pass readback verification")

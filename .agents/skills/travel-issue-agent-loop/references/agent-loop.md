@@ -74,8 +74,7 @@ herdr agent start implementer --kind codex --pane "$PANE_ID" -- \
   --config 'model_reasoning_effort="high"' \
   --config 'service_tier="fast"' \
   --config features.fast_mode=true \
-  --config 'default_permissions="herdr-implementation"' \
-  --ask-for-approval never
+  --config 'default_permissions="herdr-implementation"'
 ```
 
 Do not use `--dangerously-bypass-approvals-and-sandbox` or `--dangerously-skip-permissions`.
@@ -94,8 +93,7 @@ herdr agent start reviewer --kind codex --pane "$PANE_ID" -- \
   --config 'model_reasoning_effort="high"' \
   --config 'service_tier="fast"' \
   --config features.fast_mode=true \
-  --config 'default_permissions="entry-readonly"' \
-  --ask-for-approval never
+  --config 'default_permissions="entry-readonly"'
 ```
 
 If either required permission profile is unavailable, or Herdr cannot create or start the required implementation agent, report the exact blocker and stop. Do not silently substitute an unrestricted/default writer or take over in the entry session. If an installed model or setting is unavailable, follow the repository's approved model fallback without changing the required profile.
@@ -167,4 +165,4 @@ For plain workspace closure, the bridge requires a plain workspace provenance re
 
 After a successful `herdr_worktree_remove`, check whether the corresponding local branch remains. If the PR is merged, the branch is not checked out in another worktree, and repository policy permits deletion, delete it with `git branch -d <branch>` and verify `git branch --list -- <branch>` is empty. If Git refuses because it is not merged or is still checked out, preserve it and report why. Never use `git branch -D`, delete the remote branch, or use branch deletion to bypass a failed worktree-removal call.
 
-If an MCP mutation is refused, times out, or returns an ambiguous result, reread Herdr workspace/agent inventories and Git state (`git status`, `git worktree list --porcelain`, and branch state) before reporting what remains. Report the exact tool error and observed state. For example, the observed `herdr_worktree_remove` refusal for `w44` was `Caller workspace identity is unavailable; refusing teardown`; this is a caller-context failure, not a shared-`.git` refusal. Do not bypass an MCP refusal through direct Herdr CLI mutation, group-close, raw APIs, force options, or blind retries. Preserve unresolved state and report the exact blocker. If a call succeeds, report cleanup complete only after Herdr and Git readback confirm the requested target is absent and unrelated state is preserved; for linked-session closure, the checkout and its snapshots must remain present and unchanged.
+If an MCP mutation is refused, times out, or returns an ambiguous result, reread Herdr workspace/agent inventories and Git state (`git status`, `git worktree list --porcelain`, and branch state) before reporting what remains. Report the exact tool error and observed state without workspace or pane IDs, local absolute paths, credentials, or data. For example, a `herdr_worktree_remove` refusal may report `Caller pane identity is unavailable; refusing teardown`; this is a caller-context failure, not a shared-`.git` refusal. Do not bypass an MCP refusal through direct Herdr CLI mutation, group-close, raw APIs, force options, or blind retries. Preserve unresolved state and report the exact blocker. If a call succeeds, report cleanup complete only after Herdr and Git readback confirm the requested target is absent and unrelated state is preserved; for linked-session closure, the checkout and its snapshots must remain present and unchanged.
