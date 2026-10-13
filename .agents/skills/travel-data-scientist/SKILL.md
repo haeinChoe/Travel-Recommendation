@@ -75,12 +75,24 @@ Follow `AGENTS.md` and `docs/data/aihub-workflow.md`.
 
 1. Read the selected Issue's data permission and the experiment/data reproduction instructions.
 2. Use approved current-process data-root variables when available.
-3. If paths are unavailable, perform only the bounded discovery allowed by the Issue and AI Hub workflow. Do not scan an entire home directory or drive.
-4. Verify provenance, terms/approval, region, and TL/VL/Other role before opening actual rows.
-5. Treat raw data roots as read-only.
-6. Keep raw identifiers and exact local paths memory-only where required for joins/grouping; never emit them to prompts, logs, tracked files, Issues, or PRs.
-7. Write only privacy-safe aggregates or explicitly approved Git-ignored artifacts.
-8. Do not test a read-only boundary by attempting a mutation against real raw data. Use permission introspection or a disposable fixture when available; otherwise report that destructive boundary validation was not run.
+3. Treat an explicit Issue/environment source-role binding as the role assignment, not as a hint to be re-inferred from the path name. For example, `CAPITAL_TL` is the selected capital TL input and `CAPITAL_VL` is the selected capital VL input.
+4. Validate the assigned role against repository-defined provenance and region-specific layout rules. Do not relabel an explicitly bound TL input as VL, or vice versa, merely because the local directory name omits `TL_csv` / `VL_csv`.
+5. For the capital-region filekey export layout, use the repository's approved capital layout/provenance contract (for example the `approved_capital_filekey_root` validation used by recommendation experiments) rather than inventing a generic path marker. If the explicit role binding conflicts with that contract, fail closed and report the conflict instead of guessing a different role.
+6. If role-bound paths are unavailable, perform only the bounded discovery allowed by the Issue and AI Hub workflow. Do not scan an entire home directory or drive. Generic `TL_csv` / `VL_csv` markers may be used where the documented layout provides them; region-specific exceptions must follow their documented contract.
+7. Verify provenance, terms/approval, region, and TL/VL/Other role before opening actual rows.
+8. Treat raw data roots as read-only.
+9. Keep raw identifiers and exact local paths memory-only where required for joins/grouping; never emit them to prompts, logs, tracked files, Issues, or PRs.
+10. Write only privacy-safe aggregates or explicitly approved Git-ignored artifacts.
+11. Do not test a read-only boundary by attempting a mutation against real raw data. Use permission introspection or a disposable fixture when available; otherwise report that destructive boundary validation was not run.
+
+### Source-role binding vs validation
+
+Keep these as two separate steps:
+
+1. **Binding** — determine which approved input is TL/VL/Other from the selected Issue, explicit CLI argument, or approved environment-variable contract.
+2. **Validation** — check that the bound input's location/provenance/layout is compatible with that role.
+
+Do not reverse this order by examining two directories and trying to rediscover their roles from path strings when the role binding is already explicit. A missing `TL_csv` or `VL_csv` token in a capital-region filekey export is not by itself an unresolved role. Likewise, do not invent terms such as an "export marker" unless the repository actually defines that marker.
 
 ## Experiment behavior
 

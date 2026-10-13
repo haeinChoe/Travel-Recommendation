@@ -46,7 +46,7 @@ herdr worktree create --workspace "$WORKSPACE_ID" \
 
 Omit `--path` to use Herdr's configured worktree root and branch-derived directory name. Before starting any writer, verify the returned path is inside the allowed write roots of the selected writer profile (`herdr-implementation` or `herdr-data-science`). If it is outside, stop before agent startup and identify the configuration boundary. Do not silently select, relocate, or synthesize a custom path.
 
-The Herdr MCP bridge provides read-only inspection plus narrowly scoped, explicitly authorized teardown tools. Use the existing authorized Herdr orchestration path for general workspace or worktree creation, agent start or prompts, and pane control. Use `herdr_worktree_remove` and `herdr_workspace_close` only for cleanup authorized by the user or Issue and only with the safeguards below; these tools do not authorize other Herdr mutations.
+The Herdr MCP bridge provides read-only inspection, a guarded `herdr_data_science_agent_start(workspace_id)` mutation, and narrowly scoped teardown tools. When a data-science writer is needed and this startup tool is available, use it instead of manually composing `pane split` and `agent start`; the bridge validates the linked worktree, fixes the profile to `herdr-data-science`, and verifies the resulting agent inventory. If the startup tool returns an error, do not bypass it through ordinary-shell Herdr CLI. Use the existing authorized Herdr orchestration path for general workspace/worktree creation, implementation/reviewer agent start or prompts, and data-science startup only when the dedicated startup tool is genuinely unavailable. Use `herdr_worktree_remove` and `herdr_workspace_close` only for cleanup authorized by the user or Issue and only with the safeguards below; these tools do not authorize other Herdr mutations.
 
 Use the worktree returned by Herdr for the implementation branch. Confirm its branch, base, and clean state before starting agents. Pane inventory is not a mandatory preflight: prefer a pane returned by the authorized orchestration flow; if none is available, create or split one explicitly for the confirmed Issue worktree with `--no-focus`. Do not call `pane list` merely to discover a usable pane, and do not call `pane current --current` only to reconfirm already-set caller context. Start agents only in returned pane IDs and use unique names. Never start two agents in one pane.
 
@@ -72,7 +72,7 @@ Use one implementation writer by default. Add an implementation agent only when 
 
 Use one independent reviewer for ordinary changes. Add a second reviewer when the Issue changes public/data contracts, security-sensitive code, or several subsystems. Reviewers must not edit, stage, commit, or run write-producing commands.
 
-Whenever an Issue requires any approved actual-data read, use one dedicated data-science agent with `herdr-data-science` plus one read-only reviewer, even if the task only checks file existence/counts, directory structure, provenance/role mapping, or schema/header information and makes no repository changes. Add a `herdr-implementation` agent only when repository implementation work exceeds the data-science scope. The data-science agent follows [`travel-data-scientist`](../../travel-data-scientist/SKILL.md), performs the pre-execution domain review before reading actual rows, and returns the structured handoff defined by that skill.
+Whenever an Issue requires any approved actual-data read, use one dedicated data-science agent with `herdr-data-science`. A simple read-only smoke or metadata/provenance inspection that makes no repository changes and does not require experiment/contract judgment does not require a reviewer by default. Add a read-only reviewer when the task interprets experiment evidence, changes or validates a data/evaluation contract, includes repository mutations, is high risk, or the Issue/user explicitly requires independent review. Add a `herdr-implementation` agent only when repository implementation work exceeds the data-science scope. The data-science agent follows [`travel-data-scientist`](../../travel-data-scientist/SKILL.md), performs the pre-execution domain review before reading actual rows, and returns the structured handoff defined by that skill.
 
 ## Model and permission profile settings
 
@@ -97,11 +97,13 @@ herdr agent start implementer --kind codex --pane "$PANE_ID" -- \
 
 Do not use `--dangerously-bypass-approvals-and-sandbox` or `--dangerously-skip-permissions`.
 
-Data-science Codex agent:
+Data-science Codex agent fallback (use only when the guarded MCP startup tool is unavailable):
 
 ```bash
 herdr agent start <name> --kind codex --pane <pane-id> -- --config 'default_permissions="herdr-data-science"'
 ```
+
+Preferred path when the registered bridge exposes it: call `herdr_data_science_agent_start(workspace_id)`. Do not add caller-supplied profile/path/pane arguments around this tool, and do not retry a tool refusal through ordinary-shell CLI.
 
 The `herdr-data-science` profile must allow write access to the confirmed Issue workspace root and read-only access to the Issue-approved external raw-data roots. Machine-specific paths belong only in the user's Codex configuration; see [`docs/data/data-science-agent.md`](../../../../docs/data/data-science-agent.md). Do not combine the permission profile with legacy sandbox keys and do not broaden the profile when an approved raw root cannot be resolved.
 

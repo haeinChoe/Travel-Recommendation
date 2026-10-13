@@ -19,6 +19,18 @@ Use this reference with the `travel-data-scientist` skill before actual-data ana
 | Leakage | Can labels or future events leak into features or splits? | Same trip/event is split across train and validation, or feedback becomes input. |
 | Generalization | Are cold-start, sparsity, long tail, and region bias visible? | Aggregate results hide a structurally weak cohort. |
 
+## Source-role provenance review
+
+Before interpreting TL/VL evidence, separate **role binding** from **role validation**.
+
+- Role binding comes from the selected Issue/experiment contract, an explicit CLI role such as `capital:TL=...`, or an approved current-process variable such as `CAPITAL_TL` / `CAPITAL_VL`.
+- Once a role is explicitly bound, do not infer it again from whether the directory name literally contains `TL_csv` or `VL_csv`.
+- Validate the binding with the repository's region-specific layout/provenance rules. The capital-region filekey export is a documented special case in the recommendation input validation; use that contract instead of a generic folder-name heuristic.
+- If the bound role and provenance/layout contract disagree, report a conflict and stop for that input. Do not silently swap TL and VL.
+- Only when no approved role binding exists may bounded discovery use documented role markers. Do not coin a new marker name from an observed path pattern and treat it as repository terminology.
+
+A smoke check that finds both capital inputs but labels them `UNRESOLVED` solely because their directory names omit `TL_csv` / `VL_csv` is therefore incomplete: it has performed path-name inference without applying the existing source-role contract.
+
 ## Current travel-log semantics
 
 Use repository data contracts as the source of truth. At minimum:
