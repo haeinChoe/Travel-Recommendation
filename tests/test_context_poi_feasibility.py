@@ -337,7 +337,7 @@ class ContextPoiSyntheticTests(unittest.TestCase):
             self.assertIn("observed", predictive)
             self.assertNotIn("2023-01-02", joined)
             self.assertNotIn("opaque-invalid-feedback", joined)
-            self.assertEqual(len(list(output.iterdir())), 5)
+            self.assertEqual(len(list(output.iterdir())), 6)
 
     def test_overlapping_trip_ids_between_tl_and_vl_fail_safely(self) -> None:
         with TemporaryDirectory(prefix="context-poi-overlap-") as temp:
