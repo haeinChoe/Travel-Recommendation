@@ -29,6 +29,11 @@
 - 원본 데이터는 읽기 전용으로 취급한다. 원본·제한 데이터·개인정보·자격 증명을 Git, Issue, PR, 로그, 노트북 출력 또는 외부 서비스에 포함하지 않는다.
 - 데이터 처리 위치, 재현성 및 안전한 결과 공유 규칙은 docs/data/aihub-workflow.md를 따른다.
 
+## TypeScript와 Node 모듈 규칙
+
+- 새 Node.js/TypeScript 코드는 ESM을 기본으로 사용한다. `import`/`export`를 사용하고, CommonJS의 `require`/`module.exports`는 외부 라이브러리·도구 호환성 때문에 필요한 경우에만 사용하며 그 이유를 코드 또는 PR에 남긴다.
+- 루트 `package.json`의 `"type": "module"`과 `tsconfig.json`의 `NodeNext` 설정을 기준으로 한다. ESM/CJS 혼용을 위해 임의로 `type`을 제거하거나 CommonJS로 되돌리지 않는다.
+
 ## 검증과 문서화
 
 - 변경에 맞는 검증을 실행하고, 실행한 명령과 결과를 보고한다. 실행하지 않은 검증은 이유와 함께 명시한다.
