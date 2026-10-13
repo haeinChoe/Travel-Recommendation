@@ -243,7 +243,7 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
                 "with commands_path.open('a', encoding='utf-8') as stream: stream.write(json.dumps(args) + '\\n')\n"
                 "state = json.loads(state_path.read_text(encoding='utf-8'))\n"
                 "if args == ['pane', 'current', '--current']:\n"
-                "    result = {'type': 'pane_info', 'pane': {'pane_id': 'fixture-pane', 'workspace_id': 'caller', 'focused': True}}\n"
+                "    result = {'type': 'pane_current', 'pane': {'pane_id': 'fixture-pane', 'workspace_id': 'caller', 'focused': True}}\n"
                 "elif args[:2] == ['status', 'server']:\n"
                 "    result = {'status': 'running', 'running': True, 'version': '0.9.3', 'protocol': 22, 'compatible': True}\n"
                 "elif args[:2] == ['workspace', 'list']:\n"
@@ -431,6 +431,15 @@ class TeardownSafetyTests(unittest.TestCase):
             }
         }
 
+    @staticmethod
+    def _pane_current(workspace_id: str, *, focused: bool = False) -> dict[str, object]:
+        return {
+            "result": {
+                "type": "pane_current",
+                "pane": {"pane_id": "current-pane", "workspace_id": workspace_id, "focused": focused},
+            }
+        }
+
     def _use_real_caller_context(self) -> None:
         self.caller_context.stop()
 
@@ -439,7 +448,7 @@ class TeardownSafetyTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {"HERDR_PANE_ID": "launch-pane-alias", "HERDR_WORKSPACE_ID": "stale-launch-workspace"},
-        ), patch.object(bridge, "_run_herdr_json", return_value=self._pane_info("moved-workspace")) as pane_call:
+        ), patch.object(bridge, "_run_herdr_json", return_value=self._pane_current("moved-workspace")) as pane_call:
             self.assertEqual(bridge._caller_workspace_id(), "moved-workspace")
         pane_call.assert_called_once_with(["pane", "current", "--current"])
 

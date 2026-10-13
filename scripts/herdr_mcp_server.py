@@ -246,7 +246,11 @@ def _caller_workspace_id() -> str:
 
     document = _run_herdr_json(["pane", "current", "--current"])
     result = document.get("result") if isinstance(document, dict) else None
-    pane = result.get("pane") if isinstance(result, dict) and result.get("type") == "pane_info" else None
+    pane = (
+        result.get("pane")
+        if isinstance(result, dict) and result.get("type") in ("pane_current", "pane_info")
+        else None
+    )
     if not isinstance(pane, dict):
         raise RuntimeError("Herdr returned invalid caller pane context; refusing teardown")
     try:
