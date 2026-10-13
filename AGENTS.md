@@ -5,8 +5,8 @@
 ## Skill 및 데이터 사전 점검
 
 - 특수 도구나 워크플로를 사용하기 전에 현재 세션의 skill catalog를 확인하고, 적용되는 각 skill의 전체 `SKILL.md`와 참조 자료를 읽는다. Issue/PR 작업에는 저장소 로컬 `.agents/skills/travel-issue-agent-loop/` skill과 현재 세션 catalog에서 찾은 전역 `herdr` skill을 모두 적용한다. 전역 skill의 파일 경로를 저장소 지침에 고정하지 않는다. Herdr 작업 전에 두 skill을 모두 따르고 필요한 Herdr 접근 절차를 확인한다.
-- 실제 데이터를 처리하기 전 선택한 실험·데이터 워크플로의 재현 명령을 먼저 읽고, 그 명령이 사용하는 모든 변수를 확인한다. 확인은 비내보내기 변수를 볼 수 있는 사용자의 실제 로컬 셸에서 수행하며, 조정자 하위 프로세스나 새 worktree 에이전트에서 보이지 않는다는 이유로 변수가 없다고 판단하지 않는다. 현재 popularity/CF 재현 명령은 `RAW_ROOT`, `CAPITAL_TL`, `CAPITAL_VL`, `WEST_TL`, `WEST_VL`, `EAST_TL`, `EAST_VL`, `JEJU_TL`, `JEJU_VL`을 사용한다. 결과에는 변수의 설정 여부, 대상의 존재 여부, 예상 TL/VL 역할 구조만 기록하고 값이나 경로는 출력하지 않는다.
-- 실제 로컬 셸을 확인할 수 없으면 변수 부재로 간주하지 말고 실제 데이터 읽기를 시작하지 않는다. 셸에서 변수가 설정되지 않은 경우에만 승인된 로컬·마운트 위치를 제한된 깊이와 역할 marker로 탐색한다. 전체 홈 또는 드라이브를 훑지 않는다. 읽기 전 문서와 Issue 권한으로 출처, 이용 조건, TL/VL 역할 매핑을 검증하고, 로컬 경로를 프롬프트·로그·Git·PR에 넣지 않는다.
+- 실제 데이터를 처리하기 전 선택한 실험·데이터 워크플로의 재현 명령을 읽고 필요한 데이터 입력을 식별한다. 현재 프로세스에서 `RAW_ROOT`, `CAPITAL_TL`, `CAPITAL_VL`, `WEST_TL`, `WEST_VL`, `EAST_TL`, `EAST_VL`, `JEJU_TL`, `JEJU_VL` 등 필요한 변수를 사용할 수 있으면 우선 사용한다. 변수가 보이지 않는다는 이유만으로 데이터가 없다고 판단하지 않는다.
+- 필요한 경로를 현재 환경에서 확인할 수 없으면, 선택된 Issue와 `docs/data/aihub-workflow.md`가 허용한 로컬·마운트 위치에서 제한된 깊이와 역할 marker를 사용해 bounded discovery를 수행한다. 환경변수 확인은 경로 해석 수단이지 actual-data 접근의 필수 gate가 아니다. 전체 홈 또는 드라이브를 훑지 않는다. 실제 입력을 열기 전 출처, 이용 조건, 권한, 예상 TL/VL 역할 매핑을 검증하고, 로컬 경로나 변수 값을 프롬프트·로그·Git·PR에 넣지 않는다. 승인된 데이터 위치를 유일하게 식별할 수 없거나 provenance/역할 검증에 실패할 때만 actual-data 작업을 중단한다.
 
 ## 지시와 작업 범위
 
@@ -51,7 +51,7 @@
 - 필요한 사용자 권한 프로필이 없거나 선택할 수 없으면 정확한 blocker를 보고하고 중단한다. 제한 없는 기본 쓰기 설정으로 조용히 대체하거나 조정자가 구현을 대신하지 않는다.
 - Herdr가 필수 구현 에이전트를 생성하거나 시작할 수 없으면 정확한 blocker를 보고하고, 조정자가 구현을 대신하지 않는다.
 - Herdr 서버·workspace·agent 상태를 확인할 때 현재 세션에 등록된 Herdr MCP bridge의 읽기 전용 도구를 우선 사용한다. MCP 상태 확인이 성공하면 Herdr CLI를 같은 상태 확인 목적으로 다시 실행할 필요는 없다. worktree·branch·PR 상태는 Git과 GitHub에서 독립적으로 확인한다.
-- MCP bridge는 읽기 전용 상태 확인과 명시적으로 승인된 좁은 범위의 workspace/worktree teardown 도구를 제공한다. workspace/worktree 생성, agent 시작·prompt, pane 제어는 기존 승인된 Herdr orchestration 경로를 사용한다. MCP 상태 도구를 사용할 수 없거나 호출에 실패하면 skill에서 승인한 읽기 전용 Herdr CLI fallback을 사용한다. Herdr CLI가 `EPERM` 또는 `Operation not permitted`를 반환하면 해당 blocker를 그대로 보고하고 중단하며, escalation으로 재시도하지 않는다. CLI 실패만으로 MCP 실패를 추정하지 않는다.
+- MCP bridge는 읽기 전용 상태 확인과 명시적으로 승인된 좁은 범위의 workspace/worktree teardown 도구를 제공한다. workspace/worktree 생성, agent 시작·prompt, pane 제어처럼 MCP mutation 대안이 없는 승인된 상태 변경 작업은 저장소 skill과 전역 Herdr skill이 정의한 approval-reviewed 실행 경로를 첫 시도부터 사용한다. MCP 상태 도구를 사용할 수 없거나 호출에 실패하면 skill에서 승인한 읽기 전용 Herdr CLI fallback을 사용한다. 상태 변경 명령을 ordinary sandbox에서 잘못 시도해 `EPERM` 또는 `Operation not permitted`가 발생한 경우 그 실패 자체를 Issue blocker로 보지 말고, 아직 시도하지 않은 이미 정의된 승인 경로로만 진행한다. 그 승인 경로가 거부되거나 동일 오류로 실패하면 blocker를 보고하고 중단한다. 새롭거나 더 넓은 escalation, sandbox bypass, force/unrestricted profile로 복구하지 않는다. CLI 실패만으로 MCP 실패를 추정하지 않는다.
 - `herdr_worktree_remove`와 `herdr_workspace_close`는 사용자 또는 Issue가 cleanup을 명시적으로 승인한 경우에만 사용할 수 있으며, 사전 조건과 사후 확인은 `.agents/skills/travel-issue-agent-loop/references/agent-loop.md`의 cleanup 절차를 따른다.
 
 ## 상세 지침
