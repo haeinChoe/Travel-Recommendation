@@ -3,47 +3,50 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
-const repositoryRoot = resolve(import.meta.dirname, "..");
-
-const documentPaths = {
-  dataScientistSkill: ".agents/skills/travel-data-scientist/SKILL.md",
-  domainReview: ".agents/skills/travel-data-scientist/references/domain-review.md",
-  profileGuide: "docs/data/data-science-agent.md",
-  agentLoopSkill: ".agents/skills/travel-issue-agent-loop/SKILL.md",
-  agentLoopReference: ".agents/skills/travel-issue-agent-loop/references/agent-loop.md",
-  agentsGuide: "AGENTS.md",
-  agentWorkflow: "docs/agent-workflow.md",
-} as const;
-
-type DocumentName = keyof typeof documentPaths;
-
-type RepositoryDocuments = Record<DocumentName, string>;
-
-function readRepositoryDocument(name: DocumentName): string {
-  return readFileSync(resolve(repositoryRoot, documentPaths[name]), "utf8");
+interface RepositoryDocument {
+  readonly path: string;
+  readonly content: string;
 }
 
-const documents: RepositoryDocuments = Object.fromEntries(
-  Object.keys(documentPaths).map((name) => [
-    name,
-    readRepositoryDocument(name as DocumentName),
-  ]),
-) as RepositoryDocuments;
+const repositoryRoot = resolve(import.meta.dirname, "..");
+
+function loadDocument(path: string): RepositoryDocument {
+  return {
+    path,
+    content: readFileSync(resolve(repositoryRoot, path), "utf8"),
+  };
+}
+
+const dataScientistSkill = loadDocument(
+  ".agents/skills/travel-data-scientist/SKILL.md",
+);
+const domainReview = loadDocument(
+  ".agents/skills/travel-data-scientist/references/domain-review.md",
+);
+const profileGuide = loadDocument("docs/data/data-science-agent.md");
+const agentLoopSkill = loadDocument(
+  ".agents/skills/travel-issue-agent-loop/SKILL.md",
+);
+const agentLoopReference = loadDocument(
+  ".agents/skills/travel-issue-agent-loop/references/agent-loop.md",
+);
+const agentsGuide = loadDocument("AGENTS.md");
+const agentWorkflow = loadDocument("docs/agent-workflow.md");
 
 function assertContainsAll(
-  content: string,
+  document: RepositoryDocument,
   expectedPhrases: readonly string[],
 ): void {
   for (const phrase of expectedPhrases) {
     assert.ok(
-      content.includes(phrase),
-      `Expected document to contain: ${phrase}`,
+      document.content.includes(phrase),
+      `${document.path} should contain: ${phrase}`,
     );
   }
 }
 
 test("data-scientist skill keeps the domain-first problem-alignment gate", () => {
-  assertContainsAll(documents.dataScientistSkill, [
+  assertContainsAll(dataScientistSkill, [
     "name: travel-data-scientist",
     "Prediction time",
     "Task type",
@@ -56,7 +59,7 @@ test("data-scientist skill keeps the domain-first problem-alignment gate", () =>
 });
 
 test("travel-log semantics and post-event leakage rules stay explicit", () => {
-  assertContainsAll(documents.dataScientistSkill, [
+  assertContainsAll(dataScientistSkill, [
     "TRAVELER_ID",
     "TRAVEL_ID",
     "TN_VISIT_AREA_INFO",
@@ -68,13 +71,13 @@ test("travel-log semantics and post-event leakage rules stay explicit", () => {
   ]);
 
   assert.match(
-    documents.domainReview,
+    domainReview.content,
     /absence of a visit is not proof of dislike/,
   );
 });
 
 test("domain review distinguishes direct, proxy, and mismatched evidence", () => {
-  assertContainsAll(documents.domainReview, [
+  assertContainsAll(domainReview, [
     "**direct**",
     "**proxy**",
     "**mismatch**",
@@ -85,25 +88,25 @@ test("domain review distinguishes direct, proxy, and mismatched evidence", () =>
 });
 
 test("agent workflow routes data-science work to the dedicated profile", () => {
-  const routingDocuments = [
-    documents.agentLoopSkill,
-    documents.agentLoopReference,
-    documents.agentsGuide,
-    documents.agentWorkflow,
+  const routingDocuments: readonly RepositoryDocument[] = [
+    agentLoopSkill,
+    agentLoopReference,
+    agentsGuide,
+    agentWorkflow,
   ];
 
-  for (const content of routingDocuments) {
-    assertContainsAll(content, [
+  for (const document of routingDocuments) {
+    assertContainsAll(document, [
       "herdr-data-science",
       "travel-data-scientist",
     ]);
   }
 
-  assert.match(documents.agentLoopSkill.toLowerCase(), /do not fall back/);
+  assert.match(agentLoopSkill.content.toLowerCase(), /do not fall back/);
 });
 
 test("permission profile keeps the least-privilege filesystem contract", () => {
-  assertContainsAll(documents.profileGuide, [
+  assertContainsAll(profileGuide, [
     "[permissions.herdr-data-science.filesystem]",
     '":workspace_roots" = "write"',
     '"/replace/with/approved/aihub/raw-root" = "read"',
@@ -116,13 +119,16 @@ test("permission profile keeps the least-privilege filesystem contract", () => {
 });
 
 test("handoff separates facts, interpretation, limitations, and next decision", () => {
-  const combined = [
-    documents.dataScientistSkill,
-    documents.domainReview,
-    documents.profileGuide,
-  ].join("\n");
+  const handoffContract: RepositoryDocument = {
+    path: "combined data-science handoff contract",
+    content: [
+      dataScientistSkill.content,
+      domainReview.content,
+      profileGuide.content,
+    ].join("\n"),
+  };
 
-  assertContainsAll(combined, [
+  assertContainsAll(handoffContract, [
     "facts",
     "interpretation/inference",
     "unresolved limitations",
@@ -133,42 +139,47 @@ test("handoff separates facts, interpretation, limitations, and next decision", 
 });
 
 test("tracked data-science documents do not contain machine-specific paths", () => {
-  const combined = [
-    documents.dataScientistSkill,
-    documents.domainReview,
-    documents.profileGuide,
-  ].join("\n");
+  const trackedDocuments = [
+    dataScientistSkill,
+    domainReview,
+    profileGuide,
+  ] as const;
 
-  const forbiddenPathPrefixes = ["/home/", "/Users/", "C:\\Users\\"];
+  const forbiddenPathPrefixes = ["/home/", "/Users/", "C:\\Users\\"] as const;
 
-  for (const prefix of forbiddenPathPrefixes) {
-    assert.ok(
-      !combined.includes(prefix),
-      `Machine-specific path leaked into tracked docs: ${prefix}`,
-    );
+  for (const document of trackedDocuments) {
+    for (const prefix of forbiddenPathPrefixes) {
+      assert.ok(
+        !document.content.includes(prefix),
+        `${document.path} leaked a machine-specific path: ${prefix}`,
+      );
+    }
   }
 
-  assert.match(combined, /\/replace\/with\/approved\/aihub\/raw-root/);
+  assert.match(
+    profileGuide.content,
+    /\/replace\/with\/approved\/aihub\/raw-root/,
+  );
 });
 
 test("markdown code fences stay balanced", () => {
   const markdownDocuments = [
-    documents.dataScientistSkill,
-    documents.domainReview,
-    documents.profileGuide,
-    documents.agentLoopSkill,
-    documents.agentLoopReference,
-  ];
+    dataScientistSkill,
+    domainReview,
+    profileGuide,
+    agentLoopSkill,
+    agentLoopReference,
+  ] as const;
 
-  for (const content of markdownDocuments) {
-    const fenceCount = content
+  for (const document of markdownDocuments) {
+    const fenceCount = document.content
       .split("\n")
       .filter((line) => line.startsWith("```")).length;
 
     assert.equal(
       fenceCount % 2,
       0,
-      "Expected balanced Markdown fenced code blocks",
+      `${document.path} should have balanced Markdown fenced code blocks`,
     );
   }
 });
