@@ -1,11 +1,10 @@
 # Context × POI 추천 신호 feasibility
 
 **Issue:** [#45](https://github.com/haeinChoe/Travel-Recommendation/issues/45)  
-**상태:** **프로토콜 교정 완료 / 실제 4권역 재실행 필요**
+**상태:** **교정 프로토콜 4권역 재실행 완료 / Inconclusive**
 
 > 이전 run `issue45-context-poi-pairs-20261012T141933Z-c6a1b9`은 preliminary evidence로만 보존합니다.
-> Issue #45의 질문과 실제 분석 계약이 완전히 정렬되지 않았으므로, 아래 교정 프로토콜의 새 run을 검토하기 전에는
-> 이전 수치를 최종 Go / Inconclusive / Reconsider 판단에 사용하지 않습니다.
+> 아래 결론은 교정 run `issue45-context-poi-corrected-20261013T021312Z-acf6c4`의 결과에 근거합니다.
 
 ## 1. 이 실험이 답하려는 질문
 
@@ -256,56 +255,110 @@ python3 scripts/recommendation/analyze_context_poi.py \
   --confirm-approved --confirm-terms --confirm-poi-candidate
 ```
 
-## 10. 재실행 후 이 문서에 채울 결과
+## 10. 교정 run 결과
 
-### A. Context Feature Evidence Matrix
+- Run ID: `issue45-context-poi-corrected-20261013T021312Z-acf6c4`
+- Code revision: `3d1f647a3b08e19f8ac0ca290f5af871d5a4444a`
+- 입력 역할: 2023 데이터의 네 권역별 TL/VL과 같은 권역의 승인된 POI Master. 무작위 재분할 없이 TL로 학습하고 VL에서 평가했습니다.
+- 산출물: 여섯 artifact를 Git 제외 로컬 결과 위치에 생성했습니다. 원본 행, 원본 경로, raw ID·category value, 좌표와 자유 텍스트는 기록하지 않았습니다.
+- 범위: 결과는 exploratory association 및 feedback 예측입니다. causal effect나 ranking 성능을 뜻하지 않습니다.
 
-| Context group | Feature(s) | Availability TL/VL | POI association TL | POI association VL | Replication | 판단 |
-| --- | --- | --- | --- | --- | --- | --- |
-| Style | `TRAVEL_STYL_1~8` | pending | pending | pending | pending | pending |
-| Motive | `TRAVEL_MOTIVE_1~3` | pending | pending | pending | pending | pending |
-| Destination | destination + region | pending | pending | pending | pending | pending |
-| Companion | accompany + count | pending | pending | pending | pending | pending |
-| Temporal | month + elapsed days | pending | pending | pending | pending | pending |
-| Companion relation | recorded-only | pending | pending | pending | pending | pending |
+### A. Context availability 및 POI join
 
-### B. Context Group Predictive Ablation
+| Context group | 점검 결과 |
+| --- | --- |
+| Style | 8개 필드를 모두 4권역 TL/VL에서 점검. missing-rate band는 모두 `0-<10%`; 필드별 cardinality는 `<10` band. |
+| Motive | 3개 필드를 모두 점검. missing-rate는 `0-<10%`부터 `10-<25%` 및 억제 band까지, cardinality는 `<10` 또는 `10+` band. |
+| Destination | 목적지 필드를 8개 권역/split 역할에서 점검. missing-rate는 `0-<10%`; cardinality는 `<10` 또는 `10+` band. `region`은 aggregate context에 포함했습니다. |
+| Companion | 동반현황과 동반자 수 두 필드를 모두 점검. missing-rate는 `0-<10%`; cardinality는 `<10` 또는 `10+` band. |
+| Temporal | 시작·종료일 필드의 coarse availability를 점검하고 month와 elapsed days를 파생했습니다. missing-rate는 `0-<10%`, cardinality는 `10+` band였습니다. 정확한 날짜는 predictor나 artifact에 기록하지 않았습니다. |
+| Companion relation | 네 권역 TL/VL 모두 relation 필드를 점검했습니다. 기록된 관계가 있는 관측만 sensitivity에 사용했으며 primary context에서 제외했습니다. |
 
-| Group | DGSTFN | REVISIT | RCMDTN | 해석 |
-| --- | --- | --- | --- | --- |
-| Style | pending | pending | pending | pending |
-| Motive | pending | pending | pending | pending |
-| Destination | pending | pending | pending | pending |
-| Companion | pending | pending | pending | pending |
-| Temporal | pending | pending | pending | pending |
-| All context | pending | pending | pending | pending |
+POI master candidate join coverage는 capital, west, east에서 TL과 VL 모두 `50-<75%`, jeju-islands에서 두 split 모두 `75-<90%`였습니다. 네 권역 모든 split에서 master의 duplicate candidate key와 서로 다른 행정구역 값을 가진 key는 각각 `0` bucket이었습니다. Join은 region-scoped `POI_ID` 후보 관계이며 canonical identity가 아닙니다.
 
-### C. Controlled Incremental Comparisons
+### B. Context–POI association 및 TL→VL 재현
 
-| Comparison | 결과 | 해석 |
-| --- | --- | --- |
-| region → +context | pending | pending |
-| popularity → +context | pending | pending |
-| broad category → +context | pending | pending |
-| context → +basic POI | pending | pending |
-| basic POI → +richer POI | pending | pending |
+아래 값은 지원이 공개 가능한 association에서 context-feature × POI-feature Cramér's V의 중앙값입니다. TL/VL 각 split 안에서 feature 조합을 합치지 않고, visit-row와 distinct-trip-pair를 따로 계산했습니다.
 
-### D. Joint-feature sensitivity
+| Group | Visit-row TL / VL | Distinct-trip-pair TL / VL | 관찰 |
+| --- | ---: | ---: | --- |
+| Style | 0.054 / 0.120 | 0.052 / 0.125 | 네 권역에서 각 style feature의 POI association이 양 split에서 관찰됨. |
+| Motive | 0.065 / 0.129 | 0.062 / 0.138 | 네 권역에서 각 motive feature의 POI association이 양 split에서 관찰됨. |
+| Destination | 0.318 / 0.350 | 0.284 / 0.345 | 목적지 association이 양 split에서 관찰됨. `region` association은 aggregate에서만 평가했고 권역별로는 상수여서 `insufficient-support`였습니다. |
+| Companion | 0.095 / 0.140 | 0.086 / 0.132 | 동반현황·동반자 수 association이 양 split에서 관찰됨. |
+| Temporal | 0.164 / 0.231 | 0.129 / 0.219 | month·elapsed days association이 양 split에서 관찰됨. |
 
-style / motive / destination / companion / temporal 각각에서 TL에서 관측되고 VL에서 재현되는 context×POI joint-feature increment가 있는지 요약합니다.
-최고값만 고르지 않고 support와 권역 일관성을 같이 봅니다.
+지원이 있는 조합의 association은 visit-row와 trip-pair 집계에서 비슷한 양상을 보였습니다. VL 중앙 effect가 TL보다 높았지만 Cramér's V는 방향을 나타내지 않고, 이 집계만으로 feature 조합의 예측 기여를 주장할 수 없습니다. 작은 지원으로 숨겨진 결과는 `privacy-limited`와 `insufficient-support`로 구분했습니다.
+
+Context feature와 세 feedback target 간 association도 각각 계산했습니다. Aggregate에서 field별 Cramér's V 중앙값 범위는 style이 TL `0.046–0.051`, VL `0.049–0.052`; motive는 TL `0.019–0.021`, VL `0.040–0.045`; destination은 TL `0.023–0.027`, VL `0.044–0.047`; companion은 TL `0.025–0.026`, VL `0.050–0.053`; temporal은 TL `0.018–0.021`, VL `0.034–0.037`였습니다. 이 세 target은 합치지 않았습니다. Recorded-only relation은 TL `0.060–0.063`, VL `0.123–0.125`였지만, 기록된 동행 정보가 있는 사례로 제한된 sensitivity라 primary context와 같은 근거로 보지 않습니다.
+
+### C. Feedback predictive ablation
+
+값은 aggregate TL 학습 및 VL 평가에서 majority baseline 대비 accuracy 차이입니다. 각 칸은 `DGSTFN / REVISIT_INTENTION / RCMDTN_INTENTION` 순서입니다.
+
+| Ablation | Δ vs majority | 해석 |
+| --- | ---: | --- |
+| `context_style` | `-0.018 / -0.026 / -0.029` | 세 target 모두 baseline보다 낮음. |
+| `context_motive` | `0.000 / 0.000 / 0.000` | 추가 성능이 관찰되지 않음. |
+| `context_destination` | `-0.003 / 0.000 / 0.000` | 추가 성능이 관찰되지 않음. |
+| `context_companion` | `≈0.000 / ≈0.000 / 0.000` | 추가 성능이 관찰되지 않음. |
+| `context_temporal` | `0.000 / 0.000 / 0.000` | 추가 성능이 관찰되지 않음. |
+| `context_companion_relation_recorded` | `≈0.000 / -0.002 / -0.001` | Recorded-only sensitivity. |
+| `context_only` | `-0.015 / -0.022 / -0.015` | primary context 전체가 majority baseline을 넘지 못함. |
+
+위 aggregate ablation은 모두 TL/VL 지원 `10+ / 10+`로 `observed`였습니다. `poi_only`와 `context_plus_richer_poi`는 VL complete-case 지원이 `<10`이라 metric이 `privacy-limited`로 억제됐습니다. 이는 데이터 지원이 0이라는 뜻이 아니며, 그 결과로 richer POI의 기여를 판단하지 않았습니다.
+
+### D. Dominant-signal 통제 및 richer POI
+
+각 비교는 같은 TL 학습 코호트와 같은 VL 평가 코호트에서 오른쪽 feature set의 accuracy에서 왼쪽을 뺀 값입니다. 양수는 오른쪽의 정확도 개선, 음수는 하락입니다.
+
+| 비교 | DGSTFN | REVISIT | RCMDTN | 결과 |
+| --- | ---: | ---: | ---: | --- |
+| region → +context | -0.015 | -0.022 | -0.015 | region을 넘어서는 feedback 예측 개선이 없음. |
+| popularity → +context | -0.020 | -0.020 | -0.016 | popularity 이후 context를 추가해도 개선되지 않음. |
+| broad category → +context | -0.030 | -0.069 | -0.062 | broad category 이후 context를 추가해도 개선되지 않음. |
+| context → +basic POI | +0.006 | +0.004 | -0.007 | 변화가 작고 target 간 일관된 개선이 없음. |
+| basic POI → +richer POI | privacy-limited | privacy-limited | privacy-limited | VL complete-case 지원 `<10`; 기여 판단 불가. |
+
+첫 네 비교의 지원은 각각 `10+ / 10+`였고 다섯 비교의 left/right 지원 bucket이 모두 일치했습니다. Richer POI 비교는 `10+ / <10` 지원으로 억제됐으므로 `insufficient-support`와 혼동하지 않았습니다.
+
+### E. Context×POI joint-feature sensitivity
+
+값은 aggregate에서 같은 complete-case TL/VL 코호트의 `(context, POI)` joint categorical feature를 main-effects model에 추가했을 때의 accuracy 차이 중앙값입니다. 열은 `DGSTFN / REVISIT_INTENTION / RCMDTN_INTENTION` 순서입니다.
+
+| Context group | Δ joint vs main 중앙값 |
+| --- | ---: |
+| Style | `-0.021 / -0.018 / -0.020` |
+| Motive | `-0.010 / -0.009 / -0.009` |
+| Destination (region 포함) | `-0.014 / -0.025 / -0.020` |
+| Companion (primary fields) | `-0.013 / -0.017 / -0.017` |
+| Temporal | `-0.007 / -0.011 / -0.004` |
+| Companion relation (recorded-only) | `-0.021 / -0.036 / -0.034` |
+
+필수 context group의 aggregate 조합은 모두 `observed`였습니다. Feature별 범위 일부에 양수 값이 있어도 각 group/target의 중앙값은 음수였습니다. Joint feature는 예측 민감도 분석이며 causal interaction이 아닙니다.
+
+### F. Preliminary run과의 비교
+
+`issue45-context-poi-pairs-20261012T141933Z-c6a1b9`는 프로토콜 불일치가 있어 최종 판단 근거가 아닙니다.
+
+- Style, motive, companion, temporal association effect 분포는 preliminary와 corrected run에서 대체로 비슷했습니다. Destination 비교는 corrected contract에서 `region`을 추가해 비교 범위가 달라졌습니다.
+- Preliminary `context_only`의 majority 대비 차이는 target 순서대로 `-0.019 / -0.026 / -0.032`; corrected run은 `-0.015 / -0.022 / -0.015`였습니다. 두 실행 모두 context-only feedback 예측의 이점은 관찰되지 않았습니다.
+- Preliminary `context_vs_poi` paired 차이는 `+0.001 / -0.016 / -0.006`, corrected run은 `+0.006 / +0.004 / -0.007`입니다. 코호트·feature 계약이 교정되어 직접적인 성능 추세로 해석하지 않습니다.
+- Preliminary run에는 region, popularity, broad-category 공통 코호트 비교가 없었습니다. Corrected run에서는 세 비교 모두 context 추가 후 개선되지 않았습니다.
+- Richer POI 비교는 두 run 모두 VL 지원 `<10`으로 privacy-limited였습니다. Preliminary run에는 joint-feature sensitivity가 없어 corrected 결과와 비교할 값이 없습니다.
 
 ## 11. 결론 상태
 
-**현재: Pending rerun**
+**Inconclusive — 현 결과만으로 context-aware ranking 진행 여부를 확정하지 않습니다.**
 
-새 run을 검토한 뒤에만 다음 중 하나로 바꿉니다.
+근거:
 
-- **Go** — context-aware POI ranking 후속 실험으로 갈 근거가 있음
-- **Inconclusive** — coverage / representation / evaluation 한계로 아직 결론 불가
-- **Reconsider** — 충분한 feature/POI representation에서 신호가 반복적으로 재현되지 않음
+- Style, motive, destination, companion, temporal context는 POI feature와 TL 및 VL에서 association을 보였습니다. 이는 non-causal association이며, 높은 V만으로 predictive contribution을 뜻하지 않습니다.
+- 세 feedback target에서 primary context ablation은 majority보다 낫지 않았습니다. 동일 코호트 비교에서도 region, popularity, broad category에 context를 더한 결과가 개선되지 않았고, context×POI joint-feature의 중앙 increment도 모든 group/target에서 음수였습니다.
+- Basic POI를 context에 추가한 변화는 작고 target 간 일관되지 않았습니다. Richer POI 증분은 VL complete-case 지원이 `<10`이라 privacy-limited이며 결론을 낼 수 없습니다.
+- 실제 Top-K ranking, candidate universe와 unvisited negative는 평가하지 않았습니다. 따라서 association 신호를 ranking 성능의 증거로 확대하지 않습니다.
 
-특정 subset 실패 또는 privacy-limited 결과만으로 `Reconsider`를 내리지 않습니다.
+이 결론은 `Reconsider`가 아닙니다. 여러 context–POI association이 TL/VL에서 관찰됐고, richer POI 비교는 privacy-limited였기 때문입니다. 다음 판단에는 ranking용 평가 계약과 충분한 richer-POI validation 지원이 필요합니다.
 
 ## 12. 여전히 이 실험이 답하지 않는 것
 
