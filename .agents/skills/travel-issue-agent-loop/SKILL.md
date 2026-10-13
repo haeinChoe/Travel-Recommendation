@@ -43,6 +43,7 @@ Do not run Herdr CLI commands from an arbitrary repository or worktree cwd.
 - After Herdr creates or resolves a worktree, verify the returned absolute path is inside the writable roots allowed by the `herdr-implementation` permission profile before starting an implementation agent.
 - Implementation commands execute only in the exact worktree path returned by Herdr. Never guess, synthesize, relocate, or substitute a worktree path to recover from a permission error.
 - If a denied CLI call used an invalid cwd or unapproved worktree path, do not retry that same call. Correct the orchestration boundary and continue only through an authorized path. If a state-changing command was wrongly attempted in the ordinary sandbox, use only its already-defined first-attempt approved route if that route has not yet been attempted; if the approved invocation is rejected or still returns `EPERM`, report the blocker and stop.
+- Treat the failure as an Issue-level blocker only when the workflow requires that Herdr capability and it remains unavailable through every authorized route. A wrong cwd, unapproved path, or redundant CLI attempt is an orchestration configuration defect and must not stop the Issue by itself.
 - Never introduce a new or broader permission route, sandbox bypass, force option, or unrestricted/default profile to recover from `EPERM`; the predefined approval-reviewed first-attempt route is not an `EPERM` recovery bypass.
 
 ## Worktree and agents
