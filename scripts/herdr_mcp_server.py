@@ -129,8 +129,20 @@ def _herdr_operation(command: list[str]) -> str:
     return "Herdr CLI step"
 
 
-def _herdr_failure_category(stderr: str) -> str:
+def _herdr_failure_category(stderr: str, command: list[str]) -> str:
     normalized = stderr.casefold()
+    if command == ["pane", "current", "--current"]:
+        try:
+            document = json.loads(stderr)
+        except (json.JSONDecodeError, ValueError):
+            document = None
+        error = document.get("error") if isinstance(document, dict) else None
+        if (
+            isinstance(error, dict)
+            and error.get("code") == "not_found"
+            and error.get("message") == "pane not found"
+        ):
+            return "caller pane unavailable"
     if "workspace_group_close_required" in normalized:
         return "Herdr refused to close a primary workspace (group close refused)"
     permission_denied = any(
@@ -171,7 +183,7 @@ def _run_herdr_json(command: list[str]) -> Any:
 
     if completed.returncode != 0:
         operation = _herdr_operation(command)
-        category = _herdr_failure_category(completed.stderr)
+        category = _herdr_failure_category(completed.stderr, command)
         raise RuntimeError(
             f"Herdr {operation} failed: {category} (exit status {completed.returncode})"
         )
