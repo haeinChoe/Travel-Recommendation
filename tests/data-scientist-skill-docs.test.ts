@@ -105,6 +105,31 @@ test("agent workflow routes data-science work to the dedicated profile", () => {
   assert.match(agentLoopSkill.content.toLowerCase(), /do not fall back/);
 });
 
+test("any actual-data read is delegated away from the entry coordinator", () => {
+  assertContainsAll(agentLoopSkill, [
+    "any task that reads approved raw/actual data",
+    "read-only diagnostics",
+    "file existence/counts",
+    "must be delegated",
+    "entry coordinator must not",
+  ]);
+
+  assertContainsAll(agentLoopReference, [
+    "Any actual-data read must be delegated",
+    "read-only diagnostic",
+    "no repository file changes",
+    "file existence/counts",
+    "must not perform those raw-data checks itself",
+  ]);
+
+  assertContainsAll(agentsGuide, [
+    "코드 수정 여부와 무관",
+    "파일 존재 여부·개수",
+    "read-only 진단",
+    "조정자는 raw root나 TL/VL 입력을 직접 탐색하거나 파일 개수를 세지 않고",
+  ]);
+});
+
 test("permission profile keeps the least-privilege filesystem contract", () => {
   assertContainsAll(profileGuide, [
     "[permissions.herdr-data-science.filesystem]",
