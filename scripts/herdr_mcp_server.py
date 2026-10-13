@@ -139,7 +139,8 @@ def _herdr_failure_category(stderr: str, command: list[str]) -> str:
         error = document.get("error") if isinstance(document, dict) else None
         if (
             isinstance(error, dict)
-            and error.get("code") == "not_found"
+            and isinstance(error.get("code"), str)
+            and error.get("code") in {"not_found", "pane_not_found"}
             and error.get("message") == "pane not found"
         ):
             return "caller pane unavailable"
