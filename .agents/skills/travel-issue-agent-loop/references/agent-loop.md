@@ -72,9 +72,11 @@ Use one implementation writer by default. Add an implementation agent only when 
 
 Use one independent reviewer for ordinary changes. Add a second reviewer when the Issue changes public/data contracts, security-sensitive code, or several subsystems. Reviewers must not edit, stage, commit, or run write-producing commands.
 
+For an Issue whose primary work is actual-data analysis or experiment design, use one dedicated data-science agent with `herdr-data-science` plus one read-only reviewer. Add a `herdr-implementation` agent only when repository implementation work exceeds the data-science scope. The data-science agent follows [`travel-data-scientist`](../../travel-data-scientist/SKILL.md), performs the pre-execution domain review before reading actual rows, and returns the structured handoff defined by that skill.
+
 ## Model and permission profile settings
 
-Use the requested models when the installed CLIs support them. Check current CLI help if arguments have changed; do not silently substitute another model. The user-level `herdr-implementation` and `entry-readonly` permission profiles must exist. Select them with Codex `--config 'default_permissions="<profile>"'`. Do not combine permission profiles with legacy `sandbox_mode` or `sandbox_workspace_write` settings. The implementation profile extends `:workspace`; command network policy is defined by the selected user-level Codex permission profile and configuration. Its configuration includes a Herdr Unix socket rule, but CLI and MCP access must be checked independently. Its current writable root covers the entire `~/.herdr/worktrees`; it does not enforce per-worktree writes.
+Use the requested models when the installed CLIs support them. Check current CLI help if arguments have changed; do not silently substitute another model. The user-level `herdr-implementation`, `herdr-data-science`, and `entry-readonly` permission profiles must exist when their corresponding roles are required. Select them with Codex `--config 'default_permissions="<profile>"'`. Do not combine permission profiles with legacy `sandbox_mode` or `sandbox_workspace_write` settings. The implementation profile extends `:workspace`; command network policy is defined by the selected user-level Codex permission profile and configuration. Its configuration includes a Herdr Unix socket rule, but CLI and MCP access must be checked independently. Its current writable root covers the entire `~/.herdr/worktrees`; it does not enforce per-worktree writes.
 
 Codex implementer default:
 
@@ -94,6 +96,14 @@ herdr agent start implementer --kind codex --pane "$PANE_ID" -- \
 ```
 
 Do not use `--dangerously-bypass-approvals-and-sandbox` or `--dangerously-skip-permissions`.
+
+Data-science Codex agent:
+
+```bash
+herdr agent start <name> --kind codex --pane <pane-id> -- --config 'default_permissions="herdr-data-science"'
+```
+
+The `herdr-data-science` profile must allow write access to the confirmed Issue workspace root and read-only access to the Issue-approved external raw-data roots. Machine-specific paths belong only in the user's Codex configuration; see [`docs/data/data-science-agent.md`](../../../docs/data/data-science-agent.md). Do not combine the permission profile with legacy sandbox keys and do not broaden the profile when an approved raw root cannot be resolved.
 
 Read-only Codex reviewer:
 
@@ -117,6 +127,8 @@ If either required permission profile is unavailable, or Herdr cannot create or 
 ## Handoff prompts
 
 Give the implementation agent the Issue link/number, repository instructions, acceptance criteria, non-goals, branch/worktree, assigned files, validation plan, and a requirement to report changed files and command results. Tell it to make only in-scope changes and own all repository mutations, including implementation, tests, and review fixes. It may stage and commit only if Issue or user authorization permits; it may push or create/update a PR only when explicitly authorized. It must never merge without separate authorization. The entry coordinator remains read-only for repository contents and delegates any authorized delivery mutations to this same implementation agent.
+
+For a data-science agent, include the Issue, analysis question, allowed datasets/roles, applicable data contract, privacy requirements, and a requirement to complete the domain-alignment review before actual-data execution. Require the handoff to separate observed facts, interpretation, unresolved limitations, and next decisions, and never include raw local paths or row-level values.
 
 Prompt reviewers with the Issue, acceptance criteria, full base-to-HEAD diff, and relevant repository instructions. Require findings in this form:
 
