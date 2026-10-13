@@ -2,17 +2,28 @@
 
 This repository provides a small stdio MCP server that you register in your user-level Codex config (`~/.codex/config.toml`). It uses Python's standard library, Git for read-only worktree checks, and the installed `herdr` CLI. User-level registration keeps machine-specific paths out of version control.
 
-The bridge exposes three no-argument, read-only tools and two narrowly scoped teardown tools:
+The bridge exposes three no-argument, read-only tools, one narrowly scoped data-science startup tool, and two narrowly scoped teardown tools:
 
 - `herdr_server_status` — server status and version fields.
 - `herdr_workspace_list` — workspace IDs, labels, and focused state.
 - `herdr_agent_list` — agent name, lifecycle status, and pane/workspace/tab IDs.
+- `herdr_data_science_agent_start(workspace_id)` — verifies one existing Issue-linked worktree, creates one non-focused pane in that checkout, and starts `data-scientist` with the fixed `herdr-data-science` profile.
 - `herdr_worktree_remove(workspace_id)` — removes one clean Herdr-linked Git worktree without force.
 - `herdr_workspace_close(workspace_id)` — closes one eligible plain workspace or linked-worktree session with verified caller identity, using Herdr 0.9.0+'s guarded single-ID close. Closing a linked session preserves its Git worktree.
 
-The teardown input schema requires exactly one string `workspace_id` and rejects extra properties. The bridge invokes fixed `herdr` argument arrays, sets `HERDR_ENV=1`, and uses an eight-second timeout. It does not accept arbitrary commands, arguments, raw socket requests, force options, arbitrary paths, or pane controls. It does not change sandbox permissions. Treat the local MCP tool surface as a separate capability surface from direct shell commands.
+All mutation tools require exactly one string `workspace_id` and reject extra properties. The bridge invokes fixed `herdr` argument arrays, sets `HERDR_ENV=1`, and uses an eight-second timeout. The startup tool parses Herdr JSON inside Python; it does not require `jq` or a shell pipeline. It does not accept arbitrary commands, Codex profiles, raw socket requests, force options, arbitrary paths, pane IDs, or pane-control arguments. It does not change sandbox permissions. Treat the local MCP tool surface as a separate capability surface from direct shell commands.
 
-The read-only list tools return an object with an `items` array in both MCP `structuredContent` and JSON text content; the status tool returns its filtered fields as an object. Successful teardown results identify the requested workspace and report whether removal/closure occurred or the target was already absent.
+The read-only list tools return an object with an `items` array in both MCP `structuredContent` and JSON text content; the status tool returns its filtered fields as an object. Successful startup results contain only the target workspace ID, new pane ID, fixed agent name/profile, and started flag; they do not return the linked worktree path. Successful teardown results identify the requested workspace and report whether removal/closure occurred or the target was already absent.
+
+## Data-science startup safety boundary
+
+`herdr_data_science_agent_start` is intentionally not a generic Herdr launcher. The caller supplies only the target `workspace_id`. The bridge resolves exactly one linked worktree owned by that workspace, rejects `dev` and `main`, and cross-checks the absolute checkout path and branch against Git before any pane or agent mutation.
+
+The bridge reads the target workspace's pane inventory, splits exactly one new pane from a deterministic existing pane with `--no-focus`, sets that pane's cwd to the verified linked worktree, and identifies the new pane by before/after inventory rather than by parsing with `jq`. If zero or multiple new panes appear, or the readback pane is attached to a different workspace/cwd, the agent is not started.
+
+Agent startup uses a fixed argument array equivalent to `herdr agent start data-scientist --kind codex --pane <verified-new-pane> -- --config 'default_permissions="herdr-data-science"'`. The tool never accepts a caller-supplied profile or sandbox override. After startup, agent inventory must contain exactly one `data-scientist` in the requested workspace and new pane with a normal lifecycle state. Failed startup is reported as failure and must not be retried through a broader/unrestricted shell route.
+
+The tool refuses the coordinator's own workspace, a focused target workspace, an active/blocked/unknown target agent, a missing or ambiguous linked worktree, and an already-named `data-scientist` in the target workspace. It preserves the previously focused workspace around pane/agent mutations. If a pane split succeeds but a later validation or agent-start step fails, the tool reports failure rather than hiding it; cleanup is a separate guarded operation.
 
 ## Teardown safety boundary
 

@@ -78,10 +78,10 @@ class MCPProtocolTests(unittest.TestCase):
         self.assertIsNone(_recognized_herdr_unavailability("herdr: command not found"))
         self.assertIsNone(_recognized_herdr_unavailability("configuration error: invalid socket path"))
 
-    def test_tools_list_has_two_strict_workspace_id_schemas(self) -> None:
+    def test_tools_list_has_three_strict_workspace_id_schemas(self) -> None:
         response = bridge._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in response["result"]["tools"]}
-        for name in ("herdr_worktree_remove", "herdr_workspace_close"):
+        for name in ("herdr_data_science_agent_start", "herdr_worktree_remove", "herdr_workspace_close"):
             self.assertEqual(
                 tools[name]["inputSchema"],
                 {
@@ -98,6 +98,19 @@ class MCPProtocolTests(unittest.TestCase):
                 {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "herdr_worktree_remove", "arguments": args}}
             )
             self.assertTrue(response["result"]["isError"])
+
+        response = bridge._handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "herdr_data_science_agent_start",
+                    "arguments": {"workspace_id": "target", "profile": "unrestricted"},
+                },
+            }
+        )
+        self.assertTrue(response["result"]["isError"])
 
     def test_disposable_source_cleanup_requires_target_gone_and_source_agent_free(self) -> None:
         with tempfile.TemporaryDirectory(prefix="herdr-source-cleanup-") as temp_dir:
@@ -314,6 +327,153 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
                 git_worktrees_before,
             )
             self.assertEqual(bridge._git_status_snapshot([str(repo), str(linked_path)]), git_status_before)
+
+
+class DataScienceStartupTests(unittest.TestCase):
+    def test_startup_uses_verified_worktree_new_pane_and_fixed_profile(self) -> None:
+        workspace = {"workspace_id": "target", "focused": False}
+        all_workspaces = [
+            {"workspace_id": "caller", "focused": True},
+            workspace,
+        ]
+        linked_worktree = {
+            "path": "/verified/worktree",
+            "branch": "agent/57-hotfix",
+            "is_linked_worktree": True,
+            "open_workspace_id": "target",
+        }
+        panes_before = [
+            {"pane_id": "target:p1", "workspace_id": "target", "cwd": "/verified/worktree"}
+        ]
+        panes_after = [
+            *panes_before,
+            {"pane_id": "target:p2", "workspace_id": "target", "cwd": "/verified/worktree"},
+        ]
+        agents_after = [
+            {
+                "name": "data-scientist",
+                "workspace_id": "target",
+                "pane_id": "target:p2",
+                "agent_status": "working",
+            }
+        ]
+
+        with patch.object(bridge, "_caller_workspace_id", return_value="caller"), patch.object(
+            bridge, "_workspace_context", return_value=(workspace, all_workspaces, [])
+        ), patch.object(bridge, "_worktrees_for", return_value=[linked_worktree]), patch.object(
+            bridge, "_assert_startup_linked_worktree", return_value="/verified/worktree"
+        ) as verify_worktree, patch.object(
+            bridge, "_panes_for", side_effect=[panes_before, panes_after]
+        ), patch.object(
+            bridge, "_assert_caller_context_unchanged"
+        ) as caller_guard, patch.object(
+            bridge, "_run_herdr_json"
+        ) as herdr_call, patch.object(
+            bridge, "_restore_focus"
+        ) as restore_focus, patch.object(
+            bridge, "_collection", return_value=agents_after
+        ) as inventory:
+            result = bridge._start_data_science_agent("target")
+
+        verify_worktree.assert_called_once_with("target", linked_worktree)
+        self.assertEqual(
+            herdr_call.call_args_list,
+            [
+                call(
+                    [
+                        "pane",
+                        "split",
+                        "--pane",
+                        "target:p1",
+                        "--direction",
+                        "right",
+                        "--cwd",
+                        "/verified/worktree",
+                        "--no-focus",
+                    ]
+                ),
+                call(
+                    [
+                        "agent",
+                        "start",
+                        "data-scientist",
+                        "--kind",
+                        "codex",
+                        "--pane",
+                        "target:p2",
+                        "--",
+                        "--config",
+                        'default_permissions="herdr-data-science"',
+                    ]
+                ),
+            ],
+        )
+        self.assertEqual(caller_guard.call_count, 2)
+        self.assertEqual(restore_focus.call_count, 2)
+        inventory.assert_called_once_with(["agent", "list"], "agents")
+        self.assertEqual(
+            result,
+            {
+                "workspace_id": "target",
+                "pane_id": "target:p2",
+                "agent_name": "data-scientist",
+                "profile": "herdr-data-science",
+                "started": True,
+            },
+        )
+        self.assertNotIn("worktree", result)
+
+    def test_startup_rejects_protected_branch_before_git_checks(self) -> None:
+        worktree = {
+            "path": "/verified/worktree",
+            "branch": "dev",
+            "is_linked_worktree": True,
+            "open_workspace_id": "target",
+        }
+        with patch.object(bridge, "_git") as git_call, self.assertRaisesRegex(
+            RuntimeError, "dev or main"
+        ):
+            bridge._assert_startup_linked_worktree("target", worktree)
+        git_call.assert_not_called()
+
+    def test_startup_refuses_ambiguous_new_pane_before_agent_start(self) -> None:
+        workspace = {"workspace_id": "target", "focused": False}
+        all_workspaces = [
+            {"workspace_id": "caller", "focused": True},
+            workspace,
+        ]
+        linked_worktree = {
+            "path": "/verified/worktree",
+            "branch": "agent/57-hotfix",
+            "is_linked_worktree": True,
+            "open_workspace_id": "target",
+        }
+        panes_before = [
+            {"pane_id": "target:p1", "workspace_id": "target", "cwd": "/verified/worktree"}
+        ]
+        panes_after = [
+            *panes_before,
+            {"pane_id": "target:p2", "workspace_id": "target", "cwd": "/verified/worktree"},
+            {"pane_id": "target:p3", "workspace_id": "target", "cwd": "/verified/worktree"},
+        ]
+
+        with patch.object(bridge, "_caller_workspace_id", return_value="caller"), patch.object(
+            bridge, "_workspace_context", return_value=(workspace, all_workspaces, [])
+        ), patch.object(bridge, "_worktrees_for", return_value=[linked_worktree]), patch.object(
+            bridge, "_assert_startup_linked_worktree", return_value="/verified/worktree"
+        ), patch.object(
+            bridge, "_panes_for", side_effect=[panes_before, panes_after]
+        ), patch.object(
+            bridge, "_assert_caller_context_unchanged"
+        ), patch.object(
+            bridge, "_run_herdr_json"
+        ) as herdr_call, patch.object(
+            bridge, "_restore_focus"
+        ), self.assertRaisesRegex(RuntimeError, "exactly one new Herdr pane"):
+            bridge._start_data_science_agent("target")
+
+        self.assertEqual(herdr_call.call_count, 1)
+        self.assertEqual(herdr_call.call_args.args[0][:2], ["pane", "split"])
 
 
 class WorkspaceCloseVersionTests(unittest.TestCase):

@@ -35,3 +35,7 @@ htmlcov/
 
 # Notebook runtime artifacts
 .ipynb_checkpoints/
+
+# Node.js / TypeScript tooling
+node_modules/
+*.tsbuildinfo

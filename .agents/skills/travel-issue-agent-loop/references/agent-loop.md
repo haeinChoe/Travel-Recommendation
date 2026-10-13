@@ -2,7 +2,7 @@
 
 Read this reference when running the Issue-to-PR loop.
 
-The session receiving the user's request is the **entry coordinator**, launched with the user-level `entry-readonly` permission profile, and read-only for repository contents. This profile extends built-in `:read-only`; command network policy is defined by the selected user-level Codex permission profile and configuration. Its configuration includes a Herdr Unix socket rule, but CLI and MCP access must be checked independently. The coordinator inspects scope and state, plans, performs explicitly authorized Herdr orchestration, relays user and reviewer revision requests to the existing implementation agent, and verifies returned diffs and evidence read-only. It must not edit, test, fix, stage, commit, push, or create/update a PR in the repository. A separate **implementation agent** owns all repository mutations in its assigned worktree, subject to Issue and user authorization. **Review agents** are read-only. These profiles do not provide per-worktree filesystem isolation.
+The session receiving the user's request is the **entry coordinator**, launched with the user-level `entry-readonly` permission profile, and read-only for repository contents. This profile extends built-in `:read-only`; command network policy is defined by the selected user-level Codex permission profile and configuration. Its configuration includes a Herdr Unix socket rule, but CLI and MCP access must be checked independently. The coordinator inspects scope and state, plans, performs explicitly authorized Herdr orchestration, relays user and reviewer revision requests to the existing assigned writer, and verifies returned diffs and evidence read-only. It must not edit, test, fix, stage, commit, push, or create/update a PR in the repository. A separate **writer agent** owns mutable work and specialized execution in its assigned worktree, subject to Issue and user authorization. Use `herdr-implementation` for implementation work that does not require actual-data reads. Any actual-data read must be delegated to the dedicated `herdr-data-science` writer, even when the request is a read-only diagnostic and no repository file changes are needed. This includes file existence/counts, directory structure, provenance/role mapping, and schema/header inspection against approved raw/TL/VL inputs. The entry coordinator may inspect Issue and repository documentation, but it must not perform those raw-data checks itself. **Review agents** are read-only. These profiles do not provide per-worktree filesystem isolation.
 
 ## Reuse before creating
 
@@ -44,9 +44,9 @@ herdr worktree create --workspace "$WORKSPACE_ID" \
   --branch "agent/<N>-<slug>" --base dev --label "issue-<N>" --no-focus
 ```
 
-Omit `--path` to use Herdr's configured worktree root and branch-derived directory name. Before starting any writer, verify the returned path is inside the allowed write roots of the `herdr-implementation` profile. If it is outside, stop before agent startup and identify the configuration boundary. Do not silently select, relocate, or synthesize a custom path.
+Omit `--path` to use Herdr's configured worktree root and branch-derived directory name. Before starting any writer, verify the returned path is inside the allowed write roots of the selected writer profile (`herdr-implementation` or `herdr-data-science`). If it is outside, stop before agent startup and identify the configuration boundary. Do not silently select, relocate, or synthesize a custom path.
 
-The Herdr MCP bridge provides read-only inspection plus narrowly scoped, explicitly authorized teardown tools. Use the existing authorized Herdr orchestration path for general workspace or worktree creation, agent start or prompts, and pane control. Use `herdr_worktree_remove` and `herdr_workspace_close` only for cleanup authorized by the user or Issue and only with the safeguards below; these tools do not authorize other Herdr mutations.
+The Herdr MCP bridge provides read-only inspection, a guarded `herdr_data_science_agent_start(workspace_id)` mutation, and narrowly scoped teardown tools. When a data-science writer is needed and this startup tool is available, use it instead of manually composing `pane split` and `agent start`; the bridge validates the linked worktree, fixes the profile to `herdr-data-science`, and verifies the resulting agent inventory. If the startup tool returns an error, do not bypass it through ordinary-shell Herdr CLI. Use the existing authorized Herdr orchestration path for general workspace/worktree creation, implementation/reviewer agent start or prompts, and data-science startup only when the dedicated startup tool is genuinely unavailable. Use `herdr_worktree_remove` and `herdr_workspace_close` only for cleanup authorized by the user or Issue and only with the safeguards below; these tools do not authorize other Herdr mutations.
 
 Use the worktree returned by Herdr for the implementation branch. Confirm its branch, base, and clean state before starting agents. Pane inventory is not a mandatory preflight: prefer a pane returned by the authorized orchestration flow; if none is available, create or split one explicitly for the confirmed Issue worktree with `--no-focus`. Do not call `pane list` merely to discover a usable pane, and do not call `pane current --current` only to reconfirm already-set caller context. Start agents only in returned pane IDs and use unique names. Never start two agents in one pane.
 
@@ -60,7 +60,7 @@ Direct Herdr CLI calls are orchestration commands, not ordinary repository comma
 4. `pane list` and `pane current --current` are optional discovery commands, not mandatory Issue-start checks.
 5. When a fallback CLI command needs a repository target, pass it explicitly with `--cwd "$REPO_ROOT"` or the documented equivalent while keeping the coordinator in its approved orchestration context.
 6. Do not change shell cwd into `$REPO_ROOT` merely because a Herdr command accepts `--cwd "$REPO_ROOT"`.
-7. Before starting an implementation agent, validate that the worktree path returned by Herdr falls under the writable roots of the `herdr-implementation` profile. Do not start the agent first and wait for an `EPERM` to discover the mismatch.
+7. Before starting a writer agent, validate that the worktree path returned by Herdr falls under the writable roots of the selected writer profile (`herdr-implementation` or `herdr-data-science`). Do not start the agent first and wait for an `EPERM` to discover the mismatch.
 8. Implementation commands run only in the exact Herdr-returned worktree. Never guess, move, synthesize, or substitute another path as a recovery mechanism.
 9. An `EPERM` from an invalid boundary, unnecessary optional discovery, or an ordinary-sandbox attempt of a command whose approved first-attempt route is already defined is an orchestration defect. Do not retry the denied invocation; correct the execution boundary and continue only through an authorized route. Use the already-defined approved route only if it has not yet been attempted.
 10. Treat the failure as an Issue-level blocker only when the workflow requires that Herdr capability and it remains unavailable through every authorized route. If the approved required invocation is rejected or still returns `EPERM`, stop and report that blocker.
@@ -72,9 +72,11 @@ Use one implementation writer by default. Add an implementation agent only when 
 
 Use one independent reviewer for ordinary changes. Add a second reviewer when the Issue changes public/data contracts, security-sensitive code, or several subsystems. Reviewers must not edit, stage, commit, or run write-producing commands.
 
+Whenever an Issue requires any approved actual-data read, use one dedicated data-science agent with `herdr-data-science`. A simple read-only smoke or metadata/provenance inspection that makes no repository changes and does not require experiment/contract judgment does not require a reviewer by default. Add a read-only reviewer when the task interprets experiment evidence, changes or validates a data/evaluation contract, includes repository mutations, is high risk, or the Issue/user explicitly requires independent review. Add a `herdr-implementation` agent only when repository implementation work exceeds the data-science scope. The data-science agent follows [`travel-data-scientist`](../../travel-data-scientist/SKILL.md), performs the pre-execution domain review before reading actual rows, and returns the structured handoff defined by that skill.
+
 ## Model and permission profile settings
 
-Use the requested models when the installed CLIs support them. Check current CLI help if arguments have changed; do not silently substitute another model. The user-level `herdr-implementation` and `entry-readonly` permission profiles must exist. Select them with Codex `--config 'default_permissions="<profile>"'`. Do not combine permission profiles with legacy `sandbox_mode` or `sandbox_workspace_write` settings. The implementation profile extends `:workspace`; command network policy is defined by the selected user-level Codex permission profile and configuration. Its configuration includes a Herdr Unix socket rule, but CLI and MCP access must be checked independently. Its current writable root covers the entire `~/.herdr/worktrees`; it does not enforce per-worktree writes.
+Use the requested models when the installed CLIs support them. Check current CLI help if arguments have changed; do not silently substitute another model. The user-level `herdr-implementation`, `herdr-data-science`, and `entry-readonly` permission profiles must exist when their corresponding roles are required. Select them with Codex `--config 'default_permissions="<profile>"'`. Do not combine permission profiles with legacy `sandbox_mode` or `sandbox_workspace_write` settings. The implementation profile extends `:workspace`; command network policy is defined by the selected user-level Codex permission profile and configuration. Its configuration includes a Herdr Unix socket rule, but CLI and MCP access must be checked independently. Its current writable root covers the entire `~/.herdr/worktrees`; it does not enforce per-worktree writes.
 
 Codex implementer default:
 
@@ -95,6 +97,16 @@ herdr agent start implementer --kind codex --pane "$PANE_ID" -- \
 
 Do not use `--dangerously-bypass-approvals-and-sandbox` or `--dangerously-skip-permissions`.
 
+Data-science Codex agent fallback (use only when the guarded MCP startup tool is unavailable):
+
+```bash
+herdr agent start <name> --kind codex --pane <pane-id> -- --config 'default_permissions="herdr-data-science"'
+```
+
+Preferred path when the registered bridge exposes it: call `herdr_data_science_agent_start(workspace_id)`. Do not add caller-supplied profile/path/pane arguments around this tool, and do not retry a tool refusal through ordinary-shell CLI.
+
+The `herdr-data-science` profile must allow write access to the confirmed Issue workspace root and read-only access to the Issue-approved external raw-data roots. Machine-specific paths belong only in the user's Codex configuration; see [`docs/data/data-science-agent.md`](../../../../docs/data/data-science-agent.md). Do not combine the permission profile with legacy sandbox keys and do not broaden the profile when an approved raw root cannot be resolved.
+
 Read-only Codex reviewer:
 
 ```bash
@@ -112,11 +124,13 @@ herdr agent start reviewer --kind codex --pane "$PANE_ID" -- \
   --config 'default_permissions="entry-readonly"'
 ```
 
-If either required permission profile is unavailable, or Herdr cannot create or start the required implementation agent, report the exact blocker and stop. Do not silently substitute an unrestricted/default writer or take over in the entry session. If an installed model or setting is unavailable, follow the repository's approved model fallback without changing the required profile.
+If a permission profile required by the selected role is unavailable, or Herdr cannot create or start the required writer agent, report the exact blocker and stop. Do not silently substitute an unrestricted/default writer or take over in the entry session. If an installed model or setting is unavailable, follow the repository's approved model fallback without changing the required profile.
 
 ## Handoff prompts
 
-Give the implementation agent the Issue link/number, repository instructions, acceptance criteria, non-goals, branch/worktree, assigned files, validation plan, and a requirement to report changed files and command results. Tell it to make only in-scope changes and own all repository mutations, including implementation, tests, and review fixes. It may stage and commit only if Issue or user authorization permits; it may push or create/update a PR only when explicitly authorized. It must never merge without separate authorization. The entry coordinator remains read-only for repository contents and delegates any authorized delivery mutations to this same implementation agent.
+Give the assigned writer the Issue link/number, repository instructions, acceptance criteria, non-goals, branch/worktree, assigned scope, validation plan, and a requirement to report changed files and command results. Tell it to make only in-scope changes and own its authorized repository mutations, tests/analysis, and review fixes. It may stage and commit only if Issue or user authorization permits; it may push or create/update a PR only when explicitly authorized. It must never merge without separate authorization. The entry coordinator remains read-only for repository contents and delegates any authorized delivery mutations to this same assigned writer.
+
+For a data-science agent, include the Issue, analysis question, allowed datasets/roles, applicable data contract, privacy requirements, and a requirement to complete the domain-alignment review before actual-data execution. Require the handoff to separate observed facts, interpretation, unresolved limitations, and next decisions, and never include raw local paths or row-level values.
 
 Prompt reviewers with the Issue, acceptance criteria, full base-to-HEAD diff, and relevant repository instructions. Require findings in this form:
 
@@ -125,17 +139,17 @@ Prompt reviewers with the Issue, acceptance criteria, full base-to-HEAD diff, an
 - Concrete failure or unmet acceptance criterion
 - Evidence and a focused correction
 
-Explicitly instruct reviewers to remain read-only and report no findings when none exist. Start each Codex reviewer with `--config 'default_permissions="entry-readonly"'`; the profile must be available and read-only review access comes from that configured profile, not from a sandbox flag alone. Send tasks and findings through Herdr, for example `herdr agent prompt implementer "<scoped implementation task>" --wait` and `herdr agent prompt reviewer "<read-only review task>" --wait`. After review, relay each actionable finding and any user-requested revision to the existing implementation agent with a focused fix request, then obtain a fresh reviewer response. The entry coordinator does not apply fixes. Inspect `agent get`/`agent read` if a wait fails or an agent is blocked.
+Explicitly instruct reviewers to remain read-only and report no findings when none exist. Start each Codex reviewer with `--config 'default_permissions="entry-readonly"'`; the profile must be available and read-only review access comes from that configured profile, not from a sandbox flag alone. Send tasks and findings through Herdr, for example `herdr agent prompt implementer "<scoped implementation task>" --wait` and `herdr agent prompt reviewer "<read-only review task>" --wait`. After review, relay each actionable finding and any user-requested revision to the existing assigned writer with a focused fix request, then obtain a fresh reviewer response. The entry coordinator does not apply fixes. Inspect `agent get`/`agent read` if a wait fails or an agent is blocked.
 
 ## Review and completion loop
 
-1. Wait for the implementation agent to settle; inspect its status, full diff, and validation evidence read-only as coordinator.
+1. Wait for the assigned writer to settle; inspect its status, full diff, and validation evidence read-only as coordinator.
 2. Start or prompt the reviewer after the diff is ready.
-3. Relay each in-scope actionable finding to the existing implementation agent. Ask it for a correction and evidence; do not ask the user to mediate or apply the fix in the coordinator session.
-4. Have the implementation agent run relevant validation and request a fresh review of the changed diff. Verify the returned evidence. Repeat up to three rounds.
+3. Relay each in-scope actionable finding to the existing assigned writer. Ask it for a correction and evidence; do not ask the user to mediate or apply the fix in the coordinator session.
+4. Have the assigned writer run relevant validation and request a fresh review of the changed diff. Verify the returned evidence. Repeat up to three rounds.
 5. Treat unresolved blocker/high findings or failed required validation as a stop condition. Medium/low suggestions that do not violate acceptance criteria may be recorded as limitations.
 6. Before delivery, inspect repository state read-only: verify all modified files are within Issue scope, the base is `dev`, and no required validation was skipped. If changes are already committed, verify the commit contents and confirm the worktree is clean before push. Report the pre-push summary to the user, including commit log when applicable, changed files, validation results, and remaining limitations. This is informational when delivery is already authorized; do not wait for another reply.
-7. If local commit permission is allowed, delegate staging and commit to the same implementation agent. If push and PR permission is explicitly authorized, delegate pushing only the Issue branch and creating or updating its PR to that same agent. Never push directly to `dev` or `main`; never merge without separate authorization. Before PR creation/update, the coordinator reads the target repository's instructions and applicable PR template and passes their conventions to the implementation agent. If a PR already exists for the branch, update it instead of creating a duplicate. Inspect the resulting repository state and PR body read-only against those conventions.
+7. If local commit permission is allowed, delegate staging and commit to the same assigned writer. If push and PR permission is explicitly authorized, delegate pushing only the Issue branch and creating or updating its PR to that same agent. Never push directly to `dev` or `main`; never merge without separate authorization. Before PR creation/update, the coordinator reads the target repository's instructions and applicable PR template and passes their conventions to the assigned writer. If a PR already exists for the branch, update it instead of creating a duplicate. Inspect the resulting repository state and PR body read-only against those conventions.
 
 If Herdr reports an agent as blocked, inspect its state and output before sending anything. Continue only when the request is clearly within the Issue authorization; stop on approval requests outside that scope. Never answer a security or data-permission prompt by guessing.
 ## Authorized Issue workspace cleanup
