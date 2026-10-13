@@ -61,6 +61,20 @@ push·PR 권한이 선택된 Issue를 사용자가 작업 대상으로 지정하
 
 API Key 발급, 이용 조건 동의, 데이터셋 승인 신청·승인 대행, 유료 리소스 사용, 제3자 서비스로 원본 전송, 자격 증명 변경은 이 선택값에 포함되지 않는다. 이 행위는 사용자의 별도 명시적 지시가 필요하다. MCP는 메타데이터 탐색에만 사용하고 파일 다운로드에 사용하지 않는다. 세부 절차는 docs/data/aihub-workflow.md를 따른다.
 
+## 데이터 사이언티스트 에이전트 역할
+
+실제 데이터의 반복 분석이나 추천 실험 설계가 중심인 Issue는 저장소의 `travel-data-scientist` skill을 적용하고 `herdr-data-science` 권한 프로필을 사용하는 전담 에이전트에 맡긴다.
+
+- 분석 전에 제품 질문, 예측 시점, user/trip context/item/interaction/feedback 역할, label, feature, split/cohort, baseline, metric이 서로 정렬되는지 확인한다.
+- 방문 같은 implicit interaction은 관측 positive가 될 수 있지만 미관측 item을 자동 negative로 해석하지 않는다. negative sampling과 exposure 가정은 실험별로 명시한다.
+- classification, retrieval, ranking을 구분하며 추천 ranking 질문을 일반 classification accuracy만으로 결론내리지 않는다.
+- 방문 후 feedback과 추천 시점 feature를 구분하고 동일 trip/user/item 및 시간 기준 leakage를 검토한다.
+- 기존 Issue나 문서의 실험 정의도 제품 목표와 어긋나면 그대로 실행하지 않고 차이, 영향, 더 직접적인 대안을 먼저 보고한다.
+- raw data는 Issue가 승인한 범위에서 read-only로 다루고, raw path·identifier·row·좌표·자유 텍스트를 Git/Issue/PR/log에 남기지 않는다.
+- 데이터 분석 범위를 넘어서는 구현 변경은 `herdr-implementation` 에이전트에 handoff한다. 필요한 profile이 없으면 더 넓은 profile로 대체하지 않는다.
+
+상세 역할, Codex profile 계약, handoff 형식은 [`data/data-science-agent.md`](data/data-science-agent.md)를 따른다.
+
 ## 브랜치와 작업 트리
 
 - Issue별 전용 작업 브랜치를 사용하고 dev에서 분기한다.
