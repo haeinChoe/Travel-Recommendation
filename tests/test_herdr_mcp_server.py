@@ -1599,6 +1599,41 @@ class TeardownSafetyTests(unittest.TestCase):
             (
                 ["pane", "current", "--current"],
                 "caller pane resolution",
+                "caller pane unavailable",
+                '{"error":{"code":"pane_not_found","message":"pane not found"},"id":"cli:pane:current"}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                '{"error":{"code":"pane_not_found","message":"workspace not found"},"id":"cli:pane:current"}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                '{"error":{"code":"not_found","message":"Pane not found"},"id":"cli:pane:current"}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                '{"error":{"code":["pane_not_found"],"message":"pane not found"},"id":"cli:pane:current"}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                '{"error":{"code":{"value":"pane_not_found"},"message":"pane not found"},"id":"cli:pane:current"}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
                 "CLI command failed",
                 '{"id":"cli:pane:current","error":{"code":"not_found","message":"workspace not found"}}',
                 1,
@@ -1615,6 +1650,13 @@ class TeardownSafetyTests(unittest.TestCase):
                 "workspace inventory read",
                 "CLI command failed",
                 '{"id":"cli:pane:current","error":{"code":"not_found","message":"pane not found"}}',
+                1,
+            ),
+            (
+                ["workspace", "list"],
+                "workspace inventory read",
+                "CLI command failed",
+                '{"error":{"code":"pane_not_found","message":"pane not found"},"id":"cli:pane:current"}',
                 1,
             ),
         )
@@ -1647,7 +1689,7 @@ class TeardownSafetyTests(unittest.TestCase):
         raw_output = " ".join(sensitive_values)
         error_document = {
             "id": f"cli:pane:current:{raw_output}",
-            "error": {"code": "not_found", "message": "pane not found"},
+            "error": {"code": "pane_not_found", "message": "pane not found"},
             "details": raw_output,
         }
         with patch.dict(os.environ, {"HERDR_PANE_ID": "caller-pane"}, clear=True), patch.object(
