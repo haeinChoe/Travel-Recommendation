@@ -109,10 +109,14 @@ data-science agent는 실제 분석보다 먼저 다음을 확인한다.
 저장소에서 자동 검증 가능한 항목:
 
 ```bash
-python3 -m unittest tests.test_data_scientist_skill_docs -v
+nvm use
+npm install
+npm test
 python3 -m unittest tests.test_agent_loop_cleanup_docs -v
 git diff --check
 ```
+
+Node 기반 agent tooling은 Node 24 LTS를 사용하며 `.nvmrc`와 `package.json#engines`로 기준을 고정한다. `npm test`는 TypeScript `tsc --noEmit` typecheck 후 Node 내장 `node:test`로 data-scientist 계약 회귀 테스트를 실행한다.
 
 로컬 Herdr/Codex 환경에서 별도로 확인할 항목:
 
