@@ -24,7 +24,9 @@ def _worktree(path: str, workspace_id: str = "target", branch: str = "feature") 
 
 def _recognized_herdr_unavailability(stderr: str) -> str | None:
     normalized = stderr.casefold()
-    if "operation not permitted" in normalized or "herdr socket access denied" in normalized:
+    if "socket" in normalized and any(
+        marker in normalized for marker in ("operation not permitted", "permission denied", "eperm", "eacces")
+    ):
         return "Herdr socket access was denied (EPERM)"
     if any(marker in normalized for marker in ("connection refused", "not connected", "server_not_running", "server is unavailable")):
         return "Herdr server/socket is unavailable"
@@ -68,7 +70,9 @@ def _assert_disposable_source_cleanup_safe(
 
 class MCPProtocolTests(unittest.TestCase):
     def test_real_integration_preflight_only_recognizes_socket_or_server_unavailable_errors(self) -> None:
-        self.assertEqual(_recognized_herdr_unavailability('Error: Os { message: "Operation not permitted" }'), "Herdr socket access was denied (EPERM)")
+        self.assertEqual(_recognized_herdr_unavailability("Herdr socket access denied: EPERM"), "Herdr socket access was denied (EPERM)")
+        self.assertIsNone(_recognized_herdr_unavailability("worktree: Operation not permitted"))
+        self.assertIsNone(_recognized_herdr_unavailability("checkout: permission denied (EACCES)"))
         self.assertEqual(_recognized_herdr_unavailability("server_not_running: connection refused"), "Herdr server/socket is unavailable")
         self.assertIsNone(_recognized_herdr_unavailability("error: unrecognized subcommand 'status'"))
         self.assertIsNone(_recognized_herdr_unavailability("herdr: command not found"))
@@ -1547,6 +1551,95 @@ class TeardownSafetyTests(unittest.TestCase):
         with patch.object(bridge.subprocess, "run", side_effect=subprocess.TimeoutExpired(["herdr"], 8)):
             with self.assertRaisesRegex(RuntimeError, "timed out"):
                 bridge._run_herdr_json(["workspace", "close", "target"])
+
+    def test_nonzero_cli_failure_reports_fixed_step_category_and_exit_status(self) -> None:
+        cases = (
+            (
+                ["workspace", "close", "private-workspace-id"],
+                "workspace close",
+                "Herdr refused to close a primary workspace (group close refused)",
+                "workspace_group_close_required",
+                1,
+            ),
+            (
+                ["worktree", "list", "--cwd", "/private/local/checkout"],
+                "checkout worktree inventory read",
+                "permission denied",
+                "Operation not permitted",
+                23,
+            ),
+            (
+                ["worktree", "list", "--cwd", "/private/local/checkout"],
+                "checkout worktree inventory read",
+                "permission denied",
+                "permission denied (EACCES)",
+                13,
+            ),
+            (
+                ["workspace", "list"],
+                "workspace inventory read",
+                "socket access denied (EPERM)",
+                "Herdr Unix socket access denied: EPERM",
+                1,
+            ),
+            (
+                ["workspace", "list"],
+                "workspace inventory read",
+                "CLI command failed",
+                "unclassified failure",
+                2,
+            ),
+        )
+        for command, operation, category, stderr, exit_status in cases:
+            with self.subTest(operation=operation), patch.object(
+                bridge.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    ["herdr"], exit_status, stdout="", stderr=stderr
+                ),
+            ):
+                with self.assertRaises(RuntimeError) as raised:
+                    bridge._run_herdr_json(command)
+            self.assertEqual(
+                str(raised.exception),
+                f"Herdr {operation} failed: {category} (exit status {exit_status})",
+            )
+            self.assertNotIn("private-workspace-id", str(raised.exception))
+            self.assertNotIn("/private/local/checkout", str(raised.exception))
+
+    def test_mcp_cli_failure_redacts_output_and_sensitive_identifiers(self) -> None:
+        sensitive_values = (
+            "/home/private-user/workspaces/secret-checkout",
+            "workspace-secret-123",
+            "pane-secret-456",
+            "credential-secret-token",
+            "private travel data",
+        )
+        raw_output = " ".join(sensitive_values)
+        with patch.object(
+            bridge.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                ["herdr"], 7, stdout=raw_output, stderr=f"Herdr socket access denied: EPERM {raw_output}"
+            ),
+        ):
+            response = bridge._handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 9,
+                    "method": "tools/call",
+                    "params": {"name": "herdr_workspace_list", "arguments": {}},
+                }
+            )
+
+        self.assertTrue(response["result"]["isError"])
+        diagnostic = response["result"]["content"][0]["text"]
+        self.assertEqual(
+            diagnostic,
+            "Herdr workspace inventory read failed: socket access denied (EPERM) (exit status 7)",
+        )
+        for sensitive in sensitive_values:
+            self.assertNotIn(sensitive, json.dumps(response))
 
     def test_mutation_and_failed_readback_are_errors(self) -> None:
         path = self._git_worktree()

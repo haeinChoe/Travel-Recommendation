@@ -106,6 +106,47 @@ def _filter_result(spec: dict[str, Any], document: Any) -> Any:
     return {"items": filtered}
 
 
+def _herdr_operation(command: list[str]) -> str:
+    """Return a fixed diagnostic label without including command arguments."""
+    if command == ["status", "server", "--json"]:
+        return "server status check"
+    if command == ["workspace", "list"]:
+        return "workspace inventory read"
+    if command == ["agent", "list"]:
+        return "agent inventory read"
+    if command == ["pane", "current", "--current"]:
+        return "caller pane resolution"
+    if len(command) == 3 and command[:2] == ["workspace", "focus"]:
+        return "focus restoration"
+    if len(command) == 4 and command[:3] == ["worktree", "list", "--workspace"]:
+        return "workspace worktree inventory read"
+    if len(command) == 4 and command[:3] == ["worktree", "list", "--cwd"]:
+        return "checkout worktree inventory read"
+    if len(command) == 3 and command[:2] == ["workspace", "close"]:
+        return "workspace close"
+    if len(command) == 4 and command[:3] == ["worktree", "remove", "--workspace"]:
+        return "linked worktree removal"
+    return "Herdr CLI step"
+
+
+def _herdr_failure_category(stderr: str) -> str:
+    normalized = stderr.casefold()
+    if "workspace_group_close_required" in normalized:
+        return "Herdr refused to close a primary workspace (group close refused)"
+    permission_denied = any(
+        marker in normalized for marker in ("operation not permitted", "permissiondenied", "eperm", "permission denied", "eacces")
+    )
+    if permission_denied and "socket" in normalized:
+        if any(marker in normalized for marker in ("operation not permitted", "permissiondenied", "eperm")):
+            return "socket access denied (EPERM)"
+        return "socket access denied (EACCES)"
+    if permission_denied:
+        return "permission denied"
+    if any(marker in normalized for marker in ("connection refused", "not connected", "server_not_running")):
+        return "Herdr server unavailable"
+    return "CLI command failed"
+
+
 def _run_herdr_json(command: list[str]) -> Any:
     environment = os.environ.copy()
     environment["HERDR_ENV"] = "1"
@@ -129,25 +170,11 @@ def _run_herdr_json(command: list[str]) -> Any:
         raise RuntimeError(f"Could not start the Herdr CLI ({exc.__class__.__name__})") from exc
 
     if completed.returncode != 0:
-        stderr = completed.stderr.casefold()
-        if "workspace_group_close_required" in stderr:
-            raise RuntimeError(
-                "Herdr refused to close a primary workspace with linked workspaces; "
-                "the bridge will not request a group close"
-            )
-        if "operation not permitted" in stderr or "permissiondenied" in stderr or "eperm" in stderr:
-            raise RuntimeError(
-                "Herdr socket access denied (EPERM) while the MCP bridge called the Herdr CLI; "
-                "diagnose this bridge execution path from its own returned error."
-            )
-        if "permission denied" in stderr or "eacces" in stderr:
-            raise RuntimeError(
-                "Herdr socket access denied (EACCES). Check socket ownership and sandbox access "
-                "from this same context."
-            )
-        if "connection refused" in stderr or "not connected" in stderr or "server_not_running" in stderr:
-            raise RuntimeError("Herdr server is unavailable; start or attach to a Herdr session, then retry")
-        raise RuntimeError(f"Herdr CLI failed with exit status {completed.returncode}")
+        operation = _herdr_operation(command)
+        category = _herdr_failure_category(completed.stderr)
+        raise RuntimeError(
+            f"Herdr {operation} failed: {category} (exit status {completed.returncode})"
+        )
 
     try:
         return json.loads(completed.stdout)
