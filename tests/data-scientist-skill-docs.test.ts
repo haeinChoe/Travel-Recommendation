@@ -152,6 +152,34 @@ test("data-science startup uses the guarded MCP path before CLI fallback", () =>
   ]);
 });
 
+test("explicit TL/VL bindings are validated instead of re-inferred from path names", () => {
+  assertContainsAll(dataScientistSkill, [
+    "Source-role binding vs validation",
+    "CAPITAL_TL",
+    "CAPITAL_VL",
+    "approved_capital_filekey_root",
+    "Do not reverse this order",
+    "A missing `TL_csv` or `VL_csv` token",
+    "export marker",
+  ]);
+
+  assertContainsAll(domainReview, [
+    "Source-role provenance review",
+    "Role binding",
+    "Role validation",
+    "capital:TL=...",
+    "CAPITAL_TL",
+    "directory names omit `TL_csv` / `VL_csv`",
+  ]);
+
+  assertContainsAll(profileGuide, [
+    "source-role binding",
+    "CAPITAL_TL",
+    "region-specific layout",
+    "역할을 바꿔 추측하지 말고",
+  ]);
+});
+
 test("permission profile keeps the least-privilege filesystem contract", () => {
   assertContainsAll(profileGuide, [
     "[permissions.herdr-data-science.filesystem]",

@@ -64,10 +64,13 @@ herdr agent start data-scientist --kind codex --pane "$PANE_ID" -- \
 1. Issue의 데이터 접근 권한과 분석 목적을 확인한다.
 2. `AGENTS.md`, `docs/data/aihub-workflow.md`, 관련 데이터 계약과 `travel-data-scientist` skill을 읽는다.
 3. 현재 프로세스의 승인된 경로 변수를 우선 사용한다.
-4. 변수가 없을 때만 허용된 위치에서 bounded discovery를 수행한다.
-5. 실제 row를 열기 전에 provenance, 이용 조건, region, TL/VL/Other 역할을 확인한다.
-6. raw root는 read-only로 사용하고 분석 결과는 승인된 ignored 위치에만 쓴다.
-7. raw path, identifier, row-level value, coordinate, free text를 공유 출력에 포함하지 않는다.
+4. `CAPITAL_TL` / `CAPITAL_VL`처럼 변수·Issue·CLI가 TL/VL 역할을 명시하면 그 값을 **source-role binding**으로 사용한다. 디렉터리 이름에서 TL/VL을 다시 추론하지 않는다.
+5. bound input은 저장소의 provenance 및 region-specific layout 계약으로 **validation**한다. 수도권 filekey export처럼 `TL_csv` / `VL_csv` 디렉터리명을 쓰지 않는 예외는 추천 분석 코드의 승인된 수도권 layout 검증과 동일한 계약을 따른다.
+6. binding과 layout/provenance가 충돌하면 역할을 바꿔 추측하지 말고 해당 입력을 conflict로 보고한다.
+7. 역할이 명시된 변수가 없을 때만 허용된 위치에서 bounded discovery를 수행한다.
+8. 실제 row를 열기 전에 provenance, 이용 조건, region, TL/VL/Other 역할 validation을 완료한다.
+9. raw root는 read-only로 사용하고 분석 결과는 승인된 ignored 위치에만 쓴다.
+10. raw path, identifier, row-level value, coordinate, free text를 공유 출력에 포함하지 않는다.
 
 ## 실행 전 도메인 gate
 
