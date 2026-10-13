@@ -11,7 +11,7 @@ The Codex session that receives the user's request is the **entry coordinator**,
 
 ## Skill preflight
 
-Before using any specialized workflow or tool, inspect the skill catalog available in the current session and read the full `SKILL.md` for every applicable skill, including its referenced resources. Issue/PR work requires both this repository's `travel-issue-agent-loop` skill and the global `herdr` skill. Resolve the global skill through the current session catalog; do not assume or hardcode a global filesystem location. Follow both skills before any Herdr action. If an applicable skill is missing from the catalog, search the available skill roots as instructed by the session; stop only if a required skill cannot be found or read.
+Before using any specialized workflow or tool, inspect the skill catalog available in the current session and read the full `SKILL.md` for every applicable skill, including its referenced resources. Issue/PR work requires both this repository's `travel-issue-agent-loop` skill and the global `herdr` skill. Actual-data analysis, recommendation experiment design, or repeated dataset inspection additionally requires the repository-local `travel-data-scientist` skill. Resolve the global skill through the current session catalog; do not assume or hardcode a global filesystem location. Follow both skills before any Herdr action. If an applicable skill is missing from the catalog, search the available skill roots as instructed by the session; stop only if a required skill cannot be found or read.
 
 ## Data-root preflight
 
@@ -63,6 +63,20 @@ Choose the number of agents to fit the task:
 - Broad or high-risk Issue: a lead plus independent implementers in separate worktrees, and one or two reviewers.
 
 Use Codex as the default implementation agent with the user-level `herdr-implementation` permission profile; start every Codex reviewer with `entry-readonly`. These named profiles must exist in the user's Codex configuration. The implementation profile extends `:workspace`; command network policy is defined by the selected user-level Codex permission profile and configuration. Its configuration includes a Herdr Unix socket rule; check CLI and MCP access independently. Its current writable root covers the entire `~/.herdr/worktrees`, so it does not enforce per-worktree writes. If either required profile is unavailable, report the exact blocker and stop; do not silently use an unrestricted/default writer or take over in the entry session. Select profiles through Codex `--config 'default_permissions="<profile>"'`; do not combine them with legacy `sandbox_mode` or `sandbox_workspace_write`. Detailed Herdr commands, model settings, and handoff prompts are in [references/agent-loop.md](references/agent-loop.md).
+
+## Data-science routing
+
+When the selected Issue requires actual-data analysis or asks whether a recommendation experiment is well-posed, route that work to a dedicated data-science agent and require the local [`travel-data-scientist` skill](../travel-data-scientist/SKILL.md).
+
+- Start the data-science agent with the user-level `herdr-data-science` permission profile. Do not substitute `herdr-implementation`, an unrestricted/default profile, or the entry coordinator when that profile is unavailable.
+- The data-science agent owns problem framing, data-role/provenance checks, actual-data reads, privacy-safe analysis, experiment-design review, and the data-science handoff.
+- Before executing an analysis request, it must check whether the product question, prediction time, label, features, cohort/split, baseline, and metric answer the same question. A technically runnable but misaligned experiment must be reported as such before execution.
+- Observed visits may be treated as implicit positive interactions when the selected data contract permits it; unobserved items are not automatically negative. Negative sampling or exposure assumptions require an explicit experiment protocol.
+- Post-event feedback must not be used as a recommendation-time input. Classification, retrieval, and ranking must be distinguished, and ranking questions should not be justified solely with classification accuracy.
+- If the Issue also requires product or experiment-harness code changes outside the data-science scope, hand those changes to a `herdr-implementation` agent. Never run two writers concurrently in one worktree; serialize ownership or use separate confirmed worktrees.
+- The entry coordinator remains read-only and must not inspect raw rows or take over the data-science role.
+
+The permission contract, machine-local profile example, and validation boundary are documented in [`docs/data/data-science-agent.md`](../../../docs/data/data-science-agent.md).
 
 ## Autonomous review loop
 
