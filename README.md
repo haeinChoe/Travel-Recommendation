@@ -22,6 +22,7 @@
 
 - Node.js: 24 LTS (`.nvmrc`, `package.json#engines` 기준)
 - TypeScript: agent tooling과 향후 Web/API 개발의 기본 언어
+- JavaScript module system: ESM (`import` / `export`) 기본. CommonJS (`require`, `module.exports`)는 외부 호환성 제약이 있을 때만 사용
 - Python: 추천 학습·평가·데이터 분석
 
 현재 루트 Node 설정은 애플리케이션 스캐폴딩이 아니라 agent/tooling 회귀 테스트를 위한 최소 기반이다. Next.js/NestJS 앱 패키지 구조는 별도 Issue에서 구성한다.
