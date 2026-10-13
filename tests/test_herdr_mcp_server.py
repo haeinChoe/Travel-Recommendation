@@ -1589,6 +1589,34 @@ class TeardownSafetyTests(unittest.TestCase):
                 "unclassified failure",
                 2,
             ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "caller pane unavailable",
+                '{"id":"cli:pane:current","error":{"code":"not_found","message":"pane not found"}}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                '{"id":"cli:pane:current","error":{"code":"not_found","message":"workspace not found"}}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                "pane not found: pane=private-pane workspace=private-workspace",
+                1,
+            ),
+            (
+                ["workspace", "list"],
+                "workspace inventory read",
+                "CLI command failed",
+                '{"id":"cli:pane:current","error":{"code":"not_found","message":"pane not found"}}',
+                1,
+            ),
         )
         for command, operation, category, stderr, exit_status in cases:
             with self.subTest(operation=operation), patch.object(
@@ -1606,6 +1634,53 @@ class TeardownSafetyTests(unittest.TestCase):
             )
             self.assertNotIn("private-workspace-id", str(raised.exception))
             self.assertNotIn("/private/local/checkout", str(raised.exception))
+
+    def test_caller_pane_error_category_redacts_raw_cli_output(self) -> None:
+        self._use_real_caller_context()
+        sensitive_values = (
+            "/home/private-user/workspaces/secret-checkout",
+            "workspace-secret-123",
+            "pane-secret-456",
+            "credential-secret-token",
+            "private travel data",
+        )
+        raw_output = " ".join(sensitive_values)
+        error_document = {
+            "id": f"cli:pane:current:{raw_output}",
+            "error": {"code": "not_found", "message": "pane not found"},
+            "details": raw_output,
+        }
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "caller-pane"}, clear=True), patch.object(
+            bridge.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                ["herdr"],
+                1,
+                stdout=raw_output,
+                stderr=json.dumps(error_document),
+            ),
+        ):
+            response = bridge._handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 10,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "herdr_workspace_close",
+                        "arguments": {"workspace_id": "target"},
+                    },
+                }
+            )
+
+        self.assertTrue(response["result"]["isError"])
+        diagnostic = response["result"]["content"][0]["text"]
+        self.assertEqual(
+            diagnostic,
+            "Herdr caller pane resolution failed: caller pane unavailable (exit status 1)",
+        )
+        for sensitive in sensitive_values:
+            self.assertNotIn(sensitive, json.dumps(response))
+        self.assertNotIn(raw_output, json.dumps(response))
 
     def test_mcp_cli_failure_redacts_output_and_sensitive_identifiers(self) -> None:
         sensitive_values = (
