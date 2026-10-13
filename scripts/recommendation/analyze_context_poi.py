@@ -665,7 +665,7 @@ def _feature_sets(row: dict[str, object]) -> dict[str, dict[str, object]]:
         "region_only": {"region": row.get("region")},
         "broad_category_only": {"poi_l1": row.get("poi_l1")},
         **group_features,
-        "poi_only": {**base_poi, **rich_poi},
+        "poi_only": base_poi,
         "context_only": context_features,
         "context_plus_popularity": {
             **context_features,

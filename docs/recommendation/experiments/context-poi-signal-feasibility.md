@@ -4,7 +4,7 @@
 **상태:** **교정 프로토콜 4권역 재실행 완료 / Inconclusive**
 
 > 이전 run `issue45-context-poi-pairs-20261012T141933Z-c6a1b9`은 preliminary evidence로만 보존합니다.
-> 아래 결론은 교정 run `issue45-context-poi-corrected-20261013T021312Z-acf6c4`의 결과에 근거합니다.
+> 아래 결론은 POI-only 비교를 바로잡은 run `issue45-context-poi-poionly-20261013T040619Z-9519be`의 결과에 근거합니다.
 
 ## 1. 이 실험이 답하려는 질문
 
@@ -255,13 +255,15 @@ python3 scripts/recommendation/analyze_context_poi.py \
   --confirm-approved --confirm-terms --confirm-poi-candidate
 ```
 
-## 10. 교정 run 결과
+## 10. POI-only 비교 교정 run 결과
 
-- Run ID: `issue45-context-poi-corrected-20261013T021312Z-acf6c4`
-- Code revision: `3d1f647a3b08e19f8ac0ca290f5af871d5a4444a`
+- Run ID: `issue45-context-poi-poionly-20261013T040619Z-9519be`
+- Code revision: base commit `205eafa3c71a5aa3d121ae0901c1b609f4180ec3`; the analysis ran with the POI-only correction in a dirty worktree. The run metadata records the matching analysis-script SHA-256 `b212e86fd812a383a204d5a9a1bb90b2e527255d1836e8e815a64d05982c9943`.
 - 입력 역할: 2023 데이터의 네 권역별 TL/VL과 같은 권역의 승인된 POI Master. 무작위 재분할 없이 TL로 학습하고 VL에서 평가했습니다.
 - 산출물: 여섯 artifact를 Git 제외 로컬 결과 위치에 생성했습니다. 원본 행, 원본 경로, raw ID·category value, 좌표와 자유 텍스트는 기록하지 않았습니다.
 - 범위: 결과는 exploratory association 및 feedback 예측입니다. causal effect나 ranking 성능을 뜻하지 않습니다.
+- 이 rerun은 `poi_only`를 basic POI(`region`, `visit_area_type`, `visit_sgg`)만 포함하도록 바로잡습니다. 이전 corrected run은 richer POI metadata까지 `poi_only`에 포함해 그 비교의 validation support를 privacy-limited로 만들었습니다. 다른 feature-set 계약은 바꾸지 않았습니다.
+- Association 및 joint-feature artifact는 이전 corrected run과 동일하게 재생성됐습니다. 아래 association 및 joint-feature 결과는 새 run의 artifact에서 확인했으며, byte-for-byte 동일한 집계 결과입니다.
 
 ### A. Context availability 및 POI join
 
@@ -305,12 +307,13 @@ Context feature와 세 feedback target 간 association도 각각 계산했습니
 | `context_temporal` | `0.000 / 0.000 / 0.000` | 추가 성능이 관찰되지 않음. |
 | `context_companion_relation_recorded` | `≈0.000 / -0.002 / -0.001` | Recorded-only sensitivity. |
 | `context_only` | `-0.015 / -0.022 / -0.015` | primary context 전체가 majority baseline을 넘지 못함. |
+| `poi_only` (basic POI) | `-0.017 / -0.022 / -0.009` | 세 target 모두 majority baseline보다 낮음; 새 비교의 aggregate TL/VL support는 `10+ / 10+`. |
 
-위 aggregate ablation은 모두 TL/VL 지원 `10+ / 10+`로 `observed`였습니다. `poi_only`와 `context_plus_richer_poi`는 VL complete-case 지원이 `<10`이라 metric이 `privacy-limited`로 억제됐습니다. 이는 데이터 지원이 0이라는 뜻이 아니며, 그 결과로 richer POI의 기여를 판단하지 않았습니다.
+위에서 수치가 공개된 aggregate ablation은 TL/VL 지원 `10+ / 10+`로 `observed`였습니다. `context_plus_richer_poi`는 VL complete-case 지원이 `<10`이라 metric이 `privacy-limited`로 억제됐습니다. 이는 데이터 지원이 0이라는 뜻이 아니며, 그 결과로 richer POI의 기여를 판단하지 않았습니다. `poi_only`가 이제 basic POI만 포함하므로 해당 비교는 privacy-limited가 아닙니다.
 
 ### D. Dominant-signal 통제 및 richer POI
 
-각 비교는 같은 TL 학습 코호트와 같은 VL 평가 코호트에서 오른쪽 feature set의 accuracy에서 왼쪽을 뺀 값입니다. 양수는 오른쪽의 정확도 개선, 음수는 하락입니다.
+아래 값은 새 POI-only correction run에서 같은 TL 학습 코호트와 같은 VL 평가 코호트로 다시 확인했습니다. 각 비교는 오른쪽 feature set의 accuracy에서 왼쪽을 뺀 값입니다. 양수는 오른쪽의 정확도 개선, 음수는 하락입니다.
 
 | 비교 | DGSTFN | REVISIT | RCMDTN | 결과 |
 | --- | ---: | ---: | ---: | --- |
@@ -320,7 +323,7 @@ Context feature와 세 feedback target 간 association도 각각 계산했습니
 | context → +basic POI | +0.006 | +0.004 | -0.007 | 변화가 작고 target 간 일관된 개선이 없음. |
 | basic POI → +richer POI | privacy-limited | privacy-limited | privacy-limited | VL complete-case 지원 `<10`; 기여 판단 불가. |
 
-첫 네 비교의 지원은 각각 `10+ / 10+`였고 다섯 비교의 left/right 지원 bucket이 모두 일치했습니다. Richer POI 비교는 `10+ / <10` 지원으로 억제됐으므로 `insufficient-support`와 혼동하지 않았습니다.
+첫 네 비교의 지원은 각각 `10+ / 10+`였고 다섯 비교 모두 각 target에서 left/right 지원 bucket이 일치했습니다. Richer POI 비교는 `10+ / <10` 지원으로 억제됐으므로 `insufficient-support`와 혼동하지 않았습니다.
 
 ### E. Context×POI joint-feature sensitivity
 
@@ -339,13 +342,14 @@ Context feature와 세 feedback target 간 association도 각각 계산했습니
 
 ### F. Preliminary run과의 비교
 
-`issue45-context-poi-pairs-20261012T141933Z-c6a1b9`는 프로토콜 불일치가 있어 최종 판단 근거가 아닙니다.
+`issue45-context-poi-pairs-20261012T141933Z-c6a1b9`는 프로토콜 불일치가 있어 최종 판단 근거가 아닙니다. 이전 corrected run `issue45-context-poi-corrected-20261013T021312Z-acf6c4`도 basic `poi_only` 비교에 richer metadata를 포함했으므로 그 한 비교는 새 run으로 대체했습니다.
 
 - Style, motive, companion, temporal association effect 분포는 preliminary와 corrected run에서 대체로 비슷했습니다. Destination 비교는 corrected contract에서 `region`을 추가해 비교 범위가 달라졌습니다.
-- Preliminary `context_only`의 majority 대비 차이는 target 순서대로 `-0.019 / -0.026 / -0.032`; corrected run은 `-0.015 / -0.022 / -0.015`였습니다. 두 실행 모두 context-only feedback 예측의 이점은 관찰되지 않았습니다.
-- Preliminary `context_vs_poi` paired 차이는 `+0.001 / -0.016 / -0.006`, corrected run은 `+0.006 / +0.004 / -0.007`입니다. 코호트·feature 계약이 교정되어 직접적인 성능 추세로 해석하지 않습니다.
-- Preliminary run에는 region, popularity, broad-category 공통 코호트 비교가 없었습니다. Corrected run에서는 세 비교 모두 context 추가 후 개선되지 않았습니다.
-- Richer POI 비교는 두 run 모두 VL 지원 `<10`으로 privacy-limited였습니다. Preliminary run에는 joint-feature sensitivity가 없어 corrected 결과와 비교할 값이 없습니다.
+- Preliminary `context_only`의 majority 대비 차이는 target 순서대로 `-0.019 / -0.026 / -0.032`; 새 run은 `-0.015 / -0.022 / -0.015`였습니다. 두 실행 모두 context-only feedback 예측의 이점은 관찰되지 않았습니다.
+- Preliminary `context_vs_poi` paired 차이는 `+0.001 / -0.016 / -0.006`, 새 run은 `+0.006 / +0.004 / -0.007`입니다. 코호트·feature 계약이 교정되어 직접적인 성능 추세로 해석하지 않습니다.
+- Preliminary run에는 region, popularity, broad-category 공통 코호트 비교가 없었습니다. 새 run에서는 세 비교 모두 context 추가 후 개선되지 않았습니다.
+- 이전 corrected run의 `poi_only`는 richer metadata가 섞여 VL 지원 `<10`으로 privacy-limited였습니다. 새 basic-only `poi_only` 비교는 세 target 모두 VL 지원 `10+`이며 majority baseline보다 낮았습니다. `context_plus_richer_poi`와 `poi_vs_richer_poi` 오른쪽 비교는 여전히 `<10`으로 privacy-limited입니다.
+- Association과 joint-feature sensitivity는 새 run에서도 이전 corrected run과 동일한 집계 결과입니다. Preliminary run에는 joint-feature sensitivity가 없어 비교할 값이 없습니다.
 
 ## 11. 결론 상태
 
@@ -354,7 +358,7 @@ Context feature와 세 feedback target 간 association도 각각 계산했습니
 근거:
 
 - Style, motive, destination, companion, temporal context는 POI feature와 TL 및 VL에서 association을 보였습니다. 이는 non-causal association이며, 높은 V만으로 predictive contribution을 뜻하지 않습니다.
-- 세 feedback target에서 primary context ablation은 majority보다 낫지 않았습니다. 동일 코호트 비교에서도 region, popularity, broad category에 context를 더한 결과가 개선되지 않았고, context×POI joint-feature의 중앙 increment도 모든 group/target에서 음수였습니다.
+- In the aggregate evaluation, no primary context group improved feedback prediction over the majority baseline. 동일 코호트 비교에서도 region, popularity, broad category에 context를 더한 결과가 개선되지 않았고, context×POI joint-feature의 중앙 increment도 모든 group/target에서 음수였습니다.
 - Basic POI를 context에 추가한 변화는 작고 target 간 일관되지 않았습니다. Richer POI 증분은 VL complete-case 지원이 `<10`이라 privacy-limited이며 결론을 낼 수 없습니다.
 - 실제 Top-K ranking, candidate universe와 unvisited negative는 평가하지 않았습니다. 따라서 association 신호를 ranking 성능의 증거로 확대하지 않습니다.
 

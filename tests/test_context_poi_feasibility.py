@@ -190,6 +190,18 @@ class ContextPoiSyntheticTests(unittest.TestCase):
         self.assertIn("region", feature_sets["context_only"])
         self.assertNotIn("companion_relation_codes", feature_sets["context_only"])
         self.assertEqual(
+            set(feature_sets["poi_only"]),
+            {"region", "visit_area_type", "visit_sgg"},
+        )
+        self.assertEqual(
+            set(feature_sets["context_plus_poi"]),
+            set(feature_sets["context_only"]) | {"visit_area_type", "visit_sgg"},
+        )
+        self.assertEqual(
+            set(feature_sets["context_plus_richer_poi"]),
+            set(feature_sets["context_plus_poi"]) | {"master_sgg", "poi_l1", "poi_l2", "poi_l3"},
+        )
+        self.assertEqual(
             set(feature_sets["context_companion"]),
             {"TRAVEL_STATUS_ACCOMPANY", "TRAVEL_COMPANIONS_NUM"},
         )
