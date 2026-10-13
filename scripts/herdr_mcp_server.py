@@ -41,6 +41,11 @@ TOOLS: dict[str, dict[str, Any]] = {
         "collection": "agents",
         "fields": ("agent", "name", "agent_status", "pane_id", "workspace_id", "tab_id"),
     },
+    "herdr_data_science_agent_start": {
+        "description": "Start one data-science Codex agent in the verified linked worktree for a Herdr workspace.",
+        "input": "workspace_id",
+        "mutation": "data_science_agent_start",
+    },
     "herdr_worktree_remove": {
         "description": "Safely remove the clean linked worktree for one Herdr workspace.",
         "input": "workspace_id",
@@ -116,6 +121,12 @@ def _herdr_operation(command: list[str]) -> str:
         return "agent inventory read"
     if command == ["pane", "current", "--current"]:
         return "caller pane resolution"
+    if len(command) == 4 and command[:3] == ["pane", "list", "--workspace"]:
+        return "workspace pane inventory read"
+    if command[:2] == ["pane", "split"]:
+        return "guarded pane split"
+    if command[:2] == ["agent", "start"]:
+        return "guarded agent start"
     if len(command) == 3 and command[:2] == ["workspace", "focus"]:
         return "focus restoration"
     if len(command) == 4 and command[:3] == ["worktree", "list", "--workspace"]:
@@ -401,6 +412,153 @@ def _worktrees_for(workspace_id: str) -> list[dict[str, Any]]:
     return _collection(["worktree", "list", "--workspace", workspace_id], "worktrees")
 
 
+def _panes_for(workspace_id: str) -> list[dict[str, Any]]:
+    return _collection(["pane", "list", "--workspace", workspace_id], "panes")
+
+
+def _validate_pane_id(value: Any) -> str:
+    if not isinstance(value, str) or not WORKSPACE_ID_PATTERN.fullmatch(value):
+        raise RuntimeError("Herdr returned an invalid pane ID; refusing data-science startup")
+    return value
+
+
+def _assert_startup_linked_worktree(workspace_id: str, worktree: dict[str, Any]) -> str:
+    if worktree.get("is_linked_worktree") is not True or worktree.get("open_workspace_id") != workspace_id:
+        raise RuntimeError("Target workspace is not backed by the expected linked worktree")
+    path = worktree.get("path")
+    branch = worktree.get("branch")
+    if not isinstance(path, str) or not path or not isinstance(branch, str) or not branch:
+        raise RuntimeError("Herdr worktree metadata is incomplete; refusing data-science startup")
+    if branch in {"dev", "main"}:
+        raise RuntimeError("Refusing to start a data-science writer on dev or main")
+    if not Path(path).is_absolute():
+        raise RuntimeError("Herdr returned a non-absolute worktree path; refusing data-science startup")
+
+    resolved_path = str(Path(path).resolve())
+    if str(Path(_git(path, "rev-parse", "--show-toplevel")).resolve()) != resolved_path:
+        raise RuntimeError("Herdr worktree path does not match its Git checkout")
+    if _git(path, "rev-parse", "--abbrev-ref", "HEAD") != branch:
+        raise RuntimeError("Herdr worktree branch does not match Git; refusing data-science startup")
+    if _git(path, "check-ref-format", "--branch", branch) != branch:
+        raise RuntimeError("Herdr worktree branch is invalid; refusing data-science startup")
+
+    entries = [entry for entry in _git(path, "worktree", "list", "--porcelain").split("\n\n") if entry.strip()]
+    matching = [
+        entry
+        for entry in entries
+        if f"worktree {resolved_path}" in entry.splitlines()
+        and f"branch refs/heads/{branch}" in entry.splitlines()
+    ]
+    if len(matching) != 1:
+        raise RuntimeError("Git does not confirm the exact data-science worktree path and branch")
+    return resolved_path
+
+
+def _start_data_science_agent(workspace_id: str) -> dict[str, Any]:
+    caller_workspace_id = _caller_workspace_id()
+    if workspace_id == caller_workspace_id:
+        raise RuntimeError("Refusing to start the data-science writer in the coordinator workspace")
+
+    workspace, all_workspaces, agents = _workspace_context(workspace_id, caller_workspace_id)
+    if workspace is None:
+        raise RuntimeError("Target workspace is unavailable; refusing data-science startup")
+    _assert_not_focused(workspace)
+    _assert_agents_settled(agents, workspace_id)
+    if any(
+        agent.get("workspace_id") == workspace_id and agent.get("name") == "data-scientist"
+        for agent in agents
+    ):
+        raise RuntimeError("A data-scientist agent already exists in the target workspace")
+
+    worktrees = _worktrees_for(workspace_id)
+    linked = [
+        item
+        for item in worktrees
+        if item.get("is_linked_worktree") is True and item.get("open_workspace_id") == workspace_id
+    ]
+    if len(linked) != 1:
+        raise RuntimeError("Herdr returned missing or ambiguous linked worktree metadata; refusing data-science startup")
+    worktree_path = _assert_startup_linked_worktree(workspace_id, linked[0])
+
+    panes_before = _panes_for(workspace_id)
+    pane_ids_before = {_validate_pane_id(item.get("pane_id")) for item in panes_before}
+    if not pane_ids_before:
+        raise RuntimeError("Target workspace has no pane to split; refusing data-science startup")
+    source_pane_id = sorted(pane_ids_before)[0]
+
+    focused_workspace_id = _focused_workspace_id(all_workspaces)
+    _assert_caller_context_unchanged(caller_workspace_id, workspace_id)
+    _run_herdr_json(
+        [
+            "pane",
+            "split",
+            "--pane",
+            source_pane_id,
+            "--direction",
+            "right",
+            "--cwd",
+            worktree_path,
+            "--no-focus",
+        ]
+    )
+    _restore_focus(focused_workspace_id)
+
+    panes_after = _panes_for(workspace_id)
+    new_panes = [
+        item
+        for item in panes_after
+        if _validate_pane_id(item.get("pane_id")) not in pane_ids_before
+    ]
+    if len(new_panes) != 1:
+        raise RuntimeError("Could not identify exactly one new Herdr pane; refusing agent start")
+    new_pane = new_panes[0]
+    pane_id = _validate_pane_id(new_pane.get("pane_id"))
+    pane_workspace_id = new_pane.get("workspace_id")
+    if pane_workspace_id is not None and pane_workspace_id != workspace_id:
+        raise RuntimeError("New Herdr pane belongs to an unexpected workspace; refusing agent start")
+    pane_cwd = new_pane.get("cwd")
+    if not isinstance(pane_cwd, str) or str(Path(pane_cwd).resolve()) != worktree_path:
+        raise RuntimeError("New Herdr pane is not attached to the verified worktree; refusing agent start")
+
+    _assert_caller_context_unchanged(caller_workspace_id, workspace_id)
+    _run_herdr_json(
+        [
+            "agent",
+            "start",
+            "data-scientist",
+            "--kind",
+            "codex",
+            "--pane",
+            pane_id,
+            "--",
+            "--config",
+            'default_permissions="herdr-data-science"',
+        ]
+    )
+    _restore_focus(focused_workspace_id)
+
+    agents_after = _collection(["agent", "list"], "agents")
+    started = [
+        item
+        for item in agents_after
+        if item.get("workspace_id") == workspace_id
+        and item.get("pane_id") == pane_id
+        and item.get("name") == "data-scientist"
+    ]
+    if len(started) != 1:
+        raise RuntimeError("Data-science agent start did not pass inventory readback verification")
+    if started[0].get("agent_status") not in {"working", "idle", "done"}:
+        raise RuntimeError("Data-science agent entered an unexpected lifecycle state")
+
+    return {
+        "workspace_id": workspace_id,
+        "pane_id": pane_id,
+        "agent_name": "data-scientist",
+        "profile": "herdr-data-science",
+        "started": True,
+    }
+
+
 def _worktrees_for_checkout(checkout_path: str) -> list[dict[str, Any]]:
     return _collection(["worktree", "list", "--cwd", checkout_path], "worktrees")
 
@@ -633,6 +791,9 @@ def _supports_guarded_workspace_close() -> bool:
 
 
 def _mutate_tool(name: str, workspace_id: str) -> dict[str, Any]:
+    if name == "herdr_data_science_agent_start":
+        return _start_data_science_agent(workspace_id)
+
     caller_workspace_id = _caller_workspace_id()
     workspace, all_workspaces, agents = _workspace_context(workspace_id, caller_workspace_id)
     if workspace is None:
@@ -771,7 +932,7 @@ def _handle(request: Any) -> dict[str, Any] | None:
                 "protocolVersion": negotiated_version,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": SERVER_INFO,
-                "instructions": "Read-only Herdr status and inventory plus guarded cleanup of one clean linked worktree or one eligible workspace.",
+                "instructions": "Read-only Herdr status and inventory, guarded data-science agent startup, and guarded cleanup of one clean linked worktree or one eligible workspace.",
             },
         )
     if method == "ping":

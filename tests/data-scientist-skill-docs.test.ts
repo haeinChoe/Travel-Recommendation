@@ -130,6 +130,28 @@ test("any actual-data read is delegated away from the entry coordinator", () => 
   ]);
 });
 
+test("data-science startup uses the guarded MCP path before CLI fallback", () => {
+  assertContainsAll(agentLoopSkill, [
+    "herdr_data_science_agent_start(workspace_id)",
+    "guarded MCP startup tool first",
+    "do not bypass",
+    "Simple read-only actual-data smoke",
+  ]);
+
+  assertContainsAll(agentLoopReference, [
+    "herdr_data_science_agent_start(workspace_id)",
+    "guarded MCP startup tool",
+    "simple read-only smoke",
+    "does not require a reviewer by default",
+  ]);
+
+  assertContainsAll(agentsGuide, [
+    "herdr_data_science_agent_start(workspace_id)",
+    "guarded startup",
+    "우회 재시도하지 않는다",
+  ]);
+});
+
 test("permission profile keeps the least-privilege filesystem contract", () => {
   assertContainsAll(profileGuide, [
     "[permissions.herdr-data-science.filesystem]",
