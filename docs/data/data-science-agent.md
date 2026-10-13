@@ -40,6 +40,8 @@ machine-local 예시:
 "/replace/with/approved/aihub/raw-root" = "read"
 ```
 
+위 TOML은 filesystem 차이만 보여 주는 최소 예시다. 실제 사용자 프로필에는 현재 `herdr-implementation`에 적용된 command/network 제한을 동일하거나 더 좁게 명시하고, 생략이 자동 상속을 뜻한다고 가정하지 않는다.
+
 여러 승인 raw root가 필요하면 각각 `read` 항목으로 추가한다. 결과가 workspace 밖에 있어야 한다면 Issue가 해당 위치 쓰기를 명시적으로 승인한 경우에만 별도 `write` 경로를 추가한다. command/network policy는 기존 `herdr-implementation`보다 넓히지 않고, 데이터 분석 때문에 새로운 호스트나 unrestricted access를 추가하지 않는다.
 
 선택 예:
