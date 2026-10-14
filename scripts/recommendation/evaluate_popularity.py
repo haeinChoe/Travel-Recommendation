@@ -66,6 +66,7 @@ class SplitSummary:
     ambiguous_trip_rows: int
     visit_trip_keys: set[tuple[str, str, str]]
     travel_ids: set[str] = field(default_factory=set)
+    travel_trip_keys: set[tuple[str, str, str]] | None = None
 
 
 def has_symlink_component(path: Path) -> bool:
@@ -238,6 +239,11 @@ def _read_split(spec: InputSpec) -> SplitSummary:
     # A missing visit table is an empty split. In particular, no POI identity is inferred.
     summary = _read_visits(spec.region, by_role["visits"], owners)
     summary.travel_ids = travel_ids
+    summary.travel_trip_keys = {
+        (spec.region, user_id, trip_id)
+        for trip_id, user_id in owners.items()
+        if user_id is not None
+    }
     return summary
 
 
