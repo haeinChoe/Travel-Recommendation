@@ -88,7 +88,7 @@ def _validate_sync(catalog: list[CatalogPoi], sync_id: str) -> dict[str, object]
     return manifest
 
 
-def _source_specs(run_id: str) -> tuple[list[shared.InputSpec], dict[str, Path]]:
+def _source_specs(run_id: str, progress=None) -> tuple[list[shared.InputSpec], dict[str, Path]]:
     names = ("RAW_ROOT", *(name for _, tl, vl in ENV_BINDINGS for name in (tl, vl)))
     if not all(os.environ.get(name) for name in names):
         raise ValueError("required role binding unavailable")
@@ -102,7 +102,7 @@ def _source_specs(run_id: str) -> tuple[list[shared.InputSpec], dict[str, Path]]
         confirm_approved=True, confirm_terms=True, confirm_poi_candidate=True,
         run_id=run_id,
     )
-    return readiness._validate_inputs(args)
+    return readiness._validate_inputs(args, progress=progress)
 
 
 def _metric(scope: str, split: str, unit: str, name: str,

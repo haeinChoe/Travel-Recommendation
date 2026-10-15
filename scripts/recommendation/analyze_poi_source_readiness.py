@@ -54,7 +54,7 @@ def _find_master(raw_root: Path, region: str) -> Path:
     return path
 
 
-def _validate_inputs(args: argparse.Namespace) -> tuple[list[shared.InputSpec], dict[str, Path]]:
+def _validate_inputs(args: argparse.Namespace, progress=None) -> tuple[list[shared.InputSpec], dict[str, Path]]:
     if not (args.confirm_approved and args.confirm_terms and args.confirm_poi_candidate):
         raise ValueError("approval and source semantics must be confirmed")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}", args.run_id):
@@ -82,9 +82,15 @@ def _validate_inputs(args: argparse.Namespace) -> tuple[list[shared.InputSpec], 
                 or f"2023-travel-log-{region}" not in root.parts or root in seen):
             raise ValueError("role binding conflicts with approved provenance or layout")
         _validate_role_tables(root)
+        if progress is not None:
+            progress(region, role, "role_provenance_validated")
         seen.add(root)
         specs.append(shared.InputSpec(region, role, root))
-    masters = {region: _find_master(raw_root, region) for region in shared.REGIONS}
+    masters = {}
+    for region in shared.REGIONS:
+        masters[region] = _find_master(raw_root, region)
+        if progress is not None:
+            progress(region, "Other", "master_provenance_validated")
     return specs, masters
 
 

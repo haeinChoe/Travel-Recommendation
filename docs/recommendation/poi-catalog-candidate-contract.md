@@ -316,26 +316,67 @@ records only the sample support by region/split and matching method. It stores
 no pair, ID, name, address, row, or coordinate.
 
 The run selected 160 proposed pairs: 20 in each of the eight region × TL/VL
-strata. All 160 use method `unique_exact_name_address`. The independently
-adjudicated denominator is 0/160, so SAME / DIFFERENT / AMBIGUOUS label counts
-are unavailable, not zero.
+strata. All 160 use method `unique_exact_name_address`. A separate read-only
+reviewer completed the local manual audit: 160 `MATCH`, 0 `NO_MATCH`, and 0
+`UNCERTAIN` for that method. The local temporary evidence file was deleted
+after completion and its deletion was verified.
 
-The sample was selected reproducibly, but **manual SAME / DIFFERENT / AMBIGUOUS
-adjudication was not performed**: this agent has no private non-logging view in
-which to inspect name, address, and type evidence. Sending those fields to a
-terminal/tool transcript or another agent would violate the no-identity-output
-boundary. Therefore the adjudicated denominator is zero, method-specific
-adjudicated counts are unavailable, and no population precision estimate or
-confidence interval is claimed. The exact-string rule's match rate is not a
-precision estimate.
+The sample was selected reproducibly. The exact-string rule's match rate is
+not itself a precision estimate.
 
-Alternative review path: an authorized local human reviewer with a non-logging
-in-memory review interface can inspect the deterministic sampled pairs directly
-from the approved sources and return only region/split/method counts for
-`SAME`, `DIFFERENT`, and `AMBIGUOUS`, plus the reviewed denominator. No example
-or pair-level key should be exported. With a recorded sampling design and
-adjudicated labels, a later analysis can report sample accuracy and a
-stratified interval; until then, linkage precision remains unresolved.
+`scripts/recommendation/adjudicate_poi_match_sample.py` now provides the
+private review path. Its data reader and renderer run under the dedicated
+`herdr-data-science` profile. A reviewer other than the matching implementation
+author is preferred and completed this audit on the local alternate-screen
+terminal. The data-science process reads inputs, creates/deletes ephemeral
+evidence, and writes the aggregate; the read-only reviewer needs only local TUI
+visibility and input controls. The reproducible command is:
+
+```sh
+python3 scripts/recommendation/adjudicate_poi_match_sample.py --snapshot-id issue4-kto-20261014-v1 --sync-id issue4-kto-sync-20261014-v1 --run-id issue4-match-audit-independent-v1 --adjudicator-role independent
+```
+
+The data-science process needs current-process `RAW_ROOT` and all four region's
+TL/VL bindings (`CAPITAL_*`, `WEST_*`, `EAST_*`, `JEJU_*`), the approved
+read-only AI Hub 2023 inputs, the existing Git-ignored KTO listing/sync
+snapshots, an interactive terminal with alternate-screen support (at least
+80 × 18), and write access to the approved Git-ignored results location. The
+read-only reviewer does not access the raw roots and needs only the local TUI
+view and input controls. The tool checks the
+terminal and revalidates source provenance and role mapping before raw row
+access. Each split/master's data rows are scanned once after preflight. It
+materializes only an ephemeral 160-record evidence file in a mode-0700
+temporary directory; that file is mode 0600 and contains an ordinal, matching
+method, and only source/catalog name, address, and type fields needed for
+review. It contains no source/catalog identifiers or coordinates. The
+alternate-screen local TUI reads that file and presents one pair at a time:
+source name, road address, optional source classification codes, catalog title,
+generic `addr1`, and `contentTypeId`. Source classification
+codes and KTO types are **not** assumed to share a crosswalk. Keys `1`, `2`, and
+`3` select only `MATCH`, `NO_MATCH`, and `UNCERTAIN`. The reviewer then presses
+SPACE to confirm the selected label and advance exactly one pair; repeated label
+keys before confirmation are ignored, and queued keys are flushed before the
+next pair. `q` cancels. The screen is cleared between pairs and before exit.
+A cancel or handled interruption before all 160 decisions leaves no review
+output, and normal exception paths remove the temporary evidence. On
+completion, the ignored result
+contains only aggregate label counts overall and by matching method, plus the
+adjudicator role; the temporary evidence file is immediately deleted and its
+absence verified. No pair values, IDs, coordinates, paths, or per-row labels
+are persisted. The reviewer must avoid terminal
+capture, screenshots, and copying fields into shared logs. Record
+`--adjudicator-role independent` only when a different reviewer actually makes
+the decisions; use default `author` for self-adjudication. The tool cannot
+verify who pressed the keys.
+
+This is a manual sample audit, not a population precision estimate. The equal
+20-per-stratum allocation is not weighted by each stratum's frame size, and
+possible repeated source items across TL/VL strata are not deduplicated in the
+reported audit counts. Therefore no population precision or confidence
+interval is claimed. The result supports the limited finding that the
+independent reviewer judged every selected pair to be a match under the shown
+name/address/type evidence; it does not establish all-listing or future
+linkage precision. Linkage precision beyond this sample remains unresolved.
 
 ### Four-region current-listing identity feasibility
 
@@ -466,8 +507,14 @@ reads, not an atomic transaction. A future refresh must revalidate both.
 The scenario command records exact public inventory totals/type composition,
 privacy-banded positive coverage, KTO legal-dong catalog groupings, and the
 deterministic bounded sample frame. It never applies AI Hub visit region as a
-request-area filter. The sample labels remain unadjudicated until a local
-non-logging reviewer returns aggregate decisions.
+request-area filter. The separately completed independent manual audit judged
+all 160 sampled `unique_exact_name_address` pairs as `MATCH` (0 `NO_MATCH`, 0
+`UNCERTAIN`); only aggregate labels are retained. This is the observed result
+for that stratified sample, not a population precision estimate. Population
+precision and confidence intervals remain unresolved because the sample has
+equal-sized strata rather than population weighting, and possible repeated
+source items across TL/VL strata were not deduplicated. Product content-type
+and request-area contract choices remain open.
 
 ### Validation on the revised worktree
 
@@ -495,7 +542,10 @@ non-logging reviewer returns aggregate decisions.
   public inventory totals/type counts, and TL/VL positive coverage on common
   denominators. The deterministic sample selected 160 proposed matches
   (20 per region × TL/VL stratum); no pair fields were persisted and no
-  independent adjudication labels were recorded.
+  per-pair evidence was persisted. The separate independent manual audit
+  returned 160 `MATCH`, 0 `NO_MATCH`, and 0 `UNCERTAIN` for
+  `unique_exact_name_address`; these aggregate sample results do not establish
+  population precision or confidence intervals.
 
 The local run used the current working files, so its recorded Git revision is
 the `dev` base plus a dirty-worktree flag and script hashes. The catalog and
@@ -512,17 +562,24 @@ The #59 TL proxy has no exposure guarantee.
 **Inference:** The strict exact-string identity rule links fewer than ten
 percent of observed source items in every region/split. Its recall is likely
 limited by missing source metadata and untested address/name variation; its
-precision has not been measured. Current displayed-list membership is a
-defensible catalog status signal, but not operational or historical status.
+160-pair independent manual sample audit returned all `MATCH` for
+`unique_exact_name_address`. This is an observed sample result, not a
+population precision estimate; population precision and confidence intervals
+remain unresolved because the sample uses equal allocation across strata and
+possible repeated source items across TL/VL strata were not deduplicated.
+Current displayed-list membership is a defensible catalog status signal, but
+not operational or historical status.
 
 **Unresolved:** Product content-type policy; actual request-time region,
 district and category input contract; request-to-legal-dong crosswalk;
 temporary closure/operational status; future ID stability and refresh cadence;
-reviewed match precision and alternatives; product candidate coverage and
-2023 availability. A non-displayed item is not necessarily deleted.
+population-level match precision, confidence intervals, and alternatives;
+product candidate coverage and 2023 availability. A non-displayed item is not
+necessarily deleted.
 
 **Next decision:** Confirm the product type allowlist and request-time area
-field with its validated code crosswalk, review an identity sample to set
+field with its validated code crosswalk, decide how the observed sample audit
+and unresolved population-level precision evidence should inform a
 precision/ambiguity policy, and define freshness/closure handling. Only then
 compute product candidate size and positive coverage on a fixed, documented
 request cohort. The account owner must separately confirm production rights
