@@ -119,14 +119,18 @@ single POI is a product decision still open.
 
 The synthetic reference implementation is
 [`poi_identity_contract.py`](../../scripts/recommendation/poi_identity_contract.py).
-Unicode NFKC, case folding, and whitespace normalization are applied without
-geocoding, transliteration, punctuation deletion, or guessed aliases. Matching
-operates within one complete approved catalog snapshot. A source `POI_ID` with
-conflicting source metadata is held for review before applying the rule.
+Stage 1 applies Unicode NFKC, case folding, and whitespace normalization to
+both strings, then requires one exact normalized title plus address-string
+pair. Stage 2 keeps the original source/catalog fields and builds separate
+name and full-address punctuation-folded candidate keys; punctuation is
+replaced with a separator, and collisions retain every candidate. These
+features retrieve candidates only and never alter stored raw values or prove
+identity. Matching operates within one complete approved catalog snapshot. A
+source `POI_ID` with conflicting source metadata is held for review.
 
 | Status | Deterministic rule | Meaning |
 | --- | --- | --- |
-| `MATCHED` | One and only one displayed catalog record has the same normalized nonblank title as source name and the same **address string** as the source road address, with a unique nonblank content ID. | Provisional exact-string link; TourAPI `addr1` is a generic address field and `validation_status=unreviewed` until precision is audited. |
+| `MATCHED` | One and only one displayed catalog record has the same normalized nonblank title as source name and the same **address string** as the source road address, with a unique nonblank content ID. | Stage 1 provisional exact normalized-string link; TourAPI `addr1` is a generic address field and the result remains unreviewed. |
 | `AMBIGUOUS` | Exact name exists but source address is missing, conflicts, or maps to multiple catalog records; or a canonical ID has conflicting records. | Keep all plausible alternatives internally; publish only aggregate conflict counts. |
 | `UNMATCHED` | Source identity/name is unusable, or the snapshot has no exact normalized name candidate. | No link under this conservative rule; fuzzy/geographic matches may exist. |
 
@@ -138,12 +142,54 @@ source items and observed positive events. Precision requires independent
 reviewed labels and a representative ambiguity sample; match rate alone does
 not establish correctness.
 
-Name plus mapped administrative area, geodesic distance, fuzzy name, and
-category consistency are candidate signals for a later review stage. AI Hub
-coordinate reference system, TourAPI coordinate semantics, code crosswalk,
-distance tolerance, and fuzzy score threshold are not validated here. Those
-signals never automatically promote a result to `MATCHED` in this contract.
-Region namespaces remain on AI Hub IDs until cross-region identity is proven.
+Stage 2 punctuation-normalized name/address keys and Stage 3 fuzzy name
+similarity are review-only candidate signals. Address-component parsing,
+province/district aliases, and service-code crosswalks are unresolved; the raw
+error analysis did not validate a specific abbreviation or administrative
+mapping. Coordinate field validation is summarized below; AI Hub coordinate
+meaning/CRS and TourAPI coordinate values remain unresolved, so coordinates
+are unused. Category consistency is support evidence only. None of these
+signals automatically promotes a result to `MATCHED`. Region namespaces remain
+on AI Hub IDs until cross-region identity is proven.
+
+When multiple source-master spellings share one exact normalized name/address
+identity, the implementation selects one deterministic observed spelling for
+candidate generation rather than joining variants into synthetic text.
+Distinct normalized identities remain conflicting metadata and stay in review;
+candidate generation evaluates each observed name/address pair together and
+the local review view preserves those pair associations. It does not combine
+names from one source row with addresses from another.
+
+### Coordinate field validation and limits
+
+The four local AI Hub 2023 schema descriptions label the POI-master and visit
+fields only as `X_COORD` (“X coordinate”) and `Y_COORD` (“Y coordinate”). They
+do not identify a CRS, units, axis order, or transformation. A read-only scan
+under the approved four-region TL/VL and Other-master provenance bindings
+found the following pooled diagnostics; no coordinate values or point rows
+were emitted or persisted:
+
+| AI Hub table family | Rows checked | Both fields nonblank, finite numeric | Within hypothetical longitude/latitude axis bounds |
+| --- | ---: | ---: | ---: |
+| `TN_POI_MASTER` | 29,771,464 | 29,771,464 | 29,771,464 |
+| `TN_VISIT_AREA_INFO` | 140,555 | 108,236 | 108,236 |
+
+The visit table had 32,319 rows with at least one coordinate field blank. The
+range check used only the hypothetical bounds `X ∈ [-180, 180]` and
+`Y ∈ [-90, 90]`; no complete numeric pair was outside those bounds, and none
+fit the swapped-axis bounds. These checks describe numeric shape only. They do
+not establish geographic degrees, WGS84, another CRS, axis meaning, accuracy,
+or same-place tolerance.
+
+The existing KTO v1 listing snapshot contains 49,622 records and its recorded
+field set excludes `mapx` and `mapy`. The local Issue documentation cites the
+KTO manual revision but does not include a coordinate-field definition or CRS
+statement. No new API request was made. Thus there is no approved local KTO
+coordinate value to compare with AI Hub, even for the already adjudicated
+exact-name/address pairs. No same-place distance distribution was computed.
+Stage 4 remains disabled until both coordinate contracts and comparable
+coordinate fields are documented and validated; then a bounded distance
+analysis can be run on independently confirmed pairs.
 
 ## Request-time eligibility
 
@@ -218,7 +264,7 @@ displayed catalog is an inventory, not a candidate list for each request.
 
 ### Type-scope decision evidence (analysis-time only)
 
-`issue4-scenarios-20261015-v4` compares the three requested type scopes against
+`issue4-enhanced-20261015-v7` compares the three requested type scopes against
 the same current displayed snapshot and the same observed-positive denominators.
 The exact KTO public inventory is:
 
@@ -247,10 +293,13 @@ As a decision-evidence recommendation, use C as the narrow comparison baseline
 for the next product discussion: it retains the three more atomic inventory
 groups and avoids the date-dependent event and multi-stop course semantics.
 Its 19,069-item inventory is about 38% of A. The observed-positive linked
-coverage is below 10% in every scenario at this reporting resolution, so the
-current evidence does not show a coverage advantage for A or B. Keep A/B as
-sensitivity alternatives. C is not a serving default or finalized allowlist;
-product scope, request geography, and match precision still need decisions.
+coverage is below 10% in every scenario at this reporting resolution. A does
+show a higher rate of review-only candidate lists containing an in-scope type
+than B or C, but those candidates are not confirmed identities or request-time
+eligible items. Keep A/B as sensitivity alternatives and weigh that larger
+review set against A's broader type semantics. C is not a serving default or
+finalized allowlist; product scope, request geography, and match quality still
+need decisions.
 
 The analysis groups inventory by KTO `lDongRegnCd`; it does **not** infer a
 user-selected region from an AI Hub visit, and it does not filter historical
@@ -281,24 +330,40 @@ The displayed-record inventory by KTO legal-dong region code is:
 | 51 | 4,711 | 2,330 | 2,245 |
 | 52 | 2,421 | 1,374 | 1,319 |
 
-The A/B/C counts with missing `lDongRegnCd` are 1,018 / 1,017 / 0. Per-code
-positive shares are also in the ignored scenario metrics; they are rates of
-identity-linked in-scope positives over the full source-region TL/VL positive
-denominator, not code-conditional recommendation coverage. AI Hub observations
-without a linked KTO ID cannot be placed in a KTO legal-dong group.
+The A/B/C counts with missing `lDongRegnCd` are 1,018 / 1,017 / 0. The v7
+ignored metrics also group confirmed identity-linked positive events by the
+linked KTO `lDongRegnCd`, with each code/region/TL-VL share divided by the full
+source-region positive-event denominator. These are post-hoc catalog-area
+groups, not code-conditional recommendation coverage. Ambiguous, review, and
+unmatched positives have no single linked catalog code and are not assigned to
+one. Code-level rates use the small-cell suppression policy. AI Hub observed
+region is not treated as a request-time selected area.
 
-For observed visits, every A/B/C scenario uses each region and TL/VL split's
-same usable positive-event denominator. In every region and split, all three
-scenarios have the same coarse bands: linked inside the scenario type scope
-`0–<10%`, linked to a displayed KTO item outside the scenario type scope
-`0–<10%`, ambiguous `10–<25%`, and unmatched under the exact rule `75–<90%`.
-The result shows low linked-positive coverage under all three scopes; the
-coarse bins do not distinguish their small differences. `linked outside type
-scope` is a known type exclusion among exact links. `unmatched` means no link
-under this rule and is **not** evidence that the POI is absent from the
-catalog. The area-code rows assign a positive only to its linked KTO record;
-each reported code share uses the full regional positive-event denominator.
-Unmatched and ambiguous positives cannot be allocated to a KTO code.
+For observed visits, each A/B/C comparison uses the same usable positive-event
+denominator within a region and TL/VL split. Across the eight region/split
+cells, each scenario has the same coarse bands for confirmed identity status:
+matched inside the scenario type scope `0–<10%`, matched outside that scope
+`0–<10%`, `REVIEW` `10–<25%`, `AMBIGUOUS` `25–<50%`, and `UNMATCHED`
+`25–<50%`. The observed-positive status bands therefore do not distinguish
+the scenarios at this resolution. `UNMATCHED` is not evidence that the POI is
+absent from the catalog.
+
+Review-only candidate display differs by scope: across the same eight
+region/split cells, candidate lists include at least one A item in `50–<75%`
+of observed positives; B and C are each `25–<50%`. Candidate lists with no
+in-scope type but at least one displayed out-of-scope type are `0–<10%` for A,
+`10–<25%` in six B cells and `25–<50%` in two, and `10–<25%` in five C cells
+and `25–<50%` in three. These are retrieval-review rates, not eligible
+candidate coverage or confirmed identity links. The TL-observed proxy inside
+share for VL positives is `25–<50%` in capital and `50–<75%` in the other
+three regions, the same under A/B/C.
+
+Per-code positive shares assign a positive only to a confirmed linked KTO
+record; each uses the full source-region TL/VL positive denominator, not a
+request-area denominator. The v7 metrics contain code-level rows for 13 KTO
+legal-dong codes, privacy-banded and suppressed where support is below ten.
+Unmatched, ambiguous, and review positives cannot be allocated to a single
+KTO code.
 
 These are global type-scope identity diagnostics, not true request-time
 candidate coverage. Since no selected request region or validated crosswalk
@@ -306,14 +371,14 @@ exists in the travel logs, per-trip nonempty candidate share and candidate
 size distribution remain unestimable. TL-observed item membership remains a
 proxy only; unvisited items remain unknown.
 
-### Matching precision sample audit
+### Matching and candidate-review audits
 
-The audit frame is proposed `MATCHED` source items under the unique normalized
-name plus address-string rule, stratified by region and TL/VL role. Within each
-stratum, SHA-256 ranks the in-memory source identity using seed
-`issue4-match-audit-v1`; select up to 20 items per stratum. The scenario run
-records only the sample support by region/split and matching method. It stores
-no pair, ID, name, address, row, or coordinate.
+The separate Stage 1 baseline audit sampled proposed `MATCHED` source items
+under the unique normalized-name plus address-string rule, stratified by
+region and TL/VL role. Within each stratum, SHA-256 ranked the in-memory source
+identity using seed `issue4-match-audit-v1`; it selected 20 items in each of
+the eight region × role strata. The ignored audit records aggregate labels
+only; it stores no pair, ID, name, address, row, or coordinate.
 
 The run selected 160 proposed pairs: 20 in each of the eight region × TL/VL
 strata. All 160 use method `unique_exact_name_address`. A separate read-only
@@ -321,8 +386,12 @@ reviewer completed the local manual audit: 160 `MATCH`, 0 `NO_MATCH`, and 0
 `UNCERTAIN` for that method. The local temporary evidence file was deleted
 after completion and its deletion was verified.
 
-The sample was selected reproducibly. The exact-string rule's match rate is
-not itself a precision estimate.
+This 160/160 result is an initial false-positive check for the unique exact
+name-plus-address rule only. Its `MATCH` label was a manual judgment of that
+single proposed pair. It is not a population precision estimate; the equal
+stratum allocation, possible repeat identities across TL/VL, and selection
+design prevent population precision and confidence intervals from being
+claimed.
 
 `scripts/recommendation/adjudicate_poi_match_sample.py` now provides the
 private review path. Its data reader and renderer run under the dedicated
@@ -369,14 +438,138 @@ capture, screenshots, and copying fields into shared logs. Record
 the decisions; use default `author` for self-adjudication. The tool cannot
 verify who pressed the keys.
 
-This is a manual sample audit, not a population precision estimate. The equal
-20-per-stratum allocation is not weighted by each stratum's frame size, and
-possible repeated source items across TL/VL strata are not deduplicated in the
-reported audit counts. Therefore no population precision or confidence
-interval is claimed. The result supports the limited finding that the
-independent reviewer judged every selected pair to be a match under the shown
-name/address/type evidence; it does not establish all-listing or future
-linkage precision. Linkage precision beyond this sample remains unresolved.
+The enhanced candidate-generation review used a separate deterministic sample
+of 144 deduplicated `(region, POI_ID)` identities, selected up to six per
+region/identity stratum and split between development and validation
+partitions. The previous UI asked for `MATCH`, `NO_MATCH`, or `UNCERTAIN` while
+showing up to five candidates. The reviewer clarified that `MATCH` meant **at
+least one displayed candidate looked like the same place**. It did not specify
+which candidate, distinguish the primary candidate, or establish a pairwise
+decision. The observed 48 `MATCH`, 30 `NO_MATCH`, and 66 `UNCERTAIN` labels
+are therefore only adjudicated hit/no-hit/uncertain outcomes among at most
+five displayed candidates. They are not pair precision, top-1 accuracy,
+recall, or threshold validation.
+
+| Candidate method | Sample stratum | Reviewed | MATCH / NO_MATCH / UNCERTAIN |
+| --- | --- | ---: | ---: |
+| `unique_exact_name_address` | `strict_matched` | 24 | 24 / 0 / 0 |
+| `exact_name_address_string_variant` | `stage2_normalized_review` | 24 | 16 / 2 / 6 |
+| `exact_name_address_string_variant` | `missing_metadata` | 1 | 0 / 0 / 1 |
+| `fuzzy_character_trigram_block` | `stage3_fuzzy_review` | 24 | 2 / 21 / 1 |
+| `fuzzy_character_trigram_block` | `multi_candidate_ambiguous` | 24 | 4 / 7 / 13 |
+| `fuzzy_character_trigram_block` | `missing_metadata` | 4 | 2 / 0 / 2 |
+| `missing_source_name` | `missing_metadata` | 19 | 0 / 0 / 19 |
+| `no_candidate_block_hit` | `still_unmatched` | 24 | 0 / 0 / 24 |
+| **Total** | | **144** | **48 / 30 / 66** |
+
+This audit's display cap and ambiguous label semantics limit what its outcomes
+mean. It did not tune any threshold. The stratified selection was not weighted
+by frame size, and only `(region, POI_ID)` was deduplicated; cross-region
+identity and population weights remain unresolved. Do not combine its counts
+with the 160-item Stage 1 baseline audit.
+
+After Stage 2 added a punctuation-normalized full-address key, a new
+deterministic targeted sample selected six source identities per region for
+the new `punctuation_address_variant` method (24 total), deduplicated within
+region by `POI_ID`. This UI explicitly showed one primary candidate and asked
+whether that presented pair was the same place. It returned 15 `MATCH`, 8
+`NO_MATCH`, and 1 `UNCERTAIN`; development (12) was 9 / 2 / 1 and validation
+(12) was 6 / 6 / 0. These are observed primary-pair sample outcomes for this
+new candidate method only. They are not population precision or confidence
+intervals, and the partitions are too small and selection too limited to
+validate a production rule or tune a threshold. The targeted audit is separate
+from both earlier audits.
+
+The later Stage 2 multi-rule block also created a method/stratum not covered by
+the preserved v4 candidate-set audit. A new deterministic sample selected up to
+six `(region, POI_ID)` identities per region (24 total), deduplicated by region
+and source ID. The independent reviewer was explicitly asked to judge the
+single presented primary candidate pair. The aggregate was 2 `MATCH`, 20
+`NO_MATCH`, and 2 `UNCERTAIN`; development (12) was 1 / 11 / 0 and validation
+(12) was 1 / 9 / 2. These are primary-pair judgments for this sample only.
+They are not population precision or confidence intervals, and are not
+combined with the 144-candidate-set audit, the 160-item strict baseline audit,
+or the separate punctuation-address sample. No threshold was tuned.
+
+The matching implementation and UI are in
+[`poi_identity_contract.py`](../../scripts/recommendation/poi_identity_contract.py),
+[`analyze_poi_catalog_enhanced.py`](../../scripts/recommendation/analyze_poi_catalog_enhanced.py),
+and [`adjudicate_poi_candidate_sample.py`](../../scripts/recommendation/adjudicate_poi_candidate_sample.py).
+Only aggregates are durable. Local evidence is held transiently in memory and
+a mode-0600 file inside a mode-0700 temporary directory; the alternate-screen
+TUI clears each pair before advancing and cleanup is verified. For this
+candidate-audit tool, handled `SIGINT` and `SIGTERM` before completion leave no
+aggregate and clean the temporary evidence. `SIGKILL` or host/power failure
+cannot run process cleanup and may leave the mode-restricted temporary file
+until the operating system removes it. The v4 144-label
+aggregate was preserved unchanged. The v7 punctuation-address and v8 multi-rule
+targeted audits each persist only aggregate labels by method/stratum/partition;
+both temporary evidence directories were deleted. No raw values, identifiers,
+coordinates, paths, or per-row labels are in repository artifacts.
+
+### Strict-baseline error analysis and staged candidates
+
+Before adding candidate generation, the four-region source identities were
+compared with the same approved TourAPI listing/sync snapshot using the strict
+name-plus-address-string rule. This was a diagnostic pass, not an adjudication
+of each proposed pair. Small-cell-safe counts are summarized below; categories
+overlap and must not be added together.
+
+| Diagnostic evidence | Aggregate result | Interpretation limit |
+| --- | --- | --- |
+| Strict `MATCHED`, `AMBIGUOUS`, and `UNMATCHED` identities | `10+` in every region for each status | Describes baseline rule outcomes, not correctness. |
+| Missing source master metadata and missing source address | `10+` in every region for each category | Source-side metadata gaps can prevent candidate generation. |
+| Name-only variation; address-only variation; both varied | `10+` in every region for each category | These are possible retrieval errors; the broad string blocks do not establish a true identity. |
+| Duplicate TourAPI records with the same normalized name; tied fuzzy top candidates | `10+` in every region for each category | Multiple plausible records must remain ambiguous until reviewed. |
+| Duplicate TourAPI records with similar normalized names | Fewer than ten in capital, east, and Jeju/islands; no supported west cell | Small and suppressed cells do not establish zero risk. |
+| No candidate under the loose name block | `10+` in every region | Failure to retrieve a candidate does not prove the catalog lacks the place. |
+| Conflicting source-master identity metadata | Zero in the aggregate count bucket in every region | Does not validate the source ID as globally unique outside this snapshot. |
+
+The categories above use name, address, and candidate-block evidence only.
+Coordinate evidence was excluded because the source X/Y semantics and CRS are
+not validated. The aggregate error analysis supports name/address retrieval
+work but does not establish a particular province alias, district mapping,
+road-number parser, or address abbreviation. Those subfeatures remain
+unresolved and unused. Source classification codes and KTO `contentTypeId`
+have no validated crosswalk.
+
+The enhanced reference pipeline keeps candidate generation separate from
+identity decisions:
+
+| Stage | Rule and output | Decision boundary |
+| --- | --- | --- |
+| 1 | Existing unique NFKC/case/whitespace-normalized name plus exact normalized address-string matcher. | Only this established rule may return provisional `MATCHED`; the 160-item baseline audit is a separate initial false-positive check. |
+| 2 | Separate collision-preserving NFKC/case/whitespace/punctuation-folded name and full-address keys. Retain raw fields and feature keys side by side; merge candidate IDs without collapsing records. Show at most five candidates while recording the full count. | Every newly retrieved candidate remains `REVIEW`; multiple candidates remain `AMBIGUOUS`. A punctuation-normalized address hit is not an automatic match. |
+| 3 | Character-trigram name blocking, then name/address string similarities for displayed candidates. Record the blocking rule and full candidate count; show at most five candidates locally. | Similarity scores only order review evidence. There is no score threshold and no fuzzy automatic match. |
+| 4 | Coordinate matching disabled. | Reconsider only after both coordinate fields' meaning, CRS, value ranges, and same-place distance distribution are validated. |
+| 5 | Source classification and KTO type shown as support/conflict evidence only. | No type hard equality without a validated crosswalk. |
+
+Across all stages, `MATCHED`, `REVIEW`, `AMBIGUOUS`, and `UNMATCHED` remain
+distinct. A unique Stage 2/3 candidate is not `MATCHED`; `UNMATCHED` means the
+implemented blocking rules found no candidate and is not evidence of catalog
+absence. The Stage 2 address key only folds punctuation in the full address;
+component extraction, road-number interpretation, administrative aliases,
+province/district mapping, and transliteration are not implemented because
+the observed aggregates do not validate those transformations.
+The ignored analysis records privacy-banded candidate-count distributions
+grouped by method and blocking rule; displayed top-five counts do not replace
+the full generated-candidate count. For conflicting source metadata, the local
+audit displays up to five candidates separately for each observed name/address
+pair, so a larger pair group cannot hide every candidate associated with a
+different source pair.
+`lDongRegnCd` remains an analysis-time catalog grouping only. Observed visit
+region is not the user's request-time selected area and never narrows serving
+candidates. The Stage 1 result remains reproducible alongside enhanced
+statuses.
+
+The v4 candidate-generation audit and v7 targeted Stage 2 address audit are
+reported separately above. Each uses deduplicated `(region, POI_ID)` identities,
+deterministic hash selection, and a maximum of six identities per region and
+stratum. The v4 UI used an “any displayed candidate” hit label with up to five
+items; the v7 targeted UI explicitly judged a single primary pair. Neither
+audit tuned or deployed a threshold. These small stratified samples are
+descriptive only; no population recall, precision, or confidence interval is
+claimed.
 
 ### Four-region current-listing identity feasibility
 
@@ -414,6 +607,34 @@ exposure. TL-outside/cold-start positive-event share is 50–<75% in capital
 and 25–<50% elsewhere. Exact-linked positives that are TL item cold-start
 are 0–<10% in each region. Catalog-outside positives cannot be isolated from
 ambiguous/unmatched links without reviewed identity evidence.
+
+### Enhanced identity outcomes for the current listing
+
+`issue4-enhanced-20261015-v7` applied the staged candidate generator to the
+same approved four-region source roles and the same v1 listing/sync snapshots.
+The table uses distinct source identities within each region/role. `Stage 1`
+and `Enhanced MATCHED` are the same strict-rule link share; Stage 2/3 outputs
+remain review states. `Recovered among review` is the share of enhanced
+`REVIEW`/`AMBIGUOUS` identities whose Stage 1 status was `UNMATCHED`; it is a
+retrieval diagnostic, not an audited match rate.
+
+| Region | Role | Stage 1 / MATCHED | REVIEW | AMBIGUOUS | UNMATCHED | Recovered among review |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Capital | TL | 0–<10% | 10–<25% | 25–<50% | 50–<75% | 75–<90% |
+| Capital | VL | 0–<10% | 10–<25% | 25–<50% | 25–<50% | 75–<90% |
+| West | TL | 0–<10% | 10–<25% | 25–<50% | 50–<75% | 75–<90% |
+| West | VL | 0–<10% | 10–<25% | 25–<50% | 25–<50% | 50–<75% |
+| East | TL | 0–<10% | 10–<25% | 25–<50% | 50–<75% | 75–<90% |
+| East | VL | 0–<10% | 10–<25% | 25–<50% | 25–<50% | 75–<90% |
+| Jeju/islands | TL | 0–<10% | 10–<25% | 25–<50% | 25–<50% | 75–<90% |
+| Jeju/islands | VL | 0–<10% | 10–<25% | 25–<50% | 25–<50% | 75–<90% |
+
+Every row has support of at least ten. The current candidate-count metrics retain
+the full count in coarse buckets (`0`, `1`, `2–4`, `5+`) by method and blocking
+rule; the local audit UI displays no more than five. The Stage 2 address method
+is present in this run and is separately sampled in the v7 targeted audit
+above. The method requires manual review even when it returns one candidate.
+No address component, administrative alias, or coordinate feature is used.
 
 ### Local 2023 four-region source readiness
 
@@ -509,12 +730,28 @@ privacy-banded positive coverage, KTO legal-dong catalog groupings, and the
 deterministic bounded sample frame. It never applies AI Hub visit region as a
 request-area filter. The separately completed independent manual audit judged
 all 160 sampled `unique_exact_name_address` pairs as `MATCH` (0 `NO_MATCH`, 0
-`UNCERTAIN`); only aggregate labels are retained. This is the observed result
-for that stratified sample, not a population precision estimate. Population
-precision and confidence intervals remain unresolved because the sample has
-equal-sized strata rather than population weighting, and possible repeated
-source items across TL/VL strata were not deduplicated. Product content-type
-and request-area contract choices remain open.
+`UNCERTAIN`); only aggregate labels are retained. The v4 candidate-set review,
+v7 punctuation-address primary-pair audit, and v8 multi-rule primary-pair audit
+are reported above with distinct label meanings and sample frames. Product
+content-type and request-area contract choices remain open.
+
+The current staged analysis is reproduced with the existing ignored snapshot
+IDs and a fresh unique run ID. This command performs the targeted primary-pair
+audit and therefore requires the local independent reviewer UI:
+
+```bash
+python3 scripts/recommendation/analyze_poi_catalog_enhanced.py \
+  --snapshot-id issue4-kto-20261014-v1 \
+  --sync-id issue4-kto-sync-20261014-v1 \
+  --run-id issue4-enhanced-NEW-DATE-vN \
+  --audit --audit-method punctuation_address_variant \
+  --audit-primary-pair --adjudicator-role independent
+```
+
+The separate newly introduced multi-rule stratum is reproduced with a fresh
+unique `--run-id issue4-enhanced-NEW-DATE-vN --audit-method
+normalized_multi_rule_candidates` and the same `--audit-primary-pair
+--adjudicator-role independent` options. Its aggregate is separate from v7.
 
 ### Validation on the revised worktree
 
@@ -527,6 +764,21 @@ and request-area contract choices remain open.
 - `python3 -m py_compile` on the six Issue scripts and the synthetic test
   module: passed.
 - `git diff --check`: passed.
+- Final focused synthetic suite
+  `python3 -m unittest tests.test_poi_catalog_contract tests.test_poi_match_adjudication tests.test_poi_candidate_adjudication tests.test_poi_catalog_enhanced`:
+  62 tests passed. `py_compile` on the changed identity, analysis, adjudication,
+  and focused test modules passed; staged and worktree `git diff --check` passed.
+- Broad fallback `python3 -m unittest discover -s tests`: 201 tests, with 3
+  failures and 6 errors. The three code-domain tests fail on sandbox
+  output-path validation; the six errors are missing `matplotlib` and `duckdb`
+  dependencies in EDA/recommendation tests. `pytest` and `ruff` are unavailable
+  in the environment, and package installation is blocked by the registry.
+- `npm test`: TypeScript compilation passed and 10/11 Node tests passed. The
+  unchanged failure is `explicit TL/VL bindings are validated instead of
+  re-inferred from path names` in
+  `tests/data-scientist-skill-docs.test.ts`; its assertion expects “Role
+  validation” in the unchanged `domain-review.md`. This is independent of the
+  Python identity diff.
 - `git check-ignore -v` on the run's metrics file confirmed the output is
   excluded by `/results/`.
 - Bounded `areaBasedList2` acquisition: 49,622 rows, 50 pages, unique
@@ -546,40 +798,68 @@ and request-area contract choices remain open.
   returned 160 `MATCH`, 0 `NO_MATCH`, and 0 `UNCERTAIN` for
   `unique_exact_name_address`; these aggregate sample results do not establish
   population precision or confidence intervals.
+- Four-region enhanced run `issue4-enhanced-20261015-v7`: completed with exit
+  `0`; the punctuation-address primary-pair sample was independently reviewed
+  (15 / 8 / 1 MATCH / NO_MATCH / UNCERTAIN). Separate enhanced run
+  `issue4-enhanced-20261015-v8` completed its new multi-rule primary-pair
+  sample with 24 independent labels (2 / 20 / 2); neither sample is a
+  population estimate, and their labels were not combined.
+- The `issue4-enhanced-20261015-v6` aggregate is pre-source-spelling-fix
+  evidence. Its catalog inventory/type-composition values remain snapshot
+  facts, but its source-linked coverage and candidate-generation metrics are
+  historical and are not current-code results.
+- Post-fix run v9 failed before output creation. Post-fix run v10 reached audit
+  reuse but was rejected because its newly generated sample frame was
+  incompatible with the preserved v4 aggregate. No post-fix current-code
+  aggregate metrics are available; the v4 audit labels were not changed and no
+  further data or audit run was performed. A/B/C scenarios and all product
+  contract choices remain open; the scenarios are decision evidence only.
+- Coordinate metadata diagnostic scanned the approved four-region AI Hub
+  inputs after source-role/provenance validation. The AI Hub schema provides
+  no CRS, axis, or unit definition; all complete pairs happened to fit the
+  hypothetical longitude/latitude bounds. The KTO snapshot omits coordinate
+  fields, so no same-place distances were available or calculated. Stage 4
+  remains disabled.
 
-The local run used the current working files, so its recorded Git revision is
-the `dev` base plus a dirty-worktree flag and script hashes. The catalog and
-sync input snapshot IDs and content hashes are recorded separately; the Git
-revision alone does not represent the acquired data version.
+The local pre-fix runs used the then-current working files, so their recorded
+Git revisions are the `dev` base plus dirty-worktree flags and script hashes.
+The catalog and sync input snapshot IDs and content hashes are recorded
+separately; the Git revision alone does not represent the acquired data
+version.
 
 **Facts:** The four AI Hub regional inputs and their roles have approved
 repository provenance. The official KTO manual v4.4 defines content ID,
 type, address, legal-dong codes, and display flag. A bounded current-public
 catalog plus display-state snapshot passed pagination and ID validation.
-The source-readiness and identity bands were run against the revised code.
+The source-readiness run completed; the identity aggregates described above
+are pre-source-spelling-fix evidence, and no post-fix identity aggregate is
+available.
 The #59 TL proxy has no exposure guarantee.
 
-**Inference:** The strict exact-string identity rule links fewer than ten
-percent of observed source items in every region/split. Its recall is likely
-limited by missing source metadata and untested address/name variation; its
-160-pair independent manual sample audit returned all `MATCH` for
-`unique_exact_name_address`. This is an observed sample result, not a
-population precision estimate; population precision and confidence intervals
-remain unresolved because the sample uses equal allocation across strata and
-possible repeated source items across TL/VL strata were not deduplicated.
-Current displayed-list membership is a defensible catalog status signal, but
-not operational or historical status.
+**Inference:** The pre-fix Stage 1 strict link share is below ten percent for
+every region and TL/VL role. The 160-item independent audit returned 160 `MATCH`
+under its single proposed unique exact name-plus-address rule; this is an
+initial false-positive check for that sample only. The 144-label candidate
+review means “at least one of up to five displayed candidates looked like the
+same place,” and the targeted 24-item address and multi-rule audits each
+judged one primary pair at a time. None is a population precision estimate.
+The punctuation-address audit's 15 / 8 / 1 and the multi-rule audit's 2 / 20 /
+2 MATCH / NO_MATCH / UNCERTAIN outcomes support keeping those candidates in
+manual review. Coordinate axis-bound counts do not validate CRS or distances.
+No threshold was tuned. Current displayed-list membership is a catalog
+display-state signal, not operational or historical availability.
 
 **Unresolved:** Product content-type policy; actual request-time region,
 district and category input contract; request-to-legal-dong crosswalk;
-temporary closure/operational status; future ID stability and refresh cadence;
-population-level match precision, confidence intervals, and alternatives;
-product candidate coverage and 2023 availability. A non-displayed item is not
-necessarily deleted.
+province/district aliases and road-number/address-component parsing; coordinate
+semantics; temporary closure/operational status; future ID stability and
+refresh cadence; population-level match precision, confidence intervals, and
+alternatives; product candidate coverage and 2023 availability. A
+non-displayed item is not necessarily deleted.
 
 **Next decision:** Confirm the product type allowlist and request-time area
-field with its validated code crosswalk, decide how the observed sample audit
-and unresolved population-level precision evidence should inform a
+field with its validated code crosswalk, decide how the three distinct sample
+audits and unresolved population-level evidence should inform a
 precision/ambiguity policy, and define freshness/closure handling. Only then
 compute product candidate size and positive coverage on a fixed, documented
 request cohort. The account owner must separately confirm production rights

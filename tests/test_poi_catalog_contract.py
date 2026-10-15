@@ -17,8 +17,10 @@ from poi_identity_contract import (  # noqa: E402
     RequestContext,
     SnapshotValidation,
     SourcePoi,
+    CatalogCandidateIndex,
     candidate_eligibility,
     match_source_poi,
+    normalize_punctuation_candidate,
 )
 import analyze_poi_source_readiness as readiness  # noqa: E402
 import analyze_poi_catalog_identity as catalog_identity  # noqa: E402
@@ -71,6 +73,82 @@ class IdentityContractTests(unittest.TestCase):
     def test_unicode_whitespace_normalization_is_deterministic(self) -> None:
         source = SourcePoi("synthetic-region", "source-1", "  Ｓｙｎｔｈｅｔｉｃ   Museum ", "10  Test Road")
         self.assertEqual(match_source_poi(source, [poi("catalog-1")]).status, "MATCHED")
+
+
+class CandidatePipelineTests(unittest.TestCase):
+    def test_punctuation_normalization_collisions_remain_ambiguous(self) -> None:
+        catalog = [poi("catalog-1", title="Harbor-Museum", address="Road A"),
+                   poi("catalog-2", title="Harbor Museum", address="Road B")]
+        source = SourcePoi("synthetic-region", "source-1", "Harbor—Museum", "Road C")
+        index = CatalogCandidateIndex(catalog, snapshot_version="synthetic-v1")
+        self.assertEqual(normalize_punctuation_candidate("Harbor—Museum"), "harbor museum")
+        result = index.generate(source)
+        self.assertEqual((result.status, result.stage, result.candidate_count),
+                         ("AMBIGUOUS", "stage2_normalized", 2))
+        self.assertTrue(all(candidate.item.content_id in {"catalog-1", "catalog-2"}
+                            for candidate in result.candidates))
+
+    def test_address_string_difference_is_review_only(self) -> None:
+        source = SourcePoi("synthetic-region", "source-1", "Synthetic Museum", "Other Road")
+        result = CatalogCandidateIndex([poi("catalog-1")]).generate(source)
+        self.assertEqual((result.status, result.stage, result.method),
+                         ("REVIEW", "stage2_normalized", "exact_name_address_string_variant"))
+        self.assertEqual(result.strict_result.status, "AMBIGUOUS")
+
+    def test_punctuation_normalized_address_is_review_only_and_keeps_raw_values(self) -> None:
+        catalog_item = poi("catalog-1", title="Museum Name", address="12-3 Main Road.")
+        source = SourcePoi("synthetic-region", "source-1", "Museum of History", "１２－３  Main Road")
+        result = CatalogCandidateIndex([catalog_item]).generate(source)
+        self.assertEqual((result.status, result.stage, result.method),
+                         ("REVIEW", "stage2_normalized", "punctuation_address_variant"))
+        self.assertEqual(result.candidate_count, 1)
+        self.assertEqual(result.candidates[0].item.content_id, "catalog-1")
+        self.assertEqual(result.strict_result.status, "UNMATCHED")
+        self.assertEqual(catalog_item.road_address, "12-3 Main Road.")
+        self.assertEqual(source.road_address, "１２－３  Main Road")
+
+    def test_punctuation_address_collisions_remain_ambiguous_and_display_is_bounded(self) -> None:
+        catalog = [poi(f"catalog-{n}", title=f"Place {n}", address="12-3 Main Road.")
+                   for n in range(7)]
+        source = SourcePoi("synthetic-region", "source-1", "Different Source Name",
+                           "１２－３  Main Road")
+        result = CatalogCandidateIndex(catalog, fuzzy_display_limit=5).generate(source)
+        self.assertEqual((result.status, result.stage, result.method),
+                         ("AMBIGUOUS", "stage2_normalized", "punctuation_address_variant"))
+        self.assertEqual(result.candidate_count, 7)
+        self.assertEqual(len(result.candidates), 5)
+        self.assertEqual({candidate.rule for candidate in result.candidates},
+                         {"punctuation_address_variant"})
+
+    def test_unique_fuzzy_candidate_is_never_auto_matched(self) -> None:
+        source = SourcePoi("synthetic-region", "source-1", "Synthetic Art Museum", "Other Road")
+        index = CatalogCandidateIndex([poi("catalog-1", title="Synthetic Arts Museum")])
+        result = index.generate(source)
+        self.assertEqual((result.status, result.stage, result.candidate_count),
+                         ("REVIEW", "stage3_fuzzy", 1))
+        self.assertNotEqual(result.status, "MATCHED")
+        self.assertEqual(result.blocking_rule, "any_shared_character_trigram_no_area_filter")
+
+    def test_fuzzy_multiple_candidates_are_ambiguous(self) -> None:
+        source = SourcePoi("synthetic-region", "source-1", "Synthetic Art Museum", "Other Road")
+        catalog = [poi("catalog-1", title="Synthetic Arts Museum"),
+                   poi("catalog-2", title="Synthetic Art Museums")]
+        result = CatalogCandidateIndex(catalog).generate(source)
+        self.assertEqual((result.status, result.stage), ("AMBIGUOUS", "stage3_fuzzy"))
+        self.assertEqual(result.candidate_count, 2)
+
+    def test_no_name_block_candidate_stays_unmatched(self) -> None:
+        source = SourcePoi("synthetic-region", "source-1", "zz", "Some Road")
+        result = CatalogCandidateIndex([poi("catalog-1", title="Museum")]).generate(source)
+        self.assertEqual((result.status, result.stage, result.method),
+                         ("UNMATCHED", "none", "no_candidate_block_hit"))
+
+    def test_candidate_index_does_not_use_coordinate_or_type_as_auto_match(self) -> None:
+        source = SourcePoi("synthetic-region", "source-1", "Synthetic Arts Museum", "10 Test Road")
+        result = CatalogCandidateIndex([poi("catalog-1", title="Synthetic Art Museum", kind="12")]).generate(source)
+        self.assertIn(result.status, {"REVIEW", "AMBIGUOUS"})
+        self.assertNotIn("coordinate", result.method)
+        self.assertNotIn("content_type", result.method)
 
 
 class EligibilityContractTests(unittest.TestCase):
