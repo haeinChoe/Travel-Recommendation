@@ -68,6 +68,8 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 
 이때 자연어 해석 기능을 사용하더라도 실제 추천 후보 생성과 랭킹은 검증 가능한 추천 모델과 카탈로그 데이터를 기반으로 수행하는 것을 기본 방향으로 한다.
 
+**현재 계약 상태:** TourAPI는 authoritative POI catalog 후보로 검토 중이며 source, 추천 가능한 content type, serving-time eligibility, canonical identity는 아직 확정되지 않았다. AI Hub의 방문 POI ID나 `TN_POI_MASTER`만으로 canonical 관광지 identity를 확정하지 않는다. 제품 후보는 검증된 catalog snapshot과 request-time hard constraints로 구성해야 하며, 이는 과거 노출 집합을 복원하지 않는다. 진행 근거와 미결정 항목은 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)에 기록한다.
+
 ---
 
 ## 4. Goals
@@ -306,17 +308,18 @@ occurredAt
 
 ### 9.2 Item Catalog Mapping
 
-AI Hub 방문지와 TourAPI 관광지는 서로 다른 식별 체계를 사용하므로 entity resolution 과정이 필요하다.
+AI Hub 방문 POI와 serving catalog는 서로 다른 식별 체계를 사용할 수 있으므로 검증된 catalog snapshot을 대상으로 entity-resolution을 수행한다. TourAPI는 유력한 source 후보지만 Issue #4에서 서비스별 접근 권한과 field-level contract를 확인하지 못해 authoritative catalog로 확정되지 않았다. `TN_POI_MASTER`는 별도 historical reference table이며 `TN_VISIT_AREA_INFO.POI_ID`의 FK 또는 동일 key 보장을 의미하지 않는다. AI Hub source identity는 `(region, nonblank POI_ID)`로 보존한다.
 
-매핑 후보:
+매핑 신호 후보:
 
-1. exact name
-2. name + address
-3. geographic distance
-4. fuzzy name matching
-5. manual review fallback
+1. exact normalized name + address 또는 검토된 administrative area
+2. exact normalized name only
+3. coordinate / distance
+4. fuzzy name
 
-각 매핑에는 가능하면 다음 정보를 남긴다.
+단독 name, coordinate/distance, fuzzy match는 candidate discovery 진단으로만 사용한다. 불확실하거나 여러 신호가 충돌하는 결과는 임의 확정하지 않고 `AMBIGUOUS` 또는 `UNMATCHED`로 보존한다. 확정된 link에는 source identity, provider content ID, match method, catalog snapshot/version 및 validation status를 남긴다. Confidence threshold와 cross-region namespace 제거는 검증 전까지 미결정이다.
+
+Serving candidate는 catalog 전체와 구분하며, explicit request region, 명시적으로 선택된 district, 제품이 지원하는 content type, 검증된 active status만 hard eligibility 조건 후보로 둔다. 방문 후 feedback과 observed visit location/category는 추천 요청 feature나 eligibility filter로 사용하지 않는다. 이 request-time eligible set은 과거 historical exposure를 의미하지 않는다. 상세 구현·근거 상태는 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)를 따른다.
 
 ```text
 sourceVisitId
