@@ -108,6 +108,116 @@ PR은 명시적으로 허가된 경우에만 만든다. PR에는 다음 내용�
 
 PR에는 실제 데이터 행, 개인 식별 가능 정보, 토큰·비밀값, 원본 데이터 파일을 넣지 않는다. 상세한 데이터 처리 규칙은 data/aihub-workflow.md를 따른다.
 
+
+## 유지보수 신속 경로
+
+승인된 Issue 작업 중 발견된 저위험 운영·지침·에이전트 워크플로 blocker는 별도 Issue 생명주기를 처음부터 반복하지 않고 **유지보수 신속 경로**로 처리할 수 있다. 이 경로는 안전 장치를 줄이는 우회 절차가 아니라, 현재 작업과 직접 연결된 작은 유지보수 변경의 승인·검증·PR 절차를 짧게 만드는 경로다.
+
+### 진입 조건
+
+다음 조건을 모두 만족해야 한다.
+
+1. 이미 승인된 Issue 작업 중 발견된 blocker 또는 운영 결함이다.
+2. 제품 요구사항, 데이터 의미, 모델 의미, 평가 의미를 변경하지 않는다.
+3. 변경 이유와 중단된 작업의 관계를 짧고 명확하게 설명할 수 있다.
+4. 변경 파일이 아래 초기 허용 범위에 속한다.
+5. 자동 테스트 또는 명확한 수동 검증 방법이 있다.
+6. 원래 Issue의 기능 범위를 대신 확장하지 않는다.
+
+사용자가 특정 blocker에 대해 `유지보수 게이트로 처리`라고 명시하면, 그 blocker에 한해 유지보수 신속 경로의 파일 수정·검증·검증된 커밋·기능 브랜치 push·유지보수 PR 생성을 승인한 것으로 해석한다. 이 문구는 `dev`/`main` 직접 push, force push, merge 권한을 부여하지 않는다.
+
+유지보수 신속 경로 자체가 새 제품 결정을 승인하지 않는다. 진입 조건을 만족하지 못하거나 의미 변경 여부가 불분명하면 일반 Issue로 승격한다.
+
+### 초기 허용 범위
+
+자동 적용 범위는 보수적인 allowlist로 시작한다.
+
+- `AGENTS.md`
+- `docs/agent-workflow.md`
+- `.agents/skills/**`
+- `.github/PULL_REQUEST_TEMPLATE.md`
+- `.github/PULL_REQUEST_TEMPLATE/**`
+- `.github/ISSUE_TEMPLATE/**`
+- 유지보수 신속 경로 자체의 계약 검증 파일
+  - `scripts/maintenance/validate-fast-path-scope.ts`
+  - `tests/maintenance-fast-path.test.ts`
+  - `package.json`의 관련 테스트 스크립트
+
+현재 Issue를 직접 막는 좁은 CI/개발 도구 설정이 필요하더라도 위 allowlist 밖이면 자동으로 통과시키지 않는다. 해당 정확한 경로와 비의미 변경임을 먼저 검토하고, 필요하면 일반 Issue 또는 별도 승인으로 범위를 확장한다.
+
+### 금지 범위
+
+다음 의미를 바꾸는 변경은 파일 위치와 관계없이 유지보수 신속 경로를 사용할 수 없다.
+
+- 추천 알고리즘 또는 모델 학습·추론
+- 제품 요구사항 또는 서비스 도메인 규칙
+- 데이터 계약, 데이터 의미 또는 전처리 의미
+- 평가 프로토콜, label/feature/split/metric 의미
+- API 계약
+- DB schema
+- 실제 데이터 처리 결과를 바꾸는 로직
+
+경계가 애매하면 신속 경로가 아니라 일반 Issue로 처리한다. 단순 diff 크기만으로 안전 여부를 판단하지 않는다.
+
+### 신속 경로 적용 범위 확인
+
+변경 파일은 다음 도구로 1차 확인한다.
+
+```bash
+node scripts/maintenance/validate-fast-path-scope.ts <changed-file>...
+```
+
+브랜치 전체 변경 파일을 확인하는 예:
+
+```bash
+git diff --name-only -z origin/dev...HEAD \
+  | xargs -0 node scripts/maintenance/validate-fast-path-scope.ts
+```
+
+이 검사는 경로 allowlist만 확인한다. **경로가 허용되었다고 의미 변경까지 안전하다는 뜻은 아니다.** PR 작성자와 검토자는 금지 의미 변경이 없는지 별도로 확인하고 관련 계약 검증 테스트를 실행한다.
+
+### 유지보수 PR
+
+유지보수 PR은 `.github/PULL_REQUEST_TEMPLATE/maintenance.md`를 사용하고 반드시 다음을 기록한다.
+
+- 중단된 기존 Issue
+- 발생한 blocker
+- 실제 변경 범위
+- 제품·데이터·모델·평가 의미에서 변경하지 않는 것
+- 실행한 검증과 미실행 검증의 이유
+- 병합 후 기존 작업 재개 절차
+
+유지보수 PR도 기능 브랜치에서 `dev`를 대상으로 만들며 보호 브랜치를 우회하지 않는다. 유지보수 PR 생성 권한은 merge 권한을 포함하지 않는다.
+
+### 병합 후 작업 재개
+
+유지보수 PR이 별도 승인으로 `dev`에 병합된 뒤 중단된 Issue writer는 기존 worktree와 branch를 재사용한다.
+
+```bash
+git status
+git fetch origin
+git merge origin/dev
+```
+
+기본 동기화 방식은 기존 Issue branch에 `origin/dev`를 merge하는 것이다. 이미 원격에 push된 Issue branch의 SHA를 다시 쓰는 rebase나 force push를 기본 절차로 사용하지 않는다. merge 전에 현재 변경사항과 충돌 가능성을 확인하고, 충돌 시 유지보수 변경과 기존 Issue 변경의 의미를 모두 보존한다. merge 후 원래 Issue 관련 검증을 다시 실행한다.
+
+로컬 `dev` 자체를 갱신해야 할 때는 예상치 못한 merge commit 생성을 피하기 위해 `git pull --ff-only`를 권장한다.
+
+### dry-run 기준
+
+최소 dry-run 시나리오는 다음과 같다.
+
+1. 승인된 Issue 작업 중 문서/에이전트 지침 blocker 발견
+2. 사용자가 `유지보수 게이트로 처리` 지시
+3. 허용 경로만 수정
+4. 경로 검사와 관련 계약 검증 실행
+5. 유지보수 PR 생성, 중단된 Issue 참조
+6. 별도 merge 승인 전에는 병합하지 않음
+7. 병합 후 기존 Issue branch에 `origin/dev` merge
+8. 기존 Issue 검증 재실행 후 작업 재개
+
+긴급 우회 절차, required check 우회, 자동 merge, force push는 이 흐름에 포함하지 않는다.
+
 ## 작업 완료 보고
 
 완료 보고에는 변경 파일과 범위, 브랜치·커밋, 실행한 검증 결과, 미실행 항목, 데이터 또는 계약 영향, PR·원격 작업 여부를 포함한다. 실행하지 않은 작업을 완료했다고 표현하지 않는다.
