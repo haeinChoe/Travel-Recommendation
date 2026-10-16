@@ -22,10 +22,17 @@ from typing import Callable
 LABELS = ("MATCH", "NO_MATCH", "UNCERTAIN")
 
 
+class AuditInterrupted(BaseException):
+    """Keep the signal that stopped the ephemeral review available to callers."""
+
+    def __init__(self, signal_number: int):
+        super().__init__()
+        self.signal_number = signal_number
+
+
 def _handle_sigterm(signum: int, _frame: object) -> None:
-    """Turn SIGTERM into a handled interruption so the evidence file is removed."""
-    signal.signal(signum, signal.SIG_IGN)
-    raise KeyboardInterrupt
+    """Raise a cleanup-safe interruption without converting SIGTERM to SIGINT."""
+    raise AuditInterrupted(signum)
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,7 @@ class SourceCandidateGroup:
     source_address: str
     candidates: tuple[CandidateView, ...]
     candidate_count: int
+    source_lot_address: str = "[not supplied]"
 
 
 @dataclass(frozen=True)
@@ -55,6 +63,7 @@ class AuditObservation:
     candidates: tuple[CandidateView, ...]
     candidate_count: int
     source_candidate_groups: tuple[SourceCandidateGroup, ...] = ()
+    source_lot_address: str = "[not supplied]"
 
 
 def _write_private_evidence(observations: list[AuditObservation], directory: Path) -> Path:
@@ -82,7 +91,7 @@ def _read_private_evidence(path: Path) -> list[AuditObservation]:
     result = []
     expected = {"ordinal", "region", "stratum", "partition", "method", "source_name",
                 "source_address", "source_type", "candidates", "candidate_count",
-                "source_candidate_groups"}
+                "source_candidate_groups", "source_lot_address"}
     with path.open("r", encoding="utf-8") as stream:
         for line in stream:
             item = json.loads(line)
@@ -93,6 +102,7 @@ def _read_private_evidence(path: Path) -> list[AuditObservation]:
                 source_name=group["source_name"], source_address=group["source_address"],
                 candidates=tuple(CandidateView(**candidate) for candidate in group["candidates"]),
                 candidate_count=group["candidate_count"],
+                source_lot_address=group["source_lot_address"],
             ) for group in item["source_candidate_groups"])
             result.append(AuditObservation(
                 region=item["region"], stratum=item["stratum"], partition=item["partition"],
@@ -100,6 +110,7 @@ def _read_private_evidence(path: Path) -> list[AuditObservation]:
                 source_address=item["source_address"], source_type=item["source_type"],
                 candidates=candidates, candidate_count=item["candidate_count"],
                 source_candidate_groups=groups,
+                source_lot_address=item["source_lot_address"],
             ))
     return result
 
@@ -128,6 +139,12 @@ def _open_tty() -> tuple[int, bytes, bytes, bytes]:
         raise
 
 
+def preflight_terminal() -> None:
+    """Check audit terminal support before the analyzer reads source inputs."""
+    fd, _enter, _leave, _clear = _open_tty()
+    os.close(fd)
+
+
 def _render(observation: AuditObservation, index: int, total: int, width: int) -> bytes:
     if observation.stratum.endswith("_primary_pair"):
         instruction = [
@@ -147,7 +164,8 @@ def _render(observation: AuditObservation, index: int, total: int, width: int) -
         "Press 1 MATCH | 2 NO_MATCH | 3 UNCERTAIN; SPACE confirms; q cancels", "",
         *([] if observation.source_candidate_groups else [
             "Source name: " + _safe_text(observation.source_name),
-            "Source address: " + _safe_text(observation.source_address),
+            "Source road address: " + _safe_text(observation.source_address),
+            "Source lot address: " + _safe_text(observation.source_lot_address),
         ]),
         "Source classification codes (unmapped): " + _safe_text(observation.source_type), "",
     ]
@@ -155,7 +173,8 @@ def _render(observation: AuditObservation, index: int, total: int, width: int) -
         for group_position, group in enumerate(observation.source_candidate_groups, 1):
             lines.extend((
                 f"Source pair {group_position} name: " + _safe_text(group.source_name),
-                "Source pair " + str(group_position) + " address: " + _safe_text(group.source_address),
+                "Source pair " + str(group_position) + " road address: " + _safe_text(group.source_address),
+                "Source pair " + str(group_position) + " lot address: " + _safe_text(group.source_lot_address),
                 f"Candidates for this source pair: {len(group.candidates)} of {group.candidate_count}",
             ))
             for position, candidate in enumerate(group.candidates, 1):

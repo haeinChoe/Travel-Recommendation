@@ -122,11 +122,14 @@ The synthetic reference implementation is
 Stage 1 applies Unicode NFKC, case folding, and whitespace normalization to
 both strings, then requires one exact normalized title plus address-string
 pair. Stage 2 keeps the original source/catalog fields and builds separate
-name and full-address punctuation-folded candidate keys; punctuation is
-replaced with a separator, and collisions retain every candidate. These
-features retrieve candidates only and never alter stored raw values or prove
-identity. Matching operates within one complete approved catalog snapshot. A
-source `POI_ID` with conflicting source metadata is held for review.
+punctuation-to-separator and no-spacing candidate keys for names and address
+fields. Punctuation is represented by a separator; it is never globally
+deleted. The intentionally lossy keys retain every collision and retrieve
+candidates only. Stage 3 uses name-token, two-character-prefix, admin-component
+and address-piece blocks where available, then trigram blocks as a broader
+fallback. Candidate generation is separate from identity decisions. Matching
+operates within one complete approved catalog snapshot. A source `POI_ID` with
+conflicting source metadata is held for review.
 
 | Status | Deterministic rule | Meaning |
 | --- | --- | --- |
@@ -142,6 +145,94 @@ source items and observed positive events. Precision requires independent
 reviewed labels and a representative ambiguity sample; match rate alone does
 not establish correctness.
 
+The enhanced analyzer emits privacy-safe phase markers for catalog loading,
+sync validation, index construction, source-master scanning, candidate
+generation, metric/sample aggregation, and aggregate writing. Source-master
+progress is reported every 50,000 scanned rows and candidate generation is
+reported in deterministic batches of 32 source items. Blocking-index traversal
+callbacks occur every 100,000 entries and broad-set scoring callbacks every
+5,000 candidates, while forwarded work-progress markers are limited to one
+every 15 seconds per region. Atomic status checkpoints are written at phase,
+region, and batch boundaries, with same-state heartbeats no more often than
+every 15 seconds. A background heartbeat persists the current coarse phase,
+region, batch, and completed-work bucket while a single candidate-scoring call
+is still running; checkpoint replacement is serialized with main-thread updates.
+Completed-work values and all small sample counts use the repository's coarse
+buckets; identifiers and source/catalog values are never printed. Candidate membership
+uses fixed-size arrays indexed by catalog row (16-bit block masks, generation
+stamps, and first-discovery ordinals) plus a compact ordinal buffer capped at
+one entry per catalog row. This replaces per-candidate dictionaries, block
+sets, and full evidence objects. The generator retains only the configured
+top-five evidence rows while preserving full candidate-record counts, all
+blocking-rule coverage, ambiguity status, and full canonical-ID union counts
+across source variants. Conflicted-source evidence deduplicates catalog records
+by per-run row identity across variants while retaining separate per-variant
+evidence for the adjudication interface. Before computing expensive similarity scores, safe
+length and shared-character upper bounds skip candidates that cannot outrank
+the current top-five floor; candidates still contribute to counts and blocking
+coverage. Candidate-generation scratch memory is therefore bounded by catalog
+size. Source metadata and aggregate analysis results are still held in memory
+until final construction; restartable matching-result checkpoints are not
+written. The separate atomic `run_status.json` records only coarse phase,
+region, batch, status, and sanitized exception details on failure or
+interruption. `run_metadata.json` and `sample_support.json` also bucket sample
+size and selected counts; exact sample counts used to validate a reused audit
+remain in memory only.
+
+For `--audit`, terminal support is checked before catalog loading or source
+input access. A terminal below the UI's minimum dimensions fails during
+startup. After matching, metrics, and the sample frame are built, the analyzer
+atomically writes aggregate-only `metrics.csv`, `sample_support.json`, and an
+`aggregate_checkpoint.json` marked `incomplete` before it opens the manual
+review UI. If review is cancelled, the terminal fails, or the process is
+interrupted, that aggregate checkpoint remains incomplete and `run_status.json`
+is `failed` or `interrupted`; temporary row-level audit evidence is deleted by
+the UI cleanup path. The final metadata, audit-augmented metrics, completed
+checkpoint, and `run_status.json=complete` are written only after successful
+review and artifact construction. Consumers must treat `run_status.json` as the
+completion authority; a checkpoint or aggregate file alone never means the run
+completed.
+
+Failed or interrupted audit runs are not resumable: use a fresh run ID to
+recompute the source scan, candidate results, metrics, and sample frame. The
+prior run's aggregate checkpoint remains useful for diagnosis but is not an
+input to a rerun. `--reuse-audit-run-id` reuses a completed audit aggregate only
+when the newly computed sample frame matches; it does not resume a failed run.
+Successful run metadata records coarse duration bands (`<1m`, `1-5m`, `5-15m`,
+`15m+`) for source scanning, candidate generation, metrics, sample framing, and
+manual audit. When `--reuse-audit-run-id` validates and imports a completed
+aggregate, no TUI review occurs: `audit_review` is `not_run` and the elapsed
+time is recorded separately as `audit_reuse_validation`. These bands describe
+execution phases without exposing row-level activity or exact sample counts.
+
+A synthetic `cProfile` fanout check used 2,500 catalog entries and 10 source
+items, with each source retrieving all 2,500 candidates. Before feature
+caching, candidate evidence construction took 5.4 seconds and made about 23.5
+million calls; normalization was repeated for every candidate and five
+similarity calculations were made per candidate. Precomputing normalized
+catalog features and source features reduced that check to 2.8 seconds and
+about 10.0 million calls, with the same 2,500 candidates per source and the
+same ranking policy. This synthetic timing is diagnostic, not a prediction of
+actual-data runtime.
+
+A second synthetic broad-fanout check used 25,005 catalog rows for one source
+identity. The materialized reference and bounded resolver both counted all
+25,005 records and returned the same top five. The reference took 0.498
+seconds; bounded ranking took 0.241 seconds and built detailed evidence for
+five records. A synthetic `cProfile` run of the bounded path took 0.562 seconds
+under profiler instrumentation; the leading costs were the safe character
+bound checks and block-index traversal. These single local timings are
+diagnostic only, not actual-data runtime estimates.
+
+Profiling the revised candidate path found exact `SequenceMatcher` scoring to
+be the leading synthetic cost when many catalog rows repeated the same title
+and address. A bounded 65,536-entry LRU cache for exact string-pair similarity
+preserves the same score function and candidate ordering. On a synthetic
+25,000-candidate duplicate fanout, elapsed time fell from 0.633 to 0.213
+seconds (2.96x); full candidate count and top-five order were identical. This
+fixture measures repeated string pairs and does not predict speedup on unique
+catalog text.
+
 Stage 2 punctuation-normalized name/address keys and Stage 3 fuzzy name
 similarity are review-only candidate signals. Address-component parsing,
 province/district aliases, and service-code crosswalks are unresolved; the raw
@@ -152,13 +243,15 @@ are unused. Category consistency is support evidence only. None of these
 signals automatically promotes a result to `MATCHED`. Region namespaces remain
 on AI Hub IDs until cross-region identity is proven.
 
-When multiple source-master spellings share one exact normalized name/address
-identity, the implementation selects one deterministic observed spelling for
-candidate generation rather than joining variants into synthetic text.
-Distinct normalized identities remain conflicting metadata and stay in review;
-candidate generation evaluates each observed name/address pair together and
-the local review view preserves those pair associations. It does not combine
-names from one source row with addresses from another.
+Source variants are grouped by normalized name, road address, and lot address.
+When all three normalized values agree, the implementation selects one
+deterministic observed tuple for candidate generation rather than joining
+variants into synthetic text. If the name or road address differs, the source
+metadata is conflicting and the result remains ambiguous; candidate generation
+evaluates each observed tuple together and the local review view preserves those
+associations. If only the lot address differs, Stage 1 keeps its strict
+name-plus-road result and the enhanced result requires review. The local review
+view does not combine names or addresses from separate source rows.
 
 ### Coordinate field validation and limits
 
@@ -365,11 +458,16 @@ legal-dong codes, privacy-banded and suppressed where support is below ten.
 Unmatched, ambiguous, and review positives cannot be allocated to a single
 KTO code.
 
-These are global type-scope identity diagnostics, not true request-time
-candidate coverage. Since no selected request region or validated crosswalk
-exists in the travel logs, per-trip nonempty candidate share and candidate
-size distribution remain unestimable. TL-observed item membership remains a
-proxy only; unvisited items remain unknown.
+These are global type-scope identity diagnostics, not evidence of serving-time
+requests: the travel logs do not show that a user selected a region when
+requesting recommendations. The user-provided official AI Hub v3.5 usage guide
+defines purpose-region as a valid offline cohort for region-scoped evaluation.
+Purpose-region-scoped catalog candidate coverage has not been computed because
+no authoritative membership crosswalk from purpose-region to KTO
+`lDongRegnCd` is available. This is distinct from request-time candidate
+coverage, for which the serving contract and selected-area evidence remain
+unresolved. TL-observed item membership remains a proxy only; unvisited items
+remain unknown.
 
 ### Matching and candidate-review audits
 
@@ -491,6 +589,107 @@ They are not population precision or confidence intervals, and are not
 combined with the 144-candidate-set audit, the 160-item strict baseline audit,
 or the separate punctuation-address sample. No threshold was tuned.
 
+#### Enhanced audit2: candidate-set adjudication and A/B/C diagnostics
+
+The completed run `issue4-enhanced-20261016-audit2` is a separate enhanced
+candidate-set audit. Its aggregate artifacts record code revision `b5aa7cc`
+with a dirty-worktree flag, catalog/sync snapshot IDs and hashes, the
+privacy-banded sample support, and the aggregate audit labels. The run selected
+items from six populated strata: `strict_matched`,
+`stage2_normalized_review`, `stage3_fuzzy_review`,
+`multi_candidate_ambiguous`, `still_unmatched`, and `missing_metadata`. The
+stratified sample was not weighted by stratum size.
+
+| Candidate method | Reviewed | MATCH / NO_MATCH / UNCERTAIN |
+| --- | ---: | ---: |
+| `unique_exact_name_address` | 3 | 3 / 0 / 0 |
+| `strict_pair_with_signal_conflict` | 24 | 24 / 0 / 0 |
+| `exact_name_address_string_variant` | 19 | 15 / 1 / 3 |
+| `punctuation_address_variant` | 4 | 2 / 2 / 0 |
+| `spacing_name_variant` | 2 | 2 / 0 / 0 |
+| `stage3_multi_block_candidates` | 24 | 4 / 19 / 1 |
+| `address_piece_block` | 23 | 1 / 22 / 0 |
+| `fuzzy_character_trigram_block` | 1 | 0 / 1 / 0 |
+| `missing_source_name` | 19 | 0 / 0 / 19 |
+| **Total** | **119** | **51 / 45 / 23** |
+
+The UI displays up to five candidates for each source name/road/lot pair group.
+An item with conflicting source metadata can therefore have multiple displayed
+groups and more than five candidates overall. `MATCH` means a same-place
+candidate appeared in any displayed pair group. Thus `51 / 119 = 42.9%` is
+only the **adjudicated sample candidate-hit share**: at least one displayed
+same-place candidate appeared for that share of reviewed sample items. It is
+not precision, recall, top-1 accuracy, or a population estimate, and it does
+not establish a candidate beyond the displayed pair groups. A `MATCH` did not
+mean the first candidate in a group was correct. The result is separate from
+the earlier 160-item strict-baseline audit; labels from the two samples are not
+pooled.
+
+The same run's metrics report A/B/C inventory totals of 49,622 / 21,025 /
+19,069 catalog records. On the observed-positive comparison, each scenario
+uses the same usable positive-event denominator within each of the same eight
+source-region × TL/VL cells; shares are privacy-banded and cells are not
+weighted together. Across those cells, A/B/C each have `REVIEW` in two cells
+at `10–<25%` and six at `25–<50%`, `AMBIGUOUS` in six at `25–<50%` and two
+at `50–<75%`, and `UNMATCHED` in two at `10–<25%` and six at `25–<50%`.
+Confirmed identity matched inside the type scenario is `0–<10%` in all eight
+cells for B/C; A has six cells at `0–<10%` and two suppressed below the
+minimum support rule. Matched outside the type scenario is `0–<10%` in all
+eight cells for A; B/C have six cells at `0–<10%` and two suppressed. The
+metrics therefore do not show a material difference in confirmed identity
+status by type scope at this resolution. Review-only displayed candidates
+include at least one in-scope record in six A cells at `50–<75%` and two at
+`75–<90%`; for B/C, six cells are `50–<75%` and two are `25–<50%`. These
+candidate-display shares are retrieval diagnostics, not request-time
+eligibility or confirmed links.
+
+The complete run took about 44 minutes 45 seconds from the supplied run
+directory birth time, 2026-10-16 14:16:49 KST, to the completed status time,
+15:01:34 KST. The exact total was measured from those artifact timestamps.
+`run_metadata.json` reports source scan `1–5m`, candidate generation `15m+`,
+metrics `<1m`, sample-frame construction `<1m`, and manual audit `5–15m`.
+Candidate generation was the dominant phase. Synthetic profiling did not
+identify a new optimization target. The earlier audit1 attempt failed for a
+different reason: its private TTY was below the supported 80 × 18 size, but
+the size check ran only after about 31m43s of source scan, candidate generation,
+metrics, and sample-frame computation. The TUI then raised `ValueError` before
+aggregate files were written. Cleanup of its temporary raw evidence was
+verified. Audit2 completed with the preflight and checkpoint behavior in the
+validated implementation.
+
+**Facts:** The aggregate audit labels total 119 and the metrics include the
+scenario inventories and common-denominator, privacy-banded A/B/C comparisons.
+The run reports no persisted row labels, source IDs, names, addresses, or
+coordinates. Audit2 is complete; its recorded phase bands put candidate
+generation above 15 minutes and each metrics/sample-frame phase below one
+minute.
+
+**Interpretation:** The 42.9% candidate-hit share describes only these
+adjudicated sample items: a same-place candidate appeared in at least one
+displayed pair group, with up to five candidates per group. The reviewed
+outcomes support retaining enhanced candidates for manual review and keeping
+all automatic decision boundaries unchanged. The current metrics show little
+scenario separation in identity-status bands, while A has broader in-scope
+candidate display at these bands.
+
+**Limitations:** The stratified audit is unweighted and is not a population
+estimate. Each pair group's display cap can hide additional candidates beyond
+the five shown, and `MATCH` does not identify a winning rank. Source-region/TL/VL
+cohort metrics do not establish request-area candidate coverage. The official
+AI Hub v3.5 purpose-region is a valid offline cohort, but there is no evidence
+that a user selected that region at serving time. Purpose-region-scoped trip
+coverage remains uncomputed because authoritative membership to KTO
+`lDongRegnCd` is unavailable. Inventory totals describe catalog composition,
+not the request contract. A/B/C and all product contracts remain open. Earlier
+source-readiness bands came from a prior run and their provenance against the
+revised code is pending a data-science rerun.
+
+**Next decision:** Obtain authoritative evidence for any purpose-region to
+`lDongRegnCd` membership crosswalk before estimating region-scoped trip
+coverage. Keep the existing A/B/C, request-area, type-allowlist, and serving
+contracts open pending product decisions and representative, appropriately
+weighted validation.
+
 The matching implementation and UI are in
 [`poi_identity_contract.py`](../../scripts/recommendation/poi_identity_contract.py),
 [`analyze_poi_catalog_enhanced.py`](../../scripts/recommendation/analyze_poi_catalog_enhanced.py),
@@ -507,31 +706,42 @@ targeted audits each persist only aggregate labels by method/stratum/partition;
 both temporary evidence directories were deleted. No raw values, identifiers,
 coordinates, paths, or per-row labels are in repository artifacts.
 
-### Strict-baseline error analysis and staged candidates
+### Strict-baseline error analysis
 
-Before adding candidate generation, the four-region source identities were
-compared with the same approved TourAPI listing/sync snapshot using the strict
-name-plus-address-string rule. This was a diagnostic pass, not an adjudication
-of each proposed pair. Small-cell-safe counts are summarized below; categories
+The data-science error-analysis phase examined 37,397 distinct `(region,
+POI_ID)` identities that remained `UNMATCHED` or `AMBIGUOUS` under the strict
+baseline. These are aggregate displayed-candidate evidence flags; categories
 overlap and must not be added together.
 
-| Diagnostic evidence | Aggregate result | Interpretation limit |
-| --- | --- | --- |
-| Strict `MATCHED`, `AMBIGUOUS`, and `UNMATCHED` identities | `10+` in every region for each status | Describes baseline rule outcomes, not correctness. |
-| Missing source master metadata and missing source address | `10+` in every region for each category | Source-side metadata gaps can prevent candidate generation. |
-| Name-only variation; address-only variation; both varied | `10+` in every region for each category | These are possible retrieval errors; the broad string blocks do not establish a true identity. |
-| Duplicate TourAPI records with the same normalized name; tied fuzzy top candidates | `10+` in every region for each category | Multiple plausible records must remain ambiguous until reviewed. |
-| Duplicate TourAPI records with similar normalized names | Fewer than ten in capital, east, and Jeju/islands; no supported west cell | Small and suppressed cells do not establish zero risk. |
-| No candidate under the loose name block | `10+` in every region | Failure to retrieve a candidate does not prove the catalog lacks the place. |
-| Conflicting source-master identity metadata | Zero in the aggregate count bucket in every region | Does not validate the source ID as globally unique outside this snapshot. |
+**Facts:**
 
-The categories above use name, address, and candidate-block evidence only.
-Coordinate evidence was excluded because the source X/Y semantics and CRS are
-not validated. The aggregate error analysis supports name/address retrieval
-work but does not establish a particular province alias, district mapping,
-road-number parser, or address abbreviation. Those subfeatures remain
-unresolved and unused. Source classification codes and KTO `contentTypeId`
-have no validated crosswalk.
+| Evidence flag | Count |
+| --- | ---: |
+| Name-only variation | 505 |
+| Address-only variation | 255 |
+| Both name and address differ | 13,115 |
+| Source POI master missing | 19,321 |
+| Multiple catalog candidates | 13,739 |
+| No current blocking candidate | 23,658 |
+
+**Interpretation:** The findings support broader name/address blocking and
+separate missing-source-metadata handling. Variation or similar-name evidence
+covers at most five displayed candidates per source identity; it does not
+confirm that any candidate is the same place. No candidate from a blocking
+rule means only that the current blocks did not retrieve one. `UNMATCHED` does
+not mean the POI is absent from the catalog.
+
+**Limitations:** Administrative wording, road-versus-lot address variation,
+and renamed or discontinued places were not measured. Coordinates remain
+unusable because AI Hub CRS and axis meaning are unverified and the TourAPI
+snapshot has no coordinates. The aggregate counts do not justify fuzzy
+thresholds, address aliases, road-number parsing, or administrative
+membership rules.
+
+**Next decision:** Re-run the privacy-safe enhanced analysis and purpose-region
+scenario diagnostics under the data-science role. Keep A/B/C type scopes,
+request-area contract, crosswalk, content allowlist, and all product contracts
+open pending evidence and product decisions.
 
 The enhanced reference pipeline keeps candidate generation separate from
 identity decisions:
@@ -539,28 +749,37 @@ identity decisions:
 | Stage | Rule and output | Decision boundary |
 | --- | --- | --- |
 | 1 | Existing unique NFKC/case/whitespace-normalized name plus exact normalized address-string matcher. | Only this established rule may return provisional `MATCHED`; the 160-item baseline audit is a separate initial false-positive check. |
-| 2 | Separate collision-preserving NFKC/case/whitespace/punctuation-folded name and full-address keys. Retain raw fields and feature keys side by side; merge candidate IDs without collapsing records. Show at most five candidates while recording the full count. | Every newly retrieved candidate remains `REVIEW`; multiple candidates remain `AMBIGUOUS`. A punctuation-normalized address hit is not an automatic match. |
-| 3 | Character-trigram name blocking, then name/address string similarities for displayed candidates. Record the blocking rule and full candidate count; show at most five candidates locally. | Similarity scores only order review evidence. There is no score threshold and no fuzzy automatic match. |
+| 2 | Separate collision-preserving NFKC/case/whitespace/punctuation-to-separator and no-spacing name/address keys. Source road and lot values stay typed; KTO `addr1` remains generic and is not relabeled as road or lot. Keep every colliding record, show at most five candidates, and record full candidate counts. | Every recovered candidate remains for review. Multi-candidate sets are `AMBIGUOUS` and require review; conflicts remain `REVIEW`/`AMBIGUOUS`. Address fields of different types can retrieve a candidate but cannot prove equivalence. |
+| 3 | Name token and prefix, address-piece and explicitly validated administrative-component blocking, followed by character-trigram name blocking when earlier blocks find nothing. Record each blocking rule and full candidate count; show at most five candidates locally. | Similarity scores only order review evidence. There is no score threshold and no fuzzy automatic match. Admin signals are ignored unless a validated crosswalk is explicitly supplied. |
 | 4 | Coordinate matching disabled. | Reconsider only after both coordinate fields' meaning, CRS, value ranges, and same-place distance distribution are validated. |
-| 5 | Source classification and KTO type shown as support/conflict evidence only. | No type hard equality without a validated crosswalk. |
+| 5 | Source classification and KTO type remain auxiliary descriptive metadata. | They do not block candidates or contribute identity decisions; no type equality is assumed without a validated crosswalk. |
 
 Across all stages, `MATCHED`, `REVIEW`, `AMBIGUOUS`, and `UNMATCHED` remain
 distinct. A unique Stage 2/3 candidate is not `MATCHED`; `UNMATCHED` means the
 implemented blocking rules found no candidate and is not evidence of catalog
-absence. The Stage 2 address key only folds punctuation in the full address;
-component extraction, road-number interpretation, administrative aliases,
-province/district mapping, and transliteration are not implemented because
-the observed aggregates do not validate those transformations.
+absence. No fuzzy threshold, address abbreviation, address-type conversion,
+province/district alias, or transliteration is inferred from retrieval evidence.
 The ignored analysis records privacy-banded candidate-count distributions
 grouped by method and blocking rule; displayed top-five counts do not replace
 the full generated-candidate count. For conflicting source metadata, the local
-audit displays up to five candidates separately for each observed name/address
-pair, so a larger pair group cannot hide every candidate associated with a
-different source pair.
-`lDongRegnCd` remains an analysis-time catalog grouping only. Observed visit
-region is not the user's request-time selected area and never narrows serving
-candidates. The Stage 1 result remains reproducible alongside enhanced
-statuses.
+audit displays up to five candidates separately for each observed name/road/lot
+tuple, so a larger tuple group cannot hide candidates associated with a
+different source metadata tuple.
+AI Hub purpose-region is a legitimate offline cohort/conditioning field when
+the evaluation is explicitly scoped to observed purpose-region groups; this is
+distinct from evidence of a user's serving-time selected region. The
+user-provided official AI Hub v3.5 usage guide defines four purpose regions and
+describes POI provenance as user-provided; that guide was not checked into this
+repository. The [official AI Hub domestic travel-log dataset page](https://www.aihub.or.kr/aihubdata/data/view.do?aihubDataSe=data&currMenu=115&dataSetSn=71776&topMenu=100)
+is linked as the public dataset reference. The checked-in
+`aihub-71776-capital.md` is a conversion of the data description, not the v3.5
+usage guide, and it does not explicitly map purpose-region memberships to KTO
+`lDongRegnCd`. Accordingly, no membership is guessed:
+`purpose_region_mapping_status` reports `UNMAPPED` for a supported
+purpose-region without a versioned authoritative mapping and `UNSUPPORTED` for
+an unknown value. Offline purpose-region-scoped KTO candidate coverage remains
+uncomputed until an authoritative membership crosswalk is available. The
+Stage 1 result remains reproducible alongside enhanced statuses.
 
 The v4 candidate-generation audit and v7 targeted Stage 2 address audit are
 reported separately above. Each uses deduplicated `(region, POI_ID)` identities,
@@ -740,7 +959,7 @@ IDs and a fresh unique run ID. This command performs the targeted primary-pair
 audit and therefore requires the local independent reviewer UI:
 
 ```bash
-python3 scripts/recommendation/analyze_poi_catalog_enhanced.py \
+python3 scripts/recommendation/poi_run_supervisor.py \
   --snapshot-id issue4-kto-20261014-v1 \
   --sync-id issue4-kto-sync-20261014-v1 \
   --run-id issue4-enhanced-NEW-DATE-vN \
@@ -748,12 +967,57 @@ python3 scripts/recommendation/analyze_poi_catalog_enhanced.py \
   --audit-primary-pair --adjudicator-role independent
 ```
 
+The supervisor forwards only allowlisted progress and failure markers, deriving
+its region allowlist from `evaluate_popularity.REGIONS`. It records the analyzer
+exit code or terminating signal independently from any output-sanitizer error.
+It reads child pipes in fixed-size chunks, drops lines over 500 bytes, and uses
+a bounded queue so unapproved output floods do not accumulate in memory. If the
+supervisor receives SIGTERM, it forwards the signal, drains both pipes, waits
+for the analyzer checkpoint, restores its prior handler, and exits with 143.
+Each run directory has a private, atomically replaced `run_status.json` with
+aggregate-only phase, region, and batch fields. Safe failures include exception
+type and traceback basenames/line numbers, never messages or local paths. A
+`running` state after abrupt termination is incomplete; failed or interrupted
+runs remain incomplete even if aggregate files were partially written. Readers
+must require `run_status.json` to say `complete` before accepting any aggregate.
+Use a fresh run ID for every attempt; the analyzer refuses to reuse an existing
+run directory.
+
+The analyzer groups source identities by region once before `_metrics` builds
+the four role scopes. This avoids repeatedly filtering the full identity map
+without changing scope membership or metric definitions. Candidate support
+remains exhaustive; only displayed evidence is bounded to the existing top-five
+review cap.
+
 The separate newly introduced multi-rule stratum is reproduced with a fresh
 unique `--run-id issue4-enhanced-NEW-DATE-vN --audit-method
 normalized_multi_rule_candidates` and the same `--audit-primary-pair
 --adjudicator-role independent` options. Its aggregate is separate from v7.
 
 ### Validation on the revised worktree
+
+**Current validation after audit2 evidence update (2026-10-16):**
+
+- Focused synthetic/privacy/supervisor suite:
+  `python3 -m unittest tests.test_poi_catalog_enhanced tests.test_poi_candidate_adjudication tests.test_poi_catalog_contract tests.test_poi_run_supervisor tests.test_poi_match_adjudication` — 105 tests passed.
+- Repository Python suite: `python3 -m unittest discover -s tests` ran 247
+  tests and ended with 3 failures and 6 import errors. The import errors are
+  missing `matplotlib` for `test_eda_privacy_buckets` and missing `duckdb` for
+  `test_eda_safety_smoke`, `test_extract_travel_log_csvs`,
+  `test_profile_codebook_only`, `test_recommendation_fit`, and
+  `test_travel_log_archive_metadata`. The three
+  `test_travel_log_code_domains` failures received `output_path_invalid` from
+  the restricted output-path environment before the expected codebook path
+  validation error could be observed.
+- Direct `pytest -q` was unavailable because the `pytest` executable is not
+  installed. No packages were installed.
+- `npm test`: TypeScript type-check passed; 10 of 11 Node tests passed. The
+  unchanged failure is the TL/VL binding test in
+  `tests/data-scientist-skill-docs.test.ts`, which expects “Role validation”
+  in the unchanged `.agents/skills/travel-data-scientist/references/domain-review.md`.
+- `python3 -m py_compile` on the changed recommendation scripts and focused
+  test modules passed. `git diff --check` passed; Git emitted only the existing
+  LF-to-CRLF working-copy warnings.
 
 - Four-region source-readiness run `issue4-source-readiness-20261014-rerun1`:
   completed with exit `0`; all eight TL/VL role bindings, four Other master
@@ -810,10 +1074,11 @@ normalized_multi_rule_candidates` and the same `--audit-primary-pair
   historical and are not current-code results.
 - Post-fix run v9 failed before output creation. Post-fix run v10 reached audit
   reuse but was rejected because its newly generated sample frame was
-  incompatible with the preserved v4 aggregate. No post-fix current-code
-  aggregate metrics are available; the v4 audit labels were not changed and no
-  further data or audit run was performed. A/B/C scenarios and all product
-  contract choices remain open; the scenarios are decision evidence only.
+  incompatible with the preserved v4 aggregate. At that point, no post-fix
+  aggregate metrics were available; the v4 audit labels were unchanged. The
+  later completed audit2 run and its separate labels are reported above.
+  A/B/C scenarios and all product contract choices remain open; the scenarios
+  are decision evidence only.
 - Coordinate metadata diagnostic scanned the approved four-region AI Hub
   inputs after source-role/provenance validation. The AI Hub schema provides
   no CRS, axis, or unit definition; all complete pairs happened to fit the
@@ -831,10 +1096,10 @@ version.
 repository provenance. The official KTO manual v4.4 defines content ID,
 type, address, legal-dong codes, and display flag. A bounded current-public
 catalog plus display-state snapshot passed pagination and ID validation.
-The source-readiness run completed; the identity aggregates described above
-are pre-source-spelling-fix evidence, and no post-fix identity aggregate is
-available.
-The #59 TL proxy has no exposure guarantee.
+The earlier source-readiness bands remain pre-source-spelling-fix evidence;
+their provenance against the revised code is pending a data-science rerun.
+The enhanced audit2 run completed and its separate current-code aggregate
+results are recorded above. The #59 TL proxy has no exposure guarantee.
 
 **Inference:** The pre-fix Stage 1 strict link share is below ten percent for
 every region and TL/VL role. The 160-item independent audit returned 160 `MATCH`
@@ -862,5 +1127,7 @@ field with its validated code crosswalk, decide how the three distinct sample
 audits and unresolved population-level evidence should inform a
 precision/ambiguity policy, and define freshness/closure handling. Only then
 compute product candidate size and positive coverage on a fixed, documented
-request cohort. The account owner must separately confirm production rights
-and traffic for serving.
+request cohort. Obtain authoritative mapping evidence before computing
+purpose-region-scoped KTO candidate coverage; this offline cohort does not
+establish a user's serving-time selected region. The account owner must
+separately confirm production rights and traffic for serving.

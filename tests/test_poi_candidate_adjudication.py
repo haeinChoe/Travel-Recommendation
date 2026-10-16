@@ -87,8 +87,9 @@ class CandidateAuditPrivacyTests(unittest.TestCase):
                 os.kill(os.getpid(), signal.SIGTERM)
 
             with mock.patch.object(audit.tempfile, "tempdir", root):
-                with self.assertRaises(KeyboardInterrupt):
+                with self.assertRaises(audit.AuditInterrupted) as caught:
                     audit.review_ephemeral(self.observations, output, terminate)
+            self.assertEqual(caught.exception.signal_number, signal.SIGTERM)
             self.assertEqual(list(root.iterdir()), [])
             self.assertFalse(output.exists())
             self.assertEqual(signal.getsignal(signal.SIGTERM), prior_sigterm_handler)
@@ -113,8 +114,9 @@ class CandidateAuditPrivacyTests(unittest.TestCase):
 
             with mock.patch.object(audit.tempfile, "tempdir", root):
                 with mock.patch.object(audit.signal, "signal", side_effect=install_then_terminate):
-                    with self.assertRaises(KeyboardInterrupt):
+                    with self.assertRaises(audit.AuditInterrupted) as caught:
                         audit.review_ephemeral(self.observations, output)
+            self.assertEqual(caught.exception.signal_number, signal.SIGTERM)
             self.assertTrue(termination_sent)
             self.assertEqual(list(root.iterdir()), [])
             self.assertFalse(output.exists())
@@ -160,10 +162,12 @@ class CandidateAuditPrivacyTests(unittest.TestCase):
             source_candidate_groups=(
                 audit.SourceCandidateGroup(
                     "Museum Alpha", "Address X",
-                    (audit.CandidateView("Catalog Alpha", "Catalog Address X", "12"),), 1),
+                    (audit.CandidateView("Catalog Alpha", "Catalog Address X", "12"),), 1,
+                    "Lot X"),
                 audit.SourceCandidateGroup(
                     "Museum Beta", "Address Y",
-                    (audit.CandidateView("Catalog Beta", "Catalog Address Y", "14"),), 1),
+                    (audit.CandidateView("Catalog Beta", "Catalog Address Y", "14"),), 1,
+                    "Lot Y"),
             ),
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -171,8 +175,10 @@ class CandidateAuditPrivacyTests(unittest.TestCase):
             restored = audit._read_private_evidence(path)[0]
 
         screen = audit._render(restored, 1, 1, 120).decode("utf-8")
-        self.assertIn("Source pair 1 name: Museum Alpha\r\nSource pair 1 address: Address X", screen)
-        self.assertIn("Source pair 2 name: Museum Beta\r\nSource pair 2 address: Address Y", screen)
+        self.assertIn("Source pair 1 name: Museum Alpha\r\nSource pair 1 road address: Address X\r\n"
+                      "Source pair 1 lot address: Lot X", screen)
+        self.assertIn("Source pair 2 name: Museum Beta\r\nSource pair 2 road address: Address Y\r\n"
+                      "Source pair 2 lot address: Lot Y", screen)
         first_pair = screen.index("Source pair 1 name")
         second_pair = screen.index("Source pair 2 name")
         self.assertLess(first_pair, screen.index("Catalog Alpha"))

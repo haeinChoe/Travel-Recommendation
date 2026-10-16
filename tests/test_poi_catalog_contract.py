@@ -48,6 +48,25 @@ class IdentityContractTests(unittest.TestCase):
         self.assertIsNone(result.confidence)
         self.assertEqual(result.snapshot_version, "synthetic-v1")
 
+    def test_indexed_strict_result_matches_reference_status_and_counts(self) -> None:
+        cases = [
+            ([poi("catalog-1")], self.source, False),
+            ([poi("catalog-1")], SourcePoi("synthetic-region", "source-1",
+                                             "Synthetic Museum", None), False),
+            ([poi("catalog-1", address="Other Road")], self.source, False),
+            ([poi("catalog-1"), poi("catalog-2")], self.source, False),
+            ([poi("reused-id", address="Elsewhere"), poi("reused-id")], self.source, False),
+            ([poi("catalog-1")], self.source, True),
+        ]
+        for catalog, source, conflicted in cases:
+            with self.subTest(catalog_count=len(catalog), source_address=source.road_address,
+                              conflicted=conflicted):
+                index = CatalogCandidateIndex(catalog, snapshot_version="synthetic-v1")
+                indexed = index.strict_result(source, source_conflicted=conflicted)
+                reference = match_source_poi(
+                    source, catalog, source_conflicted=conflicted,
+                    snapshot_version="synthetic-v1")
+                self.assertEqual(indexed, reference)
     def test_name_only_and_conflicting_address_are_ambiguous(self) -> None:
         no_address = SourcePoi("synthetic-region", "source-1", "Synthetic Museum", None)
         self.assertEqual(match_source_poi(no_address, [poi("catalog-1")]).status, "AMBIGUOUS")
@@ -117,8 +136,8 @@ class CandidatePipelineTests(unittest.TestCase):
                          ("AMBIGUOUS", "stage2_normalized", "punctuation_address_variant"))
         self.assertEqual(result.candidate_count, 7)
         self.assertEqual(len(result.candidates), 5)
-        self.assertEqual({candidate.rule for candidate in result.candidates},
-                         {"punctuation_address_variant"})
+        self.assertTrue(all("catalog_addr1_key" in candidate.rule.split("+")
+                            for candidate in result.candidates))
 
     def test_unique_fuzzy_candidate_is_never_auto_matched(self) -> None:
         source = SourcePoi("synthetic-region", "source-1", "Synthetic Art Museum", "Other Road")
@@ -127,7 +146,8 @@ class CandidatePipelineTests(unittest.TestCase):
         self.assertEqual((result.status, result.stage, result.candidate_count),
                          ("REVIEW", "stage3_fuzzy", 1))
         self.assertNotEqual(result.status, "MATCHED")
-        self.assertEqual(result.blocking_rule, "any_shared_character_trigram_no_area_filter")
+        self.assertEqual(result.blocking_rule.startswith("union:"), True)
+        self.assertIn("character_trigram", result.blocking_rule)
 
     def test_fuzzy_multiple_candidates_are_ambiguous(self) -> None:
         source = SourcePoi("synthetic-region", "source-1", "Synthetic Art Museum", "Other Road")
@@ -137,8 +157,18 @@ class CandidatePipelineTests(unittest.TestCase):
         self.assertEqual((result.status, result.stage), ("AMBIGUOUS", "stage3_fuzzy"))
         self.assertEqual(result.candidate_count, 2)
 
+    def test_canonical_id_reuse_outside_exact_name_block_invalidates_strict_match(self) -> None:
+        catalog = [
+            poi("reused-id", title="Synthetic Museum", address="10 Test Road"),
+            poi("reused-id", title="Different Place", address="99 Other Road"),
+        ]
+        result = CatalogCandidateIndex(catalog).generate(
+            SourcePoi("synthetic-region", "source-1", "Synthetic Museum", "10 Test Road"))
+        self.assertEqual(result.strict_result.status, "AMBIGUOUS")
+        self.assertNotEqual(result.status, "MATCHED")
+
     def test_no_name_block_candidate_stays_unmatched(self) -> None:
-        source = SourcePoi("synthetic-region", "source-1", "zz", "Some Road")
+        source = SourcePoi("synthetic-region", "source-1", "zz", "North Avenue")
         result = CatalogCandidateIndex([poi("catalog-1", title="Museum")]).generate(source)
         self.assertEqual((result.status, result.stage, result.method),
                          ("UNMATCHED", "none", "no_candidate_block_hit"))

@@ -10,17 +10,25 @@ import argparse
 import csv
 import hashlib
 import json
+import os
+import signal
 import sys
+import tempfile
+import threading
+import time
+import traceback
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Callable
 
 import analyze_poi_catalog_identity as identity
 import analyze_poi_catalog_scenarios as scenarios
 import evaluate_popularity as shared
-from adjudicate_poi_candidate_sample import (AuditObservation, CandidateView,
-                                             SourceCandidateGroup, review_ephemeral)
+from adjudicate_poi_candidate_sample import (AuditInterrupted, AuditObservation, CandidateView,
+                                             SourceCandidateGroup, preflight_terminal,
+                                             review_ephemeral)
 from poi_identity_contract import (CandidateEvidence, CandidateGenerationResult,
                                    CatalogCandidateIndex, CatalogPoi, SourcePoi,
                                    normalize_exact)
@@ -29,12 +37,17 @@ RESULTS_ROOT = identity.REPO_ROOT / "results" / "experiments" / "poi-catalog-enh
 SAMPLE_SEED = "issue4-enhanced-audit-v1"
 SAMPLE_PER_REGION_STRATUM = 6
 FUZZY_CANDIDATE_DISPLAY_LIMIT = 5
+RUN_STATUS_FILENAME = "run_status.json"
+SOURCE_MASTER_PROGRESS_INTERVAL = 50_000
+SOURCE_ID_CHUNK_SIZE = 32
+STATUS_HEARTBEAT_SECONDS = 15
+PROGRESS_MARKER_SECONDS = 15
 PRIMARY_PAIR_AUDIT_STRATA = {
     "punctuation_address_variant": "address_punctuation_variant_primary_pair",
     "normalized_multi_rule_candidates": "normalized_multi_rule_primary_pair",
 }
 SOURCE_REQUIRED = {"POI_ID", "POI_NM", "ROAD_NM_ADDR"}
-SOURCE_SELECTED = SOURCE_REQUIRED | {"ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC"}
+SOURCE_SELECTED = SOURCE_REQUIRED | {"LOTNO_ADDR", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC"}
 
 
 @dataclass(frozen=True)
@@ -42,11 +55,164 @@ class SourceMetadata:
     name: str | None
     address: str | None
     source_type: str
+    lot_address: str | None = None
     identity_conflicted: bool = False
+    strict_identity_conflicted: bool = False
     missing_master: bool = False
     missing_name: bool = False
     missing_address: bool = False
-    identity_variants: tuple[tuple[str | None, str | None], ...] = ()
+    identity_variants: tuple[tuple[str | None, str | None, str | None], ...] = ()
+
+
+class RunInterrupted(BaseException):
+    """Raised by the signal handler so an interrupted run can checkpoint safely."""
+
+    def __init__(self, signal_number: int = signal.SIGTERM):
+        super().__init__()
+        self.signal_number = signal_number
+
+
+class RunStatus:
+    """Atomic aggregate-only status file; row values and exception messages are excluded."""
+
+    def __init__(self, output: Path, run_id: str):
+        self.output = output
+        self.run_id = run_id
+        self.phase = "startup"
+        self.region: str | None = None
+        self.batch: int | None = None
+        self.work_phase: str | None = None
+        self.completed_work: str | None = None
+        self.status = "running"
+        self._last_write_at: float | None = None
+        self._last_boundary: tuple[str, str | None, int | None] | None = None
+        self._lock = threading.RLock()
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread: threading.Thread | None = None
+
+    def progress(self, phase: str, *, region: str | None = None,
+                 batch: int | None = None, work_phase: str | None = None,
+                 completed_work: int | str | None = None,
+                 heartbeat_seconds: int = STATUS_HEARTBEAT_SECONDS) -> bool:
+        """Checkpoint phase boundaries and same-state heartbeats only."""
+        with self._lock:
+            self.phase, self.region, self.batch = phase, region, batch
+            self.work_phase = work_phase
+            self.completed_work = (_bucket(completed_work) if isinstance(completed_work, int)
+                                   else completed_work)
+            boundary = (phase, region, batch)
+            now = time.monotonic()
+            boundary_changed = boundary != self._last_boundary
+            heartbeat_due = (self._last_write_at is None
+                             or now - self._last_write_at >= heartbeat_seconds)
+            if boundary_changed or heartbeat_due:
+                self.update(self.status)
+                return True
+            return False
+
+    def heartbeat(self) -> bool:
+        """Persist the current coarse state even when one scoring operation is slow."""
+        with self._lock:
+            if self.status != "running":
+                return False
+            if (self._last_write_at is not None
+                    and time.monotonic() - self._last_write_at < STATUS_HEARTBEAT_SECONDS):
+                return False
+            self.update("running")
+            return True
+
+    def start_heartbeat(self, interval_seconds: float = STATUS_HEARTBEAT_SECONDS) -> None:
+        if interval_seconds <= 0:
+            raise ValueError("heartbeat interval must be positive")
+        with self._lock:
+            if self._heartbeat_thread is not None:
+                raise RuntimeError("status heartbeat already started")
+            self._heartbeat_stop.clear()
+
+            def run() -> None:
+                while not self._heartbeat_stop.wait(interval_seconds):
+                    try:
+                        self.heartbeat()
+                    except Exception:  # noqa: BLE001 - never leak local status errors
+                        self._heartbeat_stop.set()
+
+            self._heartbeat_thread = threading.Thread(
+                target=run, name="poi-run-status-heartbeat", daemon=True)
+            self._heartbeat_thread.start()
+
+    def stop_heartbeat(self) -> None:
+        with self._lock:
+            thread = self._heartbeat_thread
+            self._heartbeat_stop.set()
+        if thread is not None:
+            thread.join()
+        with self._lock:
+            self._heartbeat_thread = None
+
+    def update(self, status: str = "running", *, exception: BaseException | None = None,
+               signal_number: int | None = None) -> None:
+        with self._lock:
+            self.status = status
+            self._write_status(status, exception=exception, signal_number=signal_number)
+
+    def _write_status(self, status: str, *, exception: BaseException | None = None,
+                      signal_number: int | None = None) -> None:
+        payload: dict[str, object] = {
+            "schema_version": 1, "run_id": self.run_id, "status": status,
+            "phase": self.phase, "region": self.region, "batch": self.batch,
+            "row_level_output": False,
+        }
+        if self.work_phase is not None:
+            payload["work_phase"] = self.work_phase
+        if self.completed_work is not None:
+            payload["completed_work"] = self.completed_work
+        if exception is not None:
+            payload["exception_type"] = type(exception).__name__
+            payload["traceback"] = [
+                {"filename": Path(frame.filename).name, "line": frame.lineno}
+                for frame in traceback.extract_tb(exception.__traceback__)[-12:]
+            ]
+        if signal_number is not None:
+            payload["signal_number"] = signal_number
+        target = self.output / RUN_STATUS_FILENAME
+        fd, temporary = tempfile.mkstemp(prefix=".run-status-", suffix=".tmp", dir=self.output)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(payload, stream, ensure_ascii=False, separators=(",", ":"))
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
+            os.chmod(target, 0o600)
+            directory_fd = os.open(self.output, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            self._last_write_at = time.monotonic()
+            self._last_boundary = (self.phase, self.region, self.batch)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+
+class ProgressThrottle:
+    """Emit the first work marker immediately, then at most once per interval."""
+
+    def __init__(self, interval_seconds: int = PROGRESS_MARKER_SECONDS):
+        if interval_seconds < 1:
+            raise ValueError("progress interval must be positive")
+        self.interval_seconds = interval_seconds
+        self.last_emitted_at: float | None = None
+
+    def allow(self, *, now: float | None = None) -> bool:
+        current = time.monotonic() if now is None else now
+        if (self.last_emitted_at is None
+                or current - self.last_emitted_at >= self.interval_seconds):
+            self.last_emitted_at = current
+            return True
+        return False
 
 
 def _bucket(value: int) -> str:
@@ -67,52 +233,70 @@ def _candidate_count_bucket(value: int) -> str:
     return "5+"
 
 
-def _read_source_metadata(master_path: Path, observed_ids: set[str]) -> dict[str, SourceMetadata]:
-    identities: dict[str, set[tuple[str, str]]] = defaultdict(set)
-    displays: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+def _read_source_metadata(master_path: Path, observed_ids: set[str], *,
+                          progress: Callable[[int], None] | None = None,
+                          progress_interval: int = SOURCE_MASTER_PROGRESS_INTERVAL
+                          ) -> dict[str, SourceMetadata]:
+    if progress_interval < 1:
+        raise ValueError("progress interval must be positive")
+    identities: dict[str, set[tuple[str, str, str]]] = defaultdict(set)
+    displays: dict[str, set[tuple[str, str, str, str]]] = defaultdict(set)
+    rows_read = 0
+    last_progress = 0
     for row in shared._rows([master_path], SOURCE_REQUIRED, SOURCE_SELECTED):
+        rows_read += 1
+        if progress is not None and rows_read % progress_interval == 0:
+            progress(rows_read)
+            last_progress = rows_read
         source_id = shared._cell(row, "poi_id")
         if source_id not in observed_ids:
             continue
         name, address = row.get("poi_nm") or "", row.get("road_nm_addr") or ""
+        lot_address = row.get("lotno_addr") or ""
         source_type = " / ".join(
             f"L{n}={row.get(field) or ''}" for n, field in enumerate(
                 ("asort_lclasdc", "asort_mlsfcdc", "asort_sdasdc"), 1)
             if row.get(field)
         ) or "[not supplied]"
-        identities[source_id].add((normalize_exact(name), normalize_exact(address)))
-        displays[source_id].add((name, address, source_type))
+        identities[source_id].add((normalize_exact(name), normalize_exact(address),
+                                   normalize_exact(lot_address)))
+        displays[source_id].add((name, address, lot_address, source_type))
+    if progress is not None and rows_read != last_progress:
+        progress(rows_read)
     result: dict[str, SourceMetadata] = {}
     for source_id in observed_ids:
         keys = identities.get(source_id, set())
         if not keys:
             result[source_id] = SourceMetadata(None, None, "[no source master record]",
+                                               lot_address=None,
                                                missing_master=True, missing_name=True,
                                                missing_address=True)
             continue
         values = sorted(displays[source_id])
         names = sorted({value[0] for value in values if value[0]})
         addresses = sorted({value[1] for value in values if value[1]})
-        types = sorted({value[2] for value in values if value[2]})
-        variants = tuple(sorted({(name or None, address or None)
-                                 for name, address, _ in values}))
+        types = sorted({value[3] for value in values if value[3]})
+        variants = tuple(sorted({(name or None, address or None, lot_address or None)
+                                 for name, address, lot_address, _ in values}))
+        strict_keys = {(name, address) for name, address, _ in keys}
         # Preserve a real source spelling when several raw variants collapse to
         # one exact normalized identity. Joining them creates a synthetic value
         # that cannot match any catalog row. Conflicting normalized identities
         # remain explicitly ambiguous and are evaluated variant by variant below.
         if len(keys) == 1:
-            selected_name, selected_address = variants[0]
+            selected_name, selected_address, selected_lot_address = variants[0]
         else:
-            # Keep one real pair for legacy display fields; the paired variants
-            # below retain every observed association for candidate generation
-            # and any local review.
-            selected_name, selected_address = variants[0]
+            # Keep one real tuple for legacy display fields; the variants below
+            # retain each observed name/road/lot association for review.
+            selected_name, selected_address, selected_lot_address = variants[0]
         result[source_id] = SourceMetadata(
             selected_name,
             selected_address,
             " / ".join(types) if len(types) == 1 else
             ("[conflicting source classification codes]" if types else "[not supplied]"),
+            lot_address=selected_lot_address,
             identity_conflicted=len(keys) > 1,
+            strict_identity_conflicted=len(strict_keys) > 1,
             missing_name=not bool(names), missing_address=not bool(addresses),
             identity_variants=variants if len(keys) > 1 else (),
         )
@@ -120,39 +304,87 @@ def _read_source_metadata(master_path: Path, observed_ids: set[str]) -> dict[str
 
 
 def _result_for_source(index: CatalogCandidateIndex, region: str, source_id: str,
-                       metadata: SourceMetadata) -> CandidateGenerationResult:
-    source = SourcePoi(region, source_id, metadata.name, metadata.address)
+                       metadata: SourceMetadata, *,
+                       candidate_progress: Callable[[str, int], None] | None = None
+                       ) -> CandidateGenerationResult:
+    source = SourcePoi(region, source_id, metadata.name, metadata.address, metadata.lot_address)
     if not metadata.identity_conflicted:
-        return index.generate(source)
-    strict = index.generate(source, source_conflicted=True).strict_result
-    found: dict[tuple[str, str | None, str | None], CandidateEvidence] = {}
+        return index.generate(source, _progress=candidate_progress)
+    strict = index.strict_result(source, source_conflicted=metadata.strict_identity_conflicted)
+    found: dict[int, CandidateEvidence] = {}
+    found_by_variant: dict[
+        tuple[str | None, str | None, str | None], dict[int, CandidateEvidence]
+    ] = defaultdict(dict)
     stages = ("none", "stage1_exact", "stage2_normalized", "stage3_fuzzy")
     stage = "none"
-    variants = metadata.identity_variants or ((metadata.name, metadata.address),)
+    variants = metadata.identity_variants or ((metadata.name, metadata.address, metadata.lot_address),)
     variant_candidate_counts = []
-    for name, address in variants:
+    variant_blocking_rules = set()
+    variant_ambiguous = False
+    candidate_id_bitmap = bytearray((len(index.content_id_ordinals) + 7) // 8)
+    candidate_record_bitmap = bytearray((len(index.catalog) + 7) // 8)
+    for name, address, lot_address in variants:
         candidate_result = index.generate(
-            SourcePoi(region, source_id, name, address), retain_all_candidates=True)
-        variant_candidate_counts.append((name, address, candidate_result.candidate_count))
+            SourcePoi(region, source_id, name, address, lot_address),
+            _candidate_id_bitmap=candidate_id_bitmap,
+            _candidate_record_bitmap=candidate_record_bitmap,
+            _progress=candidate_progress, _rank_name_first=True)
+        variant_candidate_counts.append((name, address, lot_address, candidate_result.candidate_count))
+        variant_blocking_rules.add(candidate_result.blocking_rule)
+        variant_ambiguous |= candidate_result.status == "AMBIGUOUS"
         if stages.index(candidate_result.stage) > stages.index(stage):
             stage = candidate_result.stage
         for candidate in candidate_result.candidates:
-            pair_key = (candidate.item.content_id, candidate.source_name,
-                        candidate.source_address)
-            previous = found.get(pair_key)
+            # Catalog record identity keeps colliding content IDs distinct. Pair
+            # evidence is also retained separately for the adjudication TUI.
+            record_key = id(candidate.item)
+            pair_key = (candidate.source_name, candidate.source_address,
+                        candidate.source_lot_address)
+            previous = found.get(record_key)
             current_score = (candidate.name_similarity, candidate.address_similarity)
             previous_score = ((previous.name_similarity, previous.address_similarity)
                               if previous else (-1.0, -1.0))
             if current_score > previous_score:
-                found[pair_key] = candidate
+                found[record_key] = candidate
+            previous_pair = found_by_variant[pair_key].get(record_key)
+            previous_pair_score = ((previous_pair.name_similarity, previous_pair.address_similarity)
+                                   if previous_pair else (-1.0, -1.0))
+            if current_score > previous_pair_score:
+                found_by_variant[pair_key][record_key] = candidate
     candidates = tuple(sorted(found.values(), key=lambda value: (
         value.name_similarity, value.address_similarity, value.item.content_id
     ), reverse=True))
-    return CandidateGenerationResult("AMBIGUOUS", stage, "conflicting_source_metadata",
+    variant_evidence = tuple(
+        (name, address, lot_address, tuple(sorted(
+            found_by_variant.get((name, address, lot_address), {}).values(),
+            key=lambda value: (value.name_similarity, value.address_similarity,
+                               value.item.content_id), reverse=True,
+        )[:FUZZY_CANDIDATE_DISPLAY_LIMIT]))
+        for name, address, lot_address in variants
+    )
+    candidate_id_count = sum(value.bit_count() for value in candidate_id_bitmap)
+    candidate_record_count = sum(value.bit_count() for value in candidate_record_bitmap)
+    status = ("AMBIGUOUS" if metadata.strict_identity_conflicted or variant_ambiguous
+              or candidate_id_count > 1
+              or strict.status == "AMBIGUOUS" else "REVIEW")
+    return CandidateGenerationResult(status, stage, "conflicting_source_metadata",
                                      candidates,
-                                     len({candidate.item.content_id for candidate in found.values()}),
-                                     "conflicting_source_metadata", strict,
-                                     tuple(variant_candidate_counts))
+                                     candidate_record_count,
+                                     "source_conflict_variants:" + "||".join(sorted(variant_blocking_rules)), strict,
+                                     tuple(variant_candidate_counts), variant_evidence)
+
+
+def _candidate_progress_reporter(*, set_phase: Callable[..., None], emit: Callable[[str], None],
+                                 region: str, batch: int, started: float,
+                                 throttle: ProgressThrottle) -> Callable[[str, int], None]:
+    def report(work_phase: str, completed: int) -> None:
+        set_phase("candidate_generation", region=region, batch=batch,
+                  work_phase=work_phase, completed_work=completed)
+        if throttle.allow():
+            emit(f"candidate_generation={work_phase}:{region}; batch={batch}; "
+                 f"completed_work={_bucket(completed)}; "
+                 f"elapsed_seconds={int(time.monotonic() - started)}")
+    return report
 
 
 def _identity_stratum(metadata: SourceMetadata,
@@ -170,15 +402,27 @@ def _identity_stratum(metadata: SourceMetadata,
     return "still_unmatched"
 
 
-def _source_rows(specs, masters, catalog, snapshot_id):
+def _source_rows(specs, masters, catalog, snapshot_id, *,
+                 progress: Callable[[str], None] | None = None,
+                 phase_callback: Callable[..., None] | None = None,
+                 source_chunk_size: int = SOURCE_ID_CHUNK_SIZE,
+                 master_progress_interval: int = SOURCE_MASTER_PROGRESS_INTERVAL):
+    if source_chunk_size < 1:
+        raise ValueError("source chunk size must be positive")
+    emit = progress or (lambda message: print(message, flush=True))
+    set_phase = phase_callback or (lambda *_args, **_kwargs: None)
     by_role = {(spec.region, spec.role): spec for spec in specs}
+    set_phase("candidate_index_build")
+    emit(f"candidate_index_build=started; catalog_items={_bucket(len(catalog))}")
     index = CatalogCandidateIndex(catalog, snapshot_version=snapshot_id,
                                   fuzzy_display_limit=FUZZY_CANDIDATE_DISPLAY_LIMIT)
+    emit("candidate_index_build=complete")
     results, metadata_by_key, events_by_role = {}, {}, {}
     role_membership: dict[tuple[str, str], set[str]] = defaultdict(set)
     for region in shared.REGIONS:
         splits = {}
         for role in ("TL", "VL"):
+            set_phase("source_split_read", region=region)
             print(f"source_split_read=started:{region}/{role}", flush=True)
             split = shared._read_split(by_role[(region, role)])
             splits[role] = split
@@ -190,12 +434,54 @@ def _source_rows(specs, masters, catalog, snapshot_id):
         if splits["TL"].travel_ids & splits["VL"].travel_ids:
             raise ValueError("TL/VL trip overlap")
         source_ids = {event.item_id for role in ("TL", "VL") for event in splits[role].events}
-        source_metadata = _read_source_metadata(masters[region], source_ids)
-        for source_id in source_ids:
-            key = (region, source_id)
-            metadata_by_key[key] = source_metadata[source_id]
-            results[key] = _result_for_source(index, region, source_id, source_metadata[source_id])
-        print(f"identity_pipeline={region}: complete; distinct_source_items={_bucket(len(source_ids))}", flush=True)
+        set_phase("source_master_scan", region=region)
+        emit(f"source_master_scan=started:{region}; observed_items={_bucket(len(source_ids))}")
+        master_started = time.monotonic()
+
+        def master_progress(rows_read: int) -> None:
+            set_phase("source_master_scan", region=region)
+            elapsed = int(time.monotonic() - master_started)
+            emit(f"source_master_scan=progress:{region}; rows_read={_bucket(rows_read)}; "
+                 f"elapsed_seconds={elapsed}")
+
+        source_metadata = _read_source_metadata(
+            masters[region], source_ids, progress=master_progress,
+            progress_interval=master_progress_interval)
+        emit(f"source_master_scan=complete:{region}; observed_items={_bucket(len(source_metadata))}; "
+             f"elapsed_seconds={int(time.monotonic() - master_started)}")
+        ordered_source_ids = sorted(source_ids)
+        generation_started = time.monotonic()
+        candidate_support = 0
+        set_phase("candidate_generation", region=region, batch=0)
+        emit(f"candidate_generation=started:{region}; source_items={_bucket(len(ordered_source_ids))}")
+        score_progress_throttle = ProgressThrottle()
+        for batch_number, start in enumerate(range(0, len(ordered_source_ids), source_chunk_size), 1):
+            set_phase("candidate_generation", region=region, batch=batch_number)
+            chunk = ordered_source_ids[start:start + source_chunk_size]
+            for source_id in chunk:
+                key = (region, source_id)
+                metadata_by_key[key] = source_metadata[source_id]
+                candidate_progress = _candidate_progress_reporter(
+                    set_phase=set_phase, emit=emit, region=region, batch=batch_number,
+                    started=generation_started, throttle=score_progress_throttle)
+                result = _result_for_source(
+                    index, region, source_id, source_metadata[source_id],
+                    candidate_progress=candidate_progress)
+                results[key] = result
+                candidate_support += result.candidate_count
+            completed = min(start + len(chunk), len(ordered_source_ids))
+            emit(f"candidate_generation=progress:{region}; "
+                 f"batch={batch_number}; batch_source_items={_bucket(len(chunk))}; "
+                 f"completed_source_items={_bucket(completed)}; "
+                 f"candidate_support={_bucket(candidate_support)}; "
+                 f"elapsed_seconds={int(time.monotonic() - generation_started)}")
+        emit(f"candidate_generation=complete:{region}; "
+             f"completed_source_items={_bucket(len(ordered_source_ids))}; "
+             f"candidate_support={_bucket(candidate_support)}; "
+             f"elapsed_seconds={int(time.monotonic() - generation_started)}")
+        emit(f"identity_pipeline={region}: complete; "
+             f"distinct_source_items={_bucket(len(source_ids))}")
+        set_phase("source_region_complete", region=region, batch=None)
     return results, metadata_by_key, events_by_role, role_membership, index
 
 
@@ -262,23 +548,34 @@ def _audit_observations(results, metadata, *, audit_method: str | None = None,
             ) for item in evidence)
             candidate_groups = ()
             if source.identity_conflicted:
-                counts_by_pair = {(name, address): count for name, address, count
+                counts_by_pair = {(name, address, lot_address): count
+                                  for name, address, lot_address, count
                                   in result.source_variant_candidate_counts}
+                evidence_by_pair = {
+                    (name, address, lot_address): pair_evidence
+                    for name, address, lot_address, pair_evidence
+                    in result.source_variant_candidate_evidence
+                }
                 candidate_groups = tuple(SourceCandidateGroup(
                     source_name=name or "[not supplied]",
                     source_address=address or "[not supplied]",
+                    source_lot_address=lot_address or "[not supplied]",
                     candidates=tuple(CandidateView(
                         candidate.item.title or "[not supplied]",
                         candidate.item.road_address or "[not supplied]",
                         candidate.item.content_type or "[not supplied]",
-                    ) for candidate in evidence if (candidate.source_name, candidate.source_address)
-                    == (name, address))[:FUZZY_CANDIDATE_DISPLAY_LIMIT],
-                    candidate_count=counts_by_pair.get((name, address), 0),
-                ) for name, address in source.identity_variants)
+                    ) for candidate in evidence_by_pair.get((name, address, lot_address), tuple(
+                        candidate for candidate in evidence
+                        if (candidate.source_name, candidate.source_address,
+                            candidate.source_lot_address) == (name, address, lot_address)
+                    )))[:FUZZY_CANDIDATE_DISPLAY_LIMIT],
+                    candidate_count=counts_by_pair.get((name, address, lot_address), 0),
+                ) for name, address, lot_address in source.identity_variants)
             observations.append(AuditObservation(
                 region, stratum, partition, result.method,
                 source.name or "[not supplied]", source.address or "[not supplied]",
                 source.source_type, candidates, result.candidate_count,
+                source_lot_address=source.lot_address or "[not supplied]",
                 source_candidate_groups=candidate_groups,
             ))
         for partition in ("development", "validation"):
@@ -286,7 +583,8 @@ def _audit_observations(results, metadata, *, audit_method: str | None = None,
                       if ("development" if i % 2 == 0 else "validation") == partition]
             methods = Counter(selected[i][1].method for i in chosen)
             support.append({"region": region, "stratum": stratum, "partition": partition,
-                            "selected_count": len(chosen), "available_support": _bucket(len(values)),
+                            "selected_count": _bucket(len(chosen)),
+                            "available_support": _bucket(len(values)),
                             "methods": {key: _bucket(value) for key, value in sorted(methods.items())}})
     return observations, support
 
@@ -296,8 +594,13 @@ def _metrics(catalog, results, metadata, events_by_role, role_membership):
     _catalog_inventory(rows, catalog)
     by_id = {item.content_id: item for item in catalog}
     status_names = ("MATCHED", "REVIEW", "AMBIGUOUS", "UNMATCHED")
+    # Partition once. The previous implementation rescanned every identity
+    # four times per region while building ALL/TL/VL/both scopes.
+    keys_by_region: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for key in results:
+        keys_by_region[key[0]].append(key)
     for region in shared.REGIONS:
-        keys = [key for key in results if key[0] == region]
+        keys = keys_by_region[region]
         scopes = (
             ("all_items", keys),
             ("tl_items", [key for key in keys if "TL" in role_membership[key]]),
@@ -408,17 +711,27 @@ def _add_audit_metrics(rows, aggregate_path):
 
 
 def _validate_reusable_audit(run_id: str, snapshot_id: str, sync_id: str,
-                             sample_support: list[dict]) -> Path:
+                             sample_support: list[dict], expected_count: int) -> Path:
     audit_run = identity._run_id(run_id)
     audit_root = RESULTS_ROOT / audit_run
     metadata_path = audit_root / "run_metadata.json"
     support_path = audit_root / "sample_support.json"
+    status_path = audit_root / RUN_STATUS_FILENAME
+    checkpoint_path = audit_root / "aggregate_checkpoint.json"
     aggregate_path = audit_root / "audit" / "aggregate.json"
-    paths = (audit_root, metadata_path, support_path, aggregate_path)
+    paths = (audit_root, metadata_path, support_path, status_path,
+             checkpoint_path, aggregate_path)
     if any(path.is_symlink() or shared.has_symlink_component(path.absolute()) for path in paths):
         raise ValueError("reusable audit input unavailable")
-    if not all(path.is_file() for path in (metadata_path, support_path, aggregate_path)):
+    if not all(path.is_file() for path in (metadata_path, support_path, status_path,
+                                           checkpoint_path, aggregate_path)):
         raise ValueError("reusable audit input unavailable")
+    run_status = json.loads(status_path.read_text(encoding="utf-8"))
+    aggregate_checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    if (run_status.get("run_id") != audit_run
+            or run_status.get("status") != "complete"
+            or aggregate_checkpoint.get("status") != "complete"):
+        raise ValueError("reusable audit source run incomplete")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     support = json.loads(support_path.read_text(encoding="utf-8"))
     if (metadata.get("catalog_snapshot_id") != snapshot_id
@@ -429,7 +742,6 @@ def _validate_reusable_audit(run_id: str, snapshot_id: str, sync_id: str,
     aggregate = json.loads(aggregate_path.read_text(encoding="utf-8"))
     labels = aggregate.get("labels")
     groups = aggregate.get("by_method_stratum_partition")
-    expected_count = sum(int(row["selected_count"]) for row in sample_support)
     if (not isinstance(aggregate.get("reviewed_count"), int)
             or not isinstance(labels, dict)
             or set(labels) != {"MATCH", "NO_MATCH", "UNCERTAIN"}
@@ -454,10 +766,94 @@ def _validate_reusable_audit(run_id: str, snapshot_id: str, sync_id: str,
 
 def _write_metrics(path: Path, rows: list[dict[str, str]]) -> None:
     fields = ("scope", "scenario", "split", "unit", "metric", "value", "support")
-    with path.open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+        _fsync_directory(path.parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _write_json_atomic(path: Path, value: object) -> None:
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+        _fsync_directory(path.parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _duration_band(seconds: float | None) -> str:
+    if seconds is None:
+        return "not_run"
+    if seconds < 60:
+        return "<1m"
+    if seconds < 5 * 60:
+        return "1-5m"
+    if seconds < 15 * 60:
+        return "5-15m"
+    return "15m+"
+
+
+def _phase_duration_bands(elapsed: dict[str, float], active_phase: str | None,
+                          active_started: float | None, now: float) -> dict[str, str]:
+    values = dict(elapsed)
+    if active_phase is not None and active_started is not None:
+        values[active_phase] = values.get(active_phase, 0.0) + now - active_started
+    source_scan = sum(values.get(name, 0.0)
+                      for name in ("source_split_read", "source_master_scan"))
+    requested = {
+        "source_scan": source_scan,
+        "candidate_generation": values.get("candidate_generation"),
+        "metrics": values.get("metric_aggregation"),
+        "sample_frame": values.get("sample_frame"),
+        "audit_review": values.get("audit_review"),
+        "audit_reuse_validation": values.get("audit_reuse_validation"),
+    }
+    return {name: _duration_band(seconds) for name, seconds in requested.items()}
+
+
+def _write_audit_checkpoint(output: Path, rows: list[dict[str, str]],
+                            observations: list[AuditObservation],
+                            sample_support: list[dict]) -> None:
+    """Persist only aggregate work before entering ephemeral manual review."""
+    _write_metrics(output / "metrics.csv", rows)
+    _write_json_atomic(output / "sample_support.json", sample_support)
+    _write_json_atomic(output / "aggregate_checkpoint.json", {
+        "schema_version": 1,
+        "status": "incomplete",
+        "phase": "audit_review",
+        "metrics_rows": _bucket(len(rows)),
+        "sample_size": _bucket(len(observations)),
+        "sample_support_rows": _bucket(len(sample_support)),
+        "row_level_output": False,
+        "rerun": "use a fresh run ID; source scan, matching, and sample frame are recomputed",
+    })
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -482,40 +878,92 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--audit-method requires --audit")
     if args.audit_primary_pair and not args.audit_method:
         parser.error("--audit-primary-pair requires --audit-method")
+    checkpoint: RunStatus | None = None
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def interrupt_handler(signum, _frame):
+        raise RunInterrupted(signum)
+
     try:
+        if args.audit:
+            preflight_terminal()
         run_id = identity._run_id(args.run_id)
         snapshot_id = identity._run_id(args.snapshot_id)
         sync_id = identity._run_id(args.sync_id)
         output = RESULTS_ROOT / run_id
         if output.exists() or output.is_symlink() or shared.has_symlink_component(output.absolute()):
             raise ValueError("result destination unavailable")
+        output.mkdir(parents=True, mode=0o700)
+        os.chmod(output, 0o700)
+        checkpoint = RunStatus(output, run_id)
+        checkpoint.update()
+        checkpoint.start_heartbeat()
+        signal.signal(signal.SIGTERM, interrupt_handler)
+        phase_elapsed: dict[str, float] = defaultdict(float)
+        active_phase: str | None = None
+        active_phase_started: float | None = None
+
+        def set_phase(value: str, *, region: str | None = None,
+                      batch: int | None = None, work_phase: str | None = None,
+                      completed_work: int | None = None) -> None:
+            nonlocal active_phase, active_phase_started
+            now = time.monotonic()
+            if value != active_phase:
+                if active_phase is not None and active_phase_started is not None:
+                    phase_elapsed[active_phase] += now - active_phase_started
+                active_phase = value
+                active_phase_started = now
+            checkpoint.progress(
+                value, region=region, batch=batch, work_phase=work_phase,
+                completed_work=completed_work,
+            )
+
+        set_phase("catalog_load")
+        print("catalog_load=started", flush=True)
         catalog, catalog_manifest = identity._load_catalog(snapshot_id)
+        print(f"catalog_load=complete; catalog_items={_bucket(len(catalog))}", flush=True)
+        set_phase("sync_validation")
+        print("sync_validation=started", flush=True)
         sync_manifest = identity._validate_sync(catalog, sync_id)
+        print("sync_validation=complete", flush=True)
+        set_phase("source_preflight")
         specs, masters = identity._source_specs(run_id, progress=lambda region, role, stage:
             print(f"preflight={region}/{role}:{stage}", flush=True))
-        results, metadata, events, role_membership, index = _source_rows(specs, masters, catalog, snapshot_id)
+        results, metadata, events, role_membership, index = _source_rows(
+            specs, masters, catalog, snapshot_id,
+            phase_callback=set_phase)
+        set_phase("metric_aggregation")
+        print("metric_aggregation=started", flush=True)
         rows = _metrics(catalog, results, metadata, events, role_membership)
+        print(f"metric_aggregation=complete; metric_rows={_bucket(len(rows))}", flush=True)
+        set_phase("sample_frame")
+        print("sample_frame=started", flush=True)
         observations, sample_support = _audit_observations(
             results, metadata, audit_method=args.audit_method,
             primary_pair=args.audit_primary_pair)
+        print(f"sample_frame=complete; sample_items={_bucket(len(observations))}", flush=True)
         if args.audit_method and not observations:
             raise ValueError("targeted audit method has no sample support")
-        output.mkdir(parents=True, mode=0o700)
         audit_source_run_id = None
         if args.audit:
+            set_phase("audit_review")
+            _write_audit_checkpoint(output, rows, observations, sample_support)
             audit_dir = output / "audit"
             if not review_ephemeral(observations, audit_dir, adjudicator_role=args.adjudicator_role):
                 raise ValueError("candidate audit cancelled")
             _add_audit_metrics(rows, audit_dir / "aggregate.json")
             audit_source_run_id = run_id
         elif args.reuse_audit_run_id:
+            set_phase("audit_reuse_validation")
             audit_path = _validate_reusable_audit(args.reuse_audit_run_id,
-                                                  snapshot_id, sync_id, sample_support)
+                                                  snapshot_id, sync_id, sample_support,
+                                                  expected_count=len(observations))
             _add_audit_metrics(rows, audit_path)
             audit_source_run_id = identity._run_id(args.reuse_audit_run_id)
+        set_phase("aggregate_write")
+        print("aggregate_write=started", flush=True)
         _write_metrics(output / "metrics.csv", rows)
-        (output / "sample_support.json").write_text(
-            json.dumps(sample_support, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _write_json_atomic(output / "sample_support.json", sample_support)
         metadata_out = {
             "dataset": "AI Hub Domestic Travel Log 2023",
             "catalog_snapshot_id": snapshot_id,
@@ -526,34 +974,68 @@ def main(argv: list[str] | None = None) -> int:
             "code_worktree_dirty": shared._git_dirty(),
             "scenarios": {key: sorted(value) for key, value in scenarios.SCENARIOS.items()},
             "unit": "deduplicated (region, POI_ID) observed item; TL/VL duplicates counted once",
-            "stage1": "existing unique normalized-name plus address-string rule; only automatic MATCHED status",
-            "stage2": "collision-preserving NFKC/case/whitespace/punctuation name and full-address candidate keys; review only",
-            "stage3": "character-trigram block and string similarity; review only, no auto-match threshold",
+            "stage1": "preserved strict unique normalized-name plus address-string baseline; enhanced signal conflicts may require review",
+            "stage2": "collision-preserving punctuation-to-separator and no-spacing name/address keys; review only",
+            "stage3": "name token/prefix, address-piece, validated admin-component and character-trigram fallback blocks; review only, no auto-match threshold",
             "stage4_coordinates": "disabled; CRS, field meaning, ranges, and same-place distances not validated",
-            "stage5_type": "source classification and KTO contentTypeId shown as support only; no validated crosswalk",
+            "stage5_type": "source classification and KTO contentTypeId are auxiliary only; not candidate blocks or identity decisions",
             "administrative_area": "no matching filter; SGG_CD to lDongSignguCd crosswalk unvalidated",
-            "catalog_area_semantics": "KTO lDongRegnCd is analysis grouping only, not request geography",
+            "catalog_area_semantics": "KTO lDongRegnCd is catalog analysis grouping; AI Hub purpose region may define an offline cohort, but membership crosswalk is unresolved and neither field is assumed as request geography",
             "sample": {"seed": SAMPLE_SEED, "maximum_per_region_stratum": SAMPLE_PER_REGION_STRATUM,
                        "partition": "alternating hash-ranked sample into development/validation",
-                       "sample_size": len(observations), "source_ids_persisted": False,
+                       "sample_size": _bucket(len(observations)), "source_ids_persisted": False,
                        "pair_fields_persisted": False, "per_row_labels_persisted": False},
             "audit_method_filter": args.audit_method,
             "audit_primary_pair_only": args.audit_primary_pair,
             "audit_source_run_id": audit_source_run_id,
+            "phase_duration_bands": _phase_duration_bands(
+                phase_elapsed, active_phase, active_phase_started, time.monotonic()),
             "catalog_name_collision_counts": index.collision_counts(),
             "positive_semantics": "observed visits are positives; unobserved items unknown; unmatched not catalog absence",
             "request_time_candidate_coverage": "unestimable_without_request_area_contract_and_validated_crosswalk",
+            "completion_contract": "run_status.json must report complete; aggregate files without that checkpoint are incomplete",
             "completed_utc": datetime.now(UTC).isoformat(timespec="seconds"),
             "privacy": "only aggregate bands/sample support persisted; no names, addresses, IDs, coordinates, or row labels",
         }
-        (output / "run_metadata.json").write_text(
-            json.dumps(metadata_out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _write_json_atomic(output / "run_metadata.json", metadata_out)
+        if args.audit:
+            _write_json_atomic(output / "aggregate_checkpoint.json", {
+                "schema_version": 1,
+                "status": "complete",
+                "phase": "complete",
+                "row_level_output": False,
+                "completion_contract": "run_status.json must also report complete",
+            })
+        set_phase("complete")
+        checkpoint.update("complete")
+        print("aggregate_write=complete; row_level_output=false", flush=True)
         print(f"enhanced_identity_complete=true; source_item_count={_bucket(len(results))}; "
-              f"metrics={len(rows)}; sample_size={len(observations)}; raw_values_emitted=false", flush=True)
+              f"metrics={_bucket(len(rows))}; sample_size={_bucket(len(observations))}; "
+              "raw_values_emitted=false", flush=True)
         return 0
-    except (KeyboardInterrupt, Exception):
-        print("[stopped] enhanced identity run failed safely; no row-level output", file=sys.stderr)
+    except (RunInterrupted, AuditInterrupted, KeyboardInterrupt) as exc:
+        signal_number = getattr(exc, "signal_number", None)
+        if checkpoint is not None:
+            checkpoint.update("interrupted", exception=exc, signal_number=signal_number)
+        print("[stopped] enhanced identity run failed safely; "
+              f"phase={checkpoint.phase if checkpoint else 'startup'}; "
+              f"exception_type={type(exc).__name__}; "
+              "row_level_output=false", file=sys.stderr)
+        if signal_number is not None:
+            return 128 + signal_number
+        return 130 if isinstance(exc, KeyboardInterrupt) else 143
+    except Exception as exc:
+        if checkpoint is not None:
+            checkpoint.update("failed", exception=exc)
+        print("[stopped] enhanced identity run failed safely; "
+              f"phase={checkpoint.phase if checkpoint else 'startup'}; "
+              f"exception_type={type(exc).__name__}; "
+              "row_level_output=false", file=sys.stderr)
         return 2
+    finally:
+        if checkpoint is not None:
+            checkpoint.stop_heartbeat()
+        signal.signal(signal.SIGTERM, previous_sigterm)
 
 
 if __name__ == "__main__":
