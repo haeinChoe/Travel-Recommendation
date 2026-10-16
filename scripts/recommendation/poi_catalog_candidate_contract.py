@@ -75,6 +75,8 @@ def match_source_item(
     source: PoiRecord,
     catalog: list[PoiRecord],
     *,
+    source_region: str,
+    source_region_to_admin_codes: Mapping[str, frozenset[str]],
     fuzzy_threshold: float | None = None,
     distance_threshold_m: float | None = None,
     source_category_to_content_types: Mapping[str, frozenset[str]] | None = None,
@@ -84,7 +86,8 @@ def match_source_item(
     Fuzzy-name and distance thresholds are disabled unless explicitly supplied.
     Such near matches are diagnostic candidates only and produce AMBIGUOUS.
     Category is a consistency check only when a reviewed crosswalk is supplied;
-    it never creates an identity match by itself.
+    it never creates an identity match by itself. Identity matching also requires
+    an explicit reviewed source-region-to-catalog-admin-code mapping.
     """
     if not source.item_id.strip():
         return MatchResult(source.item_id, "UNMATCHED", None, None, 0)
@@ -94,6 +97,18 @@ def match_source_item(
         not math.isfinite(distance_threshold_m) or distance_threshold_m < 0
     ):
         raise ValueError("distance threshold must be finite and nonnegative")
+
+    source_region_key = normalize_code(source_region)
+    reviewed_region_codes = next(
+        (
+            {normalize_code(code) for code in codes if normalize_code(code)}
+            for region, codes in source_region_to_admin_codes.items()
+            if normalize_code(region) == source_region_key
+        ),
+        None,
+    ) if source_region_key else None
+    if not reviewed_region_codes:
+        return MatchResult(source.item_id, "UNMATCHED", None, "region_unmapped", 0)
 
     source_name = normalize_text(source.name)
     source_district = normalize_code(source.district_code)
@@ -116,6 +131,9 @@ def match_source_item(
         if item.item_id in seen_catalog_ids:
             raise ValueError("catalog canonical IDs must be unique within a snapshot")
         seen_catalog_ids.add(item.item_id)
+        item_region_codes = {normalize_code(code) for code in item.region_codes if normalize_code(code)}
+        if not item_region_codes or not reviewed_region_codes.intersection(item_region_codes):
+            continue
         name = normalize_text(item.name)
         district = normalize_code(item.district_code)
         address = normalize_text(item.address)
@@ -258,6 +276,7 @@ def diagnose_catalog(
     source_items: list[PoiRecord],
     catalog: list[PoiRecord],
     *,
+    source_region_to_admin_codes: Mapping[str, frozenset[str]],
     request_region: str,
     region_admin_codes: Mapping[str, frozenset[str]],
     supported_content_types: frozenset[str],
@@ -268,6 +287,8 @@ def diagnose_catalog(
     matches = [match_source_item(
         source,
         catalog,
+        source_region=request_region,
+        source_region_to_admin_codes=source_region_to_admin_codes,
         source_category_to_content_types=source_category_to_content_types,
     ) for source in source_items]
     eligibility = [eligibility_reason(
@@ -280,7 +301,7 @@ def diagnose_catalog(
     method_counts = {
         method: count_bucket(sum(result.method == method for result in matches))
         for method in ("name_address", "name_district", "conflicting_exact_signals",
-                       "category_type_conflict", "fuzzy_or_distance_candidate", "unmatched")
+                       "category_type_conflict", "fuzzy_or_distance_candidate", "region_unmapped", "unmatched")
     }
     return {
         "source_item_count": count_bucket(len(source_items)),

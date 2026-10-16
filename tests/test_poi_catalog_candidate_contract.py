@@ -13,66 +13,142 @@ from scripts.recommendation.poi_catalog_candidate_contract import (
 )
 
 
+SYNTHETIC_REGION_MAP = {"synthetic-region": frozenset({"admin-11"})}
+
+
+def synthetic_catalog_record(item_id: str, **kwargs: object) -> PoiRecord:
+    kwargs.setdefault("region_codes", frozenset({"admin-11"}))
+    return PoiRecord(item_id, **kwargs)
+
+
+def match_synthetic_region(source: PoiRecord, catalog: list[PoiRecord], **kwargs: object):
+    return match_source_item(
+        source,
+        catalog,
+        source_region="synthetic-region",
+        source_region_to_admin_codes=SYNTHETIC_REGION_MAP,
+        **kwargs,
+    )
+
+
 class IdentityContractTests(unittest.TestCase):
+    def test_catalog_diagnostic_requires_explicit_region_mapping(self) -> None:
+        with self.assertRaisesRegex(TypeError, "source_region_to_admin_codes"):
+            diagnose_catalog(  # type: ignore[call-arg]
+                [],
+                [],
+                request_region="synthetic-region",
+                region_admin_codes={},
+                supported_content_types=frozenset(),
+            )
+
+    def test_same_mapped_region_allows_exact_identity_match(self) -> None:
+        source = PoiRecord("src", name="Place", address="Road 1")
+        target = PoiRecord("target", name="Place", address="Road 1",
+                           region_codes=frozenset({"admin-11"}))
+        result = match_source_item(
+            source,
+            [target],
+            source_region="North Region",
+            source_region_to_admin_codes={" north region ": frozenset({" ADMIN-11 "})},
+        )
+        self.assertEqual((result.status, result.canonical_item_id), ("MATCHED", "target"))
+
+    def test_disjoint_catalog_region_is_rejected_before_identity(self) -> None:
+        source = PoiRecord("src", name="Place", address="Road 1")
+        target = PoiRecord("target", name="Place", address="Road 1",
+                           region_codes=frozenset({"admin-26"}))
+        result = match_source_item(
+            source,
+            [target],
+            source_region="north-region",
+            source_region_to_admin_codes={"north-region": frozenset({"admin-11"})},
+        )
+        self.assertEqual((result.status, result.canonical_item_id), ("UNMATCHED", None))
+
+    def test_missing_or_unmapped_region_mapping_fails_closed(self) -> None:
+        source = PoiRecord("src", name="Place", address="Road 1")
+        target = PoiRecord("target", name="Place", address="Road 1",
+                           region_codes=frozenset({"admin-11"}))
+        for region, mapping in (
+            ("north-region", {}),
+            ("unknown-region", {"north-region": frozenset({"admin-11"})}),
+            ("north-region", {"north-region": frozenset()}),
+        ):
+            with self.subTest(region=region, mapping=mapping):
+                result = match_source_item(
+                    source,
+                    [target],
+                    source_region=region,
+                    source_region_to_admin_codes=mapping,
+                )
+                self.assertEqual((result.status, result.canonical_item_id, result.method),
+                                 ("UNMATCHED", None, "region_unmapped"))
+
+    def test_empty_catalog_region_is_ignored(self) -> None:
+        source = PoiRecord("src", name="Place", address="Road 1")
+        result = match_synthetic_region(source, [PoiRecord("target", name="Place", address="Road 1")])
+        self.assertEqual((result.status, result.canonical_item_id), ("UNMATCHED", None))
+
     def test_name_and_address_is_a_deterministic_match(self) -> None:
         source = PoiRecord("src", name="Place", address="Road 1")
-        catalog = [PoiRecord("target", name="Place", address="Road 1")]
-        result = match_source_item(source, catalog)
+        catalog = [synthetic_catalog_record("target", name="Place", address="Road 1")]
+        result = match_synthetic_region(source, catalog)
         self.assertEqual((result.status, result.canonical_item_id, result.method),
                          ("MATCHED", "target", "name_address"))
 
     def test_name_address_with_conflicting_nonblank_district_is_ambiguous(self) -> None:
         source = PoiRecord("src", name="Place", address="Road 1", district_code="A")
-        catalog = [PoiRecord("target", name="Place", address="Road 1", district_code="B")]
-        result = match_source_item(source, catalog)
+        catalog = [synthetic_catalog_record("target", name="Place", address="Road 1", district_code="B")]
+        result = match_synthetic_region(source, catalog)
         self.assertEqual((result.status, result.canonical_item_id, result.method),
                          ("AMBIGUOUS", None, "conflicting_exact_signals"))
 
     def test_name_address_with_matching_district_is_a_deterministic_match(self) -> None:
         source = PoiRecord("src", name="Place", address="Road 1", district_code="A")
-        catalog = [PoiRecord("target", name="Place", address="Road 1", district_code="A")]
-        result = match_source_item(source, catalog)
+        catalog = [synthetic_catalog_record("target", name="Place", address="Road 1", district_code="A")]
+        result = match_synthetic_region(source, catalog)
         self.assertEqual((result.status, result.canonical_item_id, result.method),
                          ("MATCHED", "target", "name_address"))
 
     def test_name_district_with_conflicting_nonblank_address_is_ambiguous(self) -> None:
         source = PoiRecord("src", name="Place", address="Road 1", district_code="A")
-        catalog = [PoiRecord("target", name="Place", address="Road 2", district_code="A")]
-        result = match_source_item(source, catalog)
+        catalog = [synthetic_catalog_record("target", name="Place", address="Road 2", district_code="A")]
+        result = match_synthetic_region(source, catalog)
         self.assertEqual((result.status, result.canonical_item_id, result.method),
                          ("AMBIGUOUS", None, "conflicting_exact_signals"))
 
     def test_name_district_with_blank_address_remains_a_deterministic_match(self) -> None:
         source = PoiRecord("src", name="Place", district_code="A")
-        catalog = [PoiRecord("target", name="Place", district_code="A")]
-        result = match_source_item(source, catalog)
+        catalog = [synthetic_catalog_record("target", name="Place", district_code="A")]
+        result = match_synthetic_region(source, catalog)
         self.assertEqual((result.status, result.canonical_item_id, result.method),
                          ("MATCHED", "target", "name_district"))
 
     def test_name_alone_is_ambiguous_even_with_one_catalog_row(self) -> None:
         source = PoiRecord("src", name="Same name")
-        result = match_source_item(source, [PoiRecord("target", name="Same name")])
+        result = match_synthetic_region(source, [synthetic_catalog_record("target", name="Same name")])
         self.assertEqual((result.status, result.canonical_item_id, result.method),
                          ("AMBIGUOUS", None, "fuzzy_or_distance_candidate"))
 
     def test_exact_coordinates_alone_are_diagnostic_not_identity(self) -> None:
         source = PoiRecord("src", latitude="37.5", longitude="127.0")
-        result = match_source_item(source, [PoiRecord("target", latitude="37.5", longitude="127.0")])
+        result = match_synthetic_region(source, [synthetic_catalog_record("target", latitude="37.5", longitude="127.0")])
         self.assertEqual(result.status, "AMBIGUOUS")
         self.assertIsNone(result.canonical_item_id)
 
     def test_conflicting_exact_signals_fail_closed(self) -> None:
         source = PoiRecord("src", name="Place", address="Road 1", district_code="A")
         catalog = [
-            PoiRecord("by-address", name="Place", address="Road 1", district_code="B"),
-            PoiRecord("by-district", name="Place", address="Road 2", district_code="A"),
+            synthetic_catalog_record("by-address", name="Place", address="Road 1", district_code="B"),
+            synthetic_catalog_record("by-district", name="Place", address="Road 2", district_code="A"),
         ]
-        result = match_source_item(source, catalog)
+        result = match_synthetic_region(source, catalog)
         self.assertEqual((result.status, result.method), ("AMBIGUOUS", "conflicting_exact_signals"))
 
     def test_fuzzy_match_is_diagnostic_only(self) -> None:
         source = PoiRecord("src", name="Place")
-        result = match_source_item(source, [PoiRecord("target", name="Placee")], fuzzy_threshold=0.8)
+        result = match_synthetic_region(source, [synthetic_catalog_record("target", name="Placee")], fuzzy_threshold=0.8)
         self.assertEqual((result.status, result.canonical_item_id), ("AMBIGUOUS", None))
 
     def test_invalid_match_thresholds_are_rejected(self) -> None:
@@ -80,12 +156,12 @@ class IdentityContractTests(unittest.TestCase):
         for kwargs in ({"fuzzy_threshold": 1.1}, {"distance_threshold_m": float("inf")}):
             with self.subTest(kwargs=kwargs):
                 with self.assertRaises(ValueError):
-                    match_source_item(source, [], **kwargs)
+                    match_synthetic_region(source, [], **kwargs)
 
     def test_explicit_category_type_conflict_vetoes_identity(self) -> None:
         source = PoiRecord("src", name="Place", address="Road 1", category="museum")
-        target = PoiRecord("target", name="Place", address="Road 1", content_type_id="12")
-        result = match_source_item(
+        target = synthetic_catalog_record("target", name="Place", address="Road 1", content_type_id="12")
+        result = match_synthetic_region(
             source,
             [target],
             source_category_to_content_types={"museum": frozenset({"14"})},
@@ -94,14 +170,14 @@ class IdentityContractTests(unittest.TestCase):
 
     def test_duplicate_catalog_identity_in_a_snapshot_is_rejected(self) -> None:
         source = PoiRecord("src", name="Place", address="Road 1")
-        catalog = [PoiRecord("same", name="Place", address="Road 1"),
-                   PoiRecord("same", name="Other", address="Road 2")]
+        catalog = [synthetic_catalog_record("same", name="Place", address="Road 1"),
+                   synthetic_catalog_record("same", name="Other", address="Road 2")]
         with self.assertRaisesRegex(ValueError, "catalog canonical IDs"):
-            match_source_item(source, catalog)
+            match_synthetic_region(source, catalog)
 
     def test_match_summary_contains_no_identifiers_and_suppresses_small_cells(self) -> None:
         results = [
-            match_source_item(PoiRecord(f"source-{i}", name="Place"), [])
+            match_synthetic_region(PoiRecord(f"source-{i}", name="Place"), [])
             for i in range(9)
         ]
         summary = match_summary(results)
@@ -111,8 +187,9 @@ class IdentityContractTests(unittest.TestCase):
     def test_catalog_diagnostics_are_bucketed_and_identifier_free(self) -> None:
         result = diagnose_catalog(
             [PoiRecord("private-source", name="Place", address="Road 1")],
-            [PoiRecord("private-target", name="Place", address="Road 1", content_type_id="12",
+            [synthetic_catalog_record("private-target", name="Place", address="Road 1", content_type_id="12",
                        region_codes=frozenset({"11"}), catalog_status="active")],
+            source_region_to_admin_codes={"seoul": frozenset({"11"})},
             request_region="seoul", region_admin_codes={"seoul": frozenset({"11"})},
             supported_content_types=frozenset({"12"}),
         )

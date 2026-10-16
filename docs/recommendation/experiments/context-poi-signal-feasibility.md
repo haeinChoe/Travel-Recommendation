@@ -280,6 +280,8 @@ POI master candidate join coverage는 capital, west, east에서 TL과 VL 모두 
 
 Issue #4의 [`POI catalog / candidate contract`](../poi-catalog-candidate-contract.md)는 이 집계를 historical `TN_POI_MASTER` reference coverage로 한정합니다. 이 값은 TourAPI identity coverage나 product-candidate eligibility를 나타내지 않습니다.
 
+Issue #4 follow-up에서 사용한 네 권역별 `TN_POI_MASTER` 후보 파일은 사용자가 승인된 파일이라고 명시적으로 확인했습니다. 이 확인은 해당 진단의 입력 승인을 확정하지만, 위의 과거 집계를 canonical identity나 TourAPI/product-candidate coverage로 바꾸지 않습니다.
+
 ### B. Context–POI association 및 TL→VL 재현
 
 아래 값은 지원이 공개 가능한 association에서 context-feature × POI-feature Cramér's V의 중앙값입니다. TL/VL 각 split 안에서 feature 조합을 합치지 않고, visit-row와 distinct-trip-pair를 따로 계산했습니다.

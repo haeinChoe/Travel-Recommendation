@@ -1,7 +1,7 @@
 # Travel Recommendation PRD
 
 > 
-> Last updated: 2026-09-09
+> Last updated: 2026-10-17
 
 ## 1. Product Overview
 
@@ -68,7 +68,7 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 
 이때 자연어 해석 기능을 사용하더라도 실제 추천 후보 생성과 랭킹은 검증 가능한 추천 모델과 카탈로그 데이터를 기반으로 수행하는 것을 기본 방향으로 한다.
 
-**현재 계약 상태:** TourAPI는 authoritative POI catalog 후보로 검토 중이며 source, 추천 가능한 content type, serving-time eligibility, canonical identity는 아직 확정되지 않았다. AI Hub의 방문 POI ID나 `TN_POI_MASTER`만으로 canonical 관광지 identity를 확정하지 않는다. 제품 후보는 검증된 catalog snapshot과 request-time hard constraints로 구성해야 하며, 이는 과거 노출 집합을 복원하지 않는다. 진행 근거와 미결정 항목은 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)에 기록한다.
+**현재 계약 상태:** TourAPI는 authoritative POI catalog 후보로 검토 중이며 source, 추천 가능한 content type, serving-time eligibility, canonical identity는 아직 확정되지 않았다. Issue #4의 POI Master 진단에 사용한 네 권역별 `TN_POI_MASTER` 후보 파일은 사용자가 승인된 파일이라고 명시적으로 확인했다. 이 승인은 해당 진단의 source 권한을 확인하며, `TN_POI_MASTER`를 제품 catalog 또는 canonical identity로 확정하지 않는다. 공식 data.go listing은 무료·무제한 재사용 metadata, 개발 자동 승인, 운영 심사, quota 1,000을 표시한다. 읽기 전용 area, legal-district, service-category, classification code-list 확인은 성공했으나 목록의 scope/completeness, 지역 crosswalk 또는 제품 지원 type을 확정하지 않는다. 한국관광공사 FAQ의 caching/crawling 경고는 guide preview 예시 범위이며 인증된 API payload 사용을 그 자체로 금지하지 않지만, bulk payload 보존 조건은 명시되지 않았다. 네 권역 공식 AI Hub 페이지는 TourAPI area/province crosswalk를 제공하지 않는다. 따라서 product coverage는 product owner가 region crosswalk와 eligible content-type 목록을 승인할 때까지 측정할 수 없다. 이 Issue에서는 catalog snapshot을 만들지 않았다. 제품 후보는 검증된 catalog snapshot과 request-time hard constraints로 구성해야 하며, 이는 과거 노출 집합을 복원하지 않는다. 진행 근거와 미결정 항목은 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)에 기록한다.
 
 ---
 
@@ -308,7 +308,7 @@ occurredAt
 
 ### 9.2 Item Catalog Mapping
 
-AI Hub 방문 POI와 serving catalog는 서로 다른 식별 체계를 사용할 수 있으므로 검증된 catalog snapshot을 대상으로 entity-resolution을 수행한다. TourAPI는 유력한 source 후보지만 Issue #4에서 서비스별 접근 권한과 field-level contract를 확인하지 못해 authoritative catalog로 확정되지 않았다. `TN_POI_MASTER`는 별도 historical reference table이며 `TN_VISIT_AREA_INFO.POI_ID`의 FK 또는 동일 key 보장을 의미하지 않는다. AI Hub source identity는 `(region, nonblank POI_ID)`로 보존한다.
+AI Hub 방문 POI와 serving catalog는 서로 다른 식별 체계를 사용할 수 있으므로 검증된 catalog snapshot을 대상으로 entity-resolution을 수행한다. Issue #4의 성공한 단일 `areaBasedList2` 요청은 해당 요청에 대한 접근만 확인하며, POI endpoint의 전체 field 의미·catalog coverage·보존 권한은 확정하지 않아 TourAPI를 authoritative catalog로 지정하지 않는다. `TN_POI_MASTER`는 별도 historical reference table이며 `TN_VISIT_AREA_INFO.POI_ID`의 FK 또는 동일 key 보장을 의미하지 않는다. AI Hub source identity는 `(region, nonblank POI_ID)`로 보존한다.
 
 매핑 신호 후보:
 
