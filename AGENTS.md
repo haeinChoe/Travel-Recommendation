@@ -62,6 +62,13 @@
 - MCP bridge는 읽기 전용 상태 확인, `herdr_data_science_agent_start(workspace_id)`의 좁은 startup mutation, 명시적으로 승인된 workspace/worktree teardown 도구를 제공한다. data-science agent 시작에는 dedicated MCP mutation을 우선 사용한다. workspace/worktree 생성, implementation/reviewer agent 시작·prompt, 기타 pane 제어처럼 MCP mutation 대안이 없는 승인된 상태 변경 작업은 저장소 skill과 전역 Herdr skill이 정의한 approval-reviewed 실행 경로를 첫 시도부터 사용한다. MCP 상태 도구를 사용할 수 없거나 호출에 실패하면 skill에서 승인한 읽기 전용 Herdr CLI fallback을 사용한다. dedicated startup mutation이 실패하면 ordinary sandbox의 직접 CLI를 우회 경로로 사용하지 않는다. 상태 변경 명령을 ordinary sandbox에서 잘못 시도해 `EPERM` 또는 `Operation not permitted`가 발생한 경우 그 실패 자체를 Issue blocker로 보지 말고, 아직 시도하지 않은 이미 정의된 승인 경로로만 진행한다. 그 승인 경로가 거부되거나 동일 오류로 실패하면 blocker를 보고하고 중단한다. 새롭거나 더 넓은 escalation, sandbox bypass, force/unrestricted profile로 복구하지 않는다. CLI 실패만으로 MCP 실패를 추정하지 않는다.
 - `herdr_worktree_remove`와 `herdr_workspace_close`는 사용자 또는 Issue가 cleanup을 명시적으로 승인한 경우에만 사용할 수 있으며, 사전 조건과 사후 확인은 `.agents/skills/travel-issue-agent-loop/references/agent-loop.md`의 cleanup 절차를 따른다.
 
+## 유지보수 신속 경로
+
+- 승인된 Issue 작업 중 발견된 저위험 운영·지침·에이전트 워크플로 blocker는 `docs/agent-workflow.md`의 **유지보수 신속 경로** 조건을 모두 만족할 때만 별도 Issue 없이 처리할 수 있다.
+- 사용자의 `유지보수 게이트로 처리` 지시는 해당 blocker에 한해 허용된 유지보수 파일 수정, 검증, 검증된 기능 브랜치 commit/push와 유지보수 PR 생성을 승인한다. `dev`/`main` 직접 push, force push, merge는 계속 금지한다.
+- 추천 알고리즘, 제품 요구사항, 데이터·전처리·평가 의미, API 계약, DB schema, 서비스 도메인 로직 또는 모델 학습·추론 의미가 바뀌면 유지보수 신속 경로를 사용하지 않고 일반 Issue로 승격한다.
+- 유지보수 PR은 `.github/PULL_REQUEST_TEMPLATE/maintenance.md`를 사용해 중단된 기존 Issue와 검증 결과를 연결하고, 병합 후 기존 Issue branch에 `origin/dev`를 merge하여 재개한다. 이미 push된 branch를 rebase하거나 force push하는 것을 기본 동기화 방법으로 사용하지 않는다.
+
 ## 상세 지침
 
 - 작업 요청, 권한 단계, 브랜치·커밋·PR 절차는 docs/agent-workflow.md를 따른다.
