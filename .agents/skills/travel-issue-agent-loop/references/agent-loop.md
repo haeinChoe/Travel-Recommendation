@@ -50,6 +50,31 @@ The Herdr MCP bridge provides read-only inspection, a guarded `herdr_data_scienc
 
 Use the worktree returned by Herdr for the implementation branch. Confirm its branch, base, and clean state before starting agents. Pane inventory is not a mandatory preflight: prefer a pane returned by the authorized orchestration flow; if none is available, create or split one explicitly for the confirmed Issue worktree with `--no-focus`. Do not call `pane list` merely to discover a usable pane, and do not call `pane current --current` only to reconfirm already-set caller context. Start agents only in returned pane IDs and use unique names. Never start two agents in one pane.
 
+## Maintenance fast-path workspace isolation
+
+The normal same-Issue "reuse before creating" rule applies when continuing the Issue itself. The explicitly approved **유지보수 신속 경로** is a deliberate isolation exception because the blocked Issue branch may already contain unmerged work that must not enter a maintenance PR.
+
+When the user says `유지보수 게이트로 처리` for an eligible blocker:
+
+1. Confirm the blocked Issue's existing workspace, worktree path, and branch `agent/<N>-<issue-slug>`. Preserve that worktree and its dirty/committed state; do not repurpose it for the maintenance edit.
+2. Through the same approval-reviewed Herdr orchestration route used for ordinary state-changing workspace/worktree creation, create a separate unfocused maintenance workspace and linked worktree from `dev`.
+3. Use a distinct branch `agent/<N>-maintenance-<maintenance-slug>` and a maintenance-specific workspace/worktree label such as `maintenance-<N>`. `<N>` remains the blocked Issue number; do not create a replacement Issue merely to obtain another branch number.
+4. Start the maintenance writer only in the exact Herdr-returned maintenance worktree. The maintenance PR must contain only the maintenance branch's `origin/dev...HEAD` diff, never the blocked Issue branch's unmerged work.
+5. Push only the maintenance branch and create/update the maintenance PR against `dev`. Merge still requires separate user authorization.
+6. After the maintenance PR is merged, re-identify the original blocked Issue workspace/worktree/branch from Herdr and Git state. Resume there, not in the maintenance worktree, and merge `origin/dev` into that original Issue branch.
+7. Maintenance-worktree cleanup is not implied by the gate; use the normal separately authorized cleanup procedure.
+
+The intended Herdr naming is:
+
+```bash
+herdr workspace create --cwd "$REPO_ROOT" --label "maintenance-<N>" --no-focus
+herdr worktree create --workspace "$MAINTENANCE_WORKSPACE_ID" \
+  --branch "agent/<N>-maintenance-<slug>" --base dev \
+  --label "maintenance-<N>" --no-focus
+```
+
+Use these commands only through the already-authorized Herdr state-changing execution route described by this skill and the global Herdr skill. Read workspace IDs and paths from Herdr responses; never guess or synthesize them.
+
 ## Herdr CLI execution boundary
 
 Direct Herdr CLI calls are orchestration commands, not ordinary repository commands. Read-only inspection is a fallback when MCP cannot provide required state; explicitly authorized state-changing commands without an MCP mutation equivalent use the global Herdr skill's approval-reviewed escalated route on the first attempt.

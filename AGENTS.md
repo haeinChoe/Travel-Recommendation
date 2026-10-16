@@ -65,9 +65,10 @@
 ## 유지보수 신속 경로
 
 - 승인된 Issue 작업 중 발견된 저위험 운영·지침·에이전트 워크플로 blocker는 `docs/agent-workflow.md`의 **유지보수 신속 경로** 조건을 모두 만족할 때만 별도 Issue 없이 처리할 수 있다.
-- 사용자의 `유지보수 게이트로 처리` 지시는 해당 blocker에 한해 허용된 유지보수 파일 수정, 검증, 검증된 기능 브랜치 commit/push와 유지보수 PR 생성을 승인한다. `dev`/`main` 직접 push, force push, merge는 계속 금지한다.
+- 사용자의 `유지보수 게이트로 처리` 지시는 해당 blocker에 한해 **별도 유지보수 workspace/worktree 생성**, 허용된 유지보수 파일 수정, 검증, 검증된 유지보수 브랜치 commit/push와 유지보수 PR 생성을 승인한다. 유지보수 브랜치는 `dev`에서 분기한 `agent/<중단된-issue>-maintenance-<slug>` 형식을 사용한다. `dev`/`main` 직접 push, force push, merge는 계속 금지한다.
+- 중단된 원래 Issue의 `agent/<issue>-<slug>` branch/worktree는 유지보수 작업에 재사용하거나 덮어쓰지 않는다. 원래 Issue의 미병합 변경이 유지보수 PR에 섞이지 않도록 별도 maintenance worktree에서만 유지보수 변경을 수행한다.
 - 추천 알고리즘, 제품 요구사항, 데이터·전처리·평가 의미, API 계약, DB schema, 서비스 도메인 로직 또는 모델 학습·추론 의미가 바뀌면 유지보수 신속 경로를 사용하지 않고 일반 Issue로 승격한다.
-- 유지보수 PR은 `.github/PULL_REQUEST_TEMPLATE/maintenance.md`를 사용해 중단된 기존 Issue와 검증 결과를 연결하고, 병합 후 기존 Issue branch에 `origin/dev`를 merge하여 재개한다. 이미 push된 branch를 rebase하거나 force push하는 것을 기본 동기화 방법으로 사용하지 않는다.
+- 유지보수 PR은 `.github/PULL_REQUEST_TEMPLATE/maintenance.md`를 사용해 중단된 기존 Issue, 원래 Issue branch, 별도 유지보수 branch와 검증 결과를 연결한다. 병합 후에는 maintenance worktree가 아니라 **원래 중단된 Issue worktree**로 돌아가 그 branch에 `origin/dev`를 merge하여 재개한다. 이미 push된 branch를 rebase하거나 force push하는 것을 기본 동기화 방법으로 사용하지 않는다.
 
 ## 상세 지침
 

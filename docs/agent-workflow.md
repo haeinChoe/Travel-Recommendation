@@ -124,9 +124,35 @@ PR에는 실제 데이터 행, 개인 식별 가능 정보, 토큰·비밀값, �
 5. 자동 테스트 또는 명확한 수동 검증 방법이 있다.
 6. 원래 Issue의 기능 범위를 대신 확장하지 않는다.
 
-사용자가 특정 blocker에 대해 `유지보수 게이트로 처리`라고 명시하면, 그 blocker에 한해 유지보수 신속 경로의 파일 수정·검증·검증된 커밋·기능 브랜치 push·유지보수 PR 생성을 승인한 것으로 해석한다. 이 문구는 `dev`/`main` 직접 push, force push, merge 권한을 부여하지 않는다.
+사용자가 특정 blocker에 대해 `유지보수 게이트로 처리`라고 명시하면, 그 blocker에 한해 다음 작업을 승인한 것으로 해석한다.
 
-유지보수 신속 경로 자체가 새 제품 결정을 승인하지 않는다. 진입 조건을 만족하지 못하거나 의미 변경 여부가 불분명하면 일반 Issue로 승격한다.
+- 기존 Herdr 승인 경로를 통한 별도 maintenance workspace/worktree 생성
+- `dev`에서 분기한 `agent/<중단된-issue>-maintenance-<slug>` 유지보수 브랜치 생성
+- 허용된 유지보수 파일 수정과 검증
+- 검증된 유지보수 브랜치 commit/push
+- `dev` 대상 유지보수 PR 생성 또는 갱신
+
+이 문구는 `dev`/`main` 직접 push, force push, merge 권한을 부여하지 않는다. 유지보수 신속 경로 자체가 새 제품 결정을 승인하지 않는다. 진입 조건을 만족하지 못하거나 의미 변경 여부가 불분명하면 일반 Issue로 승격한다.
+
+### 작업 격리와 브랜치/worktree
+
+일반 Issue는 기존 규칙대로 Issue별 전용 branch/worktree를 사용한다.
+
+```text
+중단된 원래 작업
+  branch: agent/<N>-<issue-slug>
+  worktree: 해당 Issue에 매핑된 기존 worktree
+
+유지보수 작업
+  branch: agent/<N>-maintenance-<maintenance-slug>
+  worktree: dev에서 새로 만든 별도 maintenance worktree
+```
+
+여기서 `<N>`은 **중단된 기존 Issue 번호**다. 유지보수 신속 경로는 새 Issue를 만들지 않으므로 중단된 Issue가 추적성 기준점으로 남는다.
+
+중단된 원래 Issue branch/worktree는 유지보수 수정 장소로 재사용하지 않는다. 원래 branch에는 아직 PR되지 않은 기능 변경, 데이터 분석 코드 또는 로컬 변경이 존재할 수 있으므로 그 worktree에서 유지보수 파일을 수정하면 유지보수 PR에 원래 Issue diff가 섞일 수 있다. 유지보수 변경은 반드시 `dev`를 base로 한 별도 maintenance branch/worktree에서 수행한다.
+
+이 별도 maintenance worktree 생성은 동일 Issue 작업을 중복 구현하는 것이 아니라 **PR 격리를 위한 명시적 예외**다. `.agents/skills/travel-issue-agent-loop/references/agent-loop.md`의 유지보수 격리 절차와 기존 Herdr 승인 경로를 사용한다. 실제 worktree 경로는 Herdr/Git 상태에서 읽고 임의로 추측하거나 합성하지 않는다.
 
 ### 초기 허용 범위
 
@@ -167,7 +193,7 @@ PR에는 실제 데이터 행, 개인 식별 가능 정보, 토큰·비밀값, �
 node scripts/maintenance/validate-fast-path-scope.ts <changed-file>...
 ```
 
-브랜치 전체 변경 파일을 확인하는 예:
+maintenance branch 전체 변경 파일을 확인하는 예:
 
 ```bash
 git diff --name-only -z origin/dev...HEAD \
@@ -181,25 +207,31 @@ git diff --name-only -z origin/dev...HEAD \
 유지보수 PR은 `.github/PULL_REQUEST_TEMPLATE/maintenance.md`를 사용하고 반드시 다음을 기록한다.
 
 - 중단된 기존 Issue
+- 중단된 원래 Issue branch
+- 별도 maintenance branch
 - 발생한 blocker
 - 실제 변경 범위
 - 제품·데이터·모델·평가 의미에서 변경하지 않는 것
 - 실행한 검증과 미실행 검증의 이유
 - 병합 후 기존 작업 재개 절차
 
-유지보수 PR도 기능 브랜치에서 `dev`를 대상으로 만들며 보호 브랜치를 우회하지 않는다. 유지보수 PR 생성 권한은 merge 권한을 포함하지 않는다.
+유지보수 PR은 **별도 maintenance branch에서 `dev`를 대상으로** 만든다. 중단된 원래 Issue branch를 유지보수 PR의 head로 사용하지 않는다. PR diff에 원래 Issue의 미병합 변경이 섞이지 않았는지 `origin/dev...HEAD` 기준으로 확인한다. 유지보수 PR 생성 권한은 merge 권한을 포함하지 않는다.
 
 ### 병합 후 작업 재개
 
-유지보수 PR이 별도 승인으로 `dev`에 병합된 뒤 중단된 Issue writer는 기존 worktree와 branch를 재사용한다.
+유지보수 PR이 별도 승인으로 `dev`에 병합된 뒤에는 maintenance worktree에서 원래 작업을 계속하지 않는다. Herdr/Git 상태로 중단된 Issue 번호, `agent/<N>-<issue-slug>` branch, 기존 worktree가 정확히 매핑되는지 확인한 다음 **그 원래 Issue worktree**로 돌아간다.
+
+아래 `$BLOCKED_ISSUE_WORKTREE`는 추측한 경로가 아니라 Herdr/Git 매핑에서 확인한 기존 Issue worktree의 절대 경로를 의미한다.
 
 ```bash
-git status
-git fetch origin
-git merge origin/dev
+git -C "$BLOCKED_ISSUE_WORKTREE" status
+git -C "$BLOCKED_ISSUE_WORKTREE" fetch origin
+git -C "$BLOCKED_ISSUE_WORKTREE" merge origin/dev
 ```
 
-기본 동기화 방식은 기존 Issue branch에 `origin/dev`를 merge하는 것이다. 이미 원격에 push된 Issue branch의 SHA를 다시 쓰는 rebase나 force push를 기본 절차로 사용하지 않는다. merge 전에 현재 변경사항과 충돌 가능성을 확인하고, 충돌 시 유지보수 변경과 기존 Issue 변경의 의미를 모두 보존한다. merge 후 원래 Issue 관련 검증을 다시 실행한다.
+기본 동기화 방식은 원래 Issue branch에 `origin/dev`를 merge하는 것이다. 이미 원격에 push된 Issue branch의 SHA를 다시 쓰는 rebase나 force push를 기본 절차로 사용하지 않는다. merge 전에 현재 변경사항과 충돌 가능성을 확인하고, 충돌 시 유지보수 변경과 원래 Issue 변경의 의미를 모두 보존한다.
+
+원래 Issue worktree의 미커밋 변경 때문에 merge가 안전하게 진행되지 않으면 이를 숨기기 위해 임의로 reset, stash, 강제 commit하지 않는다. 기존 Issue 권한과 현재 작업 상태에 맞는 안전한 방법을 선택하고, 자동으로 해결할 수 없으면 정확한 blocker를 보고한다. merge 후 원래 Issue 관련 검증을 다시 실행한 뒤 작업을 재개한다.
 
 로컬 `dev` 자체를 갱신해야 할 때는 예상치 못한 merge commit 생성을 피하기 위해 `git pull --ff-only`를 권장한다.
 
@@ -207,14 +239,16 @@ git merge origin/dev
 
 최소 dry-run 시나리오는 다음과 같다.
 
-1. 승인된 Issue 작업 중 문서/에이전트 지침 blocker 발견
+1. `agent/<N>-<issue-slug>` 전용 worktree에서 승인된 Issue 작업 중 문서/에이전트 지침 blocker 발견
 2. 사용자가 `유지보수 게이트로 처리` 지시
-3. 허용 경로만 수정
-4. 경로 검사와 관련 계약 검증 실행
-5. 유지보수 PR 생성, 중단된 Issue 참조
-6. 별도 merge 승인 전에는 병합하지 않음
-7. 병합 후 기존 Issue branch에 `origin/dev` merge
-8. 기존 Issue 검증 재실행 후 작업 재개
+3. 원래 Issue worktree는 그대로 보존
+4. `dev`에서 `agent/<N>-maintenance-<slug>` 별도 maintenance worktree/branch 생성
+5. 허용 경로만 수정하고 경로 검사와 관련 계약 검증 실행
+6. 별도 maintenance branch로 유지보수 PR 생성, 중단된 Issue와 원래 branch 참조
+7. 별도 merge 승인 전에는 병합하지 않음
+8. 병합 후 maintenance worktree가 아니라 원래 중단된 Issue worktree를 다시 식별
+9. 그 원래 Issue branch에 `origin/dev` merge
+10. 기존 Issue 검증 재실행 후 작업 재개
 
 긴급 우회 절차, required check 우회, 자동 merge, force push는 이 흐름에 포함하지 않는다.
 
