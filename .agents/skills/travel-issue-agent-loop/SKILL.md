@@ -87,6 +87,20 @@ Ask the read-only reviewer to inspect the Issue, acceptance criteria, and full d
 
 Do not ask the user about routine implementation choices. Continue through the authorized work. When delivery is authorized, the entry coordinator reports the pre-push summary, then delegates the permitted commit, push, and PR steps to that same assigned writer and inspects the resulting repository state and PR read-only. The assigned writer must follow all repository authorization gates, including commit permission, explicit push/PR permission, branch restrictions, and the prohibition on merging without separate authorization. Stop only for a real blocker: missing or conflicting requirements/permissions, unavailable required access, a security concern outside the authorization, or an issue that remains unresolved after three review rounds.
 
+## Maintenance fast path
+
+When an approved Issue is blocked by a small repository-operation or agent-workflow defect, apply the repository's **유지보수 신속 경로** only when every eligibility condition in `docs/agent-workflow.md` is satisfied.
+
+- The user's explicit phrase `유지보수 게이트로 처리` authorizes the eligible blocker change, validation, **dedicated maintenance workspace/worktree and branch creation**, validated commit, maintenance-branch push, and maintenance PR creation for that blocker only. It does not authorize merge, force push, or direct writes to `dev`/`main`.
+- Preserve the blocked Issue's existing `agent/<issue>-<slug>` worktree and branch. Do not repurpose that worktree for maintenance edits, because its unmerged Issue changes must not enter the maintenance PR.
+- Create the maintenance work in a separate worktree based on `dev`, using branch `agent/<blocked-issue>-maintenance-<slug>` and the maintenance-isolation procedure in `references/agent-loop.md`. This is an explicit isolation exception to ordinary same-Issue workspace reuse; the blocked Issue remains the traceability anchor and no replacement Issue is created.
+- Use `.github/PULL_REQUEST_TEMPLATE/maintenance.md` and record the blocked Issue, blocked Issue branch, maintenance branch, scope, non-goals, validation, and resume steps.
+- Run `scripts/maintenance/validate-fast-path-scope.ts` against the maintenance-branch changed file list. Passing the path check is necessary but not sufficient: product, data, preprocessing, evaluation, API, DB, domain, recommendation, or model semantics must remain unchanged.
+- If the change is outside the allowlist or its semantic impact is uncertain, stop using the fast path and elevate it to a normal Issue.
+- After an authorized maintenance PR is merged into `dev`, identify the exact **original blocked Issue worktree/branch mapping**, return to that worktree, fetch, and merge `origin/dev` into the original Issue branch. Do not resume the Issue in the maintenance worktree, and do not make rebase/force-push the default resume mechanism.
+
+This is not a break-glass path. It does not bypass branch protection, required validation, review, the repository's separate merge-authorization rule, or the worktree-isolation rules.
+
 ## Authorized cleanup
 
 Clean an Issue workspace only when the user explicitly requests cleanup or the Issue authorizes it. Follow the separate linked-worktree removal, linked workspace-session closure, and plain-workspace closure procedures in [references/agent-loop.md](references/agent-loop.md). Confirm the Issue-to-workspace-to-worktree-to-branch mapping, merged PR or explicit abandonment, caller/focus protection, no remaining task need, and settled agents before any operation.
