@@ -54,14 +54,16 @@ Use the worktree returned by Herdr for the implementation branch. Confirm its br
 
 The normal same-Issue "reuse before creating" rule applies when continuing the Issue itself. The explicitly approved **유지보수 신속 경로** is a deliberate isolation exception because the blocked Issue branch may already contain unmerged work that must not enter a maintenance PR.
 
+The branch-isolation requirements below apply in every session. The Herdr workspace and command details apply only in a Herdr-managed session. In other sessions, identify worktrees through the active session's authorized repository tools and Git state; create the separate maintenance branch/worktree from `origin/dev` with those tools, verify its returned path and diff, and preserve the original Issue worktree. After a separately approved merge, resume the original Issue worktree using that same authorized route.
+
 When the user says `유지보수 게이트로 처리` for an eligible blocker:
 
-1. Confirm the blocked Issue's existing workspace, worktree path, and branch `agent/<N>-<issue-slug>`. Preserve that worktree and its dirty/committed state; do not repurpose it for the maintenance edit.
-2. Through the same approval-reviewed Herdr orchestration route used for ordinary state-changing workspace/worktree creation, create a separate unfocused maintenance workspace and linked worktree from `dev`.
-3. Use a distinct branch `agent/<N>-maintenance-<maintenance-slug>` and a maintenance-specific workspace/worktree label such as `maintenance-<N>`. `<N>` remains the blocked Issue number; do not create a replacement Issue merely to obtain another branch number.
-4. Start the maintenance writer only in the exact Herdr-returned maintenance worktree. The maintenance PR must contain only the maintenance branch's `origin/dev...HEAD` diff, never the blocked Issue branch's unmerged work.
+1. Confirm the blocked Issue's existing worktree path and branch `agent/<N>-<issue-slug>` using the active session's authorized tools. In Herdr sessions, also verify the exact workspace mapping. Preserve that worktree and its dirty/committed state; do not repurpose it for the maintenance edit.
+2. In Herdr sessions, use the same approval-reviewed Herdr route as ordinary state-changing workspace/worktree creation. In other sessions, use the active session's authorized repository/worktree tool. Create a separate maintenance worktree from `dev`.
+3. Use a distinct branch `agent/<N>-maintenance-<maintenance-slug>` and, where supported, a maintenance-specific workspace/worktree label such as `maintenance-<N>`. `<N>` remains the blocked Issue number; do not create a replacement Issue merely to obtain another branch number.
+4. Start the maintenance writer only in the exact maintenance worktree path returned by the active session's authorized workflow. The maintenance PR must contain only the maintenance branch's `origin/dev...HEAD` diff, never the blocked Issue branch's unmerged work.
 5. Push only the maintenance branch and create/update the maintenance PR against `dev`. Merge still requires separate user authorization.
-6. After the maintenance PR is merged, re-identify the original blocked Issue workspace/worktree/branch from Herdr and Git state. Resume there, not in the maintenance worktree, and merge `origin/dev` into that original Issue branch.
+6. After the maintenance PR is merged, re-identify the original blocked Issue worktree/branch using the active session's authorized tools and Git state. In Herdr sessions, also verify the workspace mapping. Resume there, not in the maintenance worktree, and merge `origin/dev` into that original Issue branch only when separately authorized.
 7. Maintenance-worktree cleanup is not implied by the gate; use the normal separately authorized cleanup procedure.
 
 The intended Herdr naming is:

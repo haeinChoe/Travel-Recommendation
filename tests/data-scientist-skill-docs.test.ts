@@ -131,6 +131,18 @@ test("any actual-data read is delegated away from the entry coordinator", () => 
   assertContainsAll(agentLoopReference, [
     "Use this reference only in a Herdr-managed session",
     "In non-Herdr sessions, use the active session's authorized dedicated data-science route",
+    "The branch-isolation requirements below apply in every session",
+    "In other sessions, use the active session's authorized repository/worktree tool",
+  ]);
+  assertContainsAll(dataScientistSkill, [
+    "In a non-Herdr session",
+    "defer actual-data reads",
+  ]);
+  assertContainsAll(agentWorkflow, [
+    "다른 세션에서는 해당 세션에서 승인된 repository/worktree 경로를 사용",
+    "현재 세션에서 허용된 도구와 Git 상태",
+    "전담 implementation 에이전트",
+    "다른 세션은 그 세션의 승인된 writer 경로를 사용",
   ]);
 });
 

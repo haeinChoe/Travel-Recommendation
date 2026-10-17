@@ -15,7 +15,7 @@ Routine continuation prompts for already authorized, in-scope, reversible work m
 
 Use this skill when an Issue requires repeated access to approved project data, exploratory analysis, recommendation-system experiment design, or interpretation of actual-data evidence. This is a **domain role**, not only a data-access helper.
 
-When this skill is used inside an Issue-to-PR workflow, also follow `../travel-issue-agent-loop/SKILL.md` and the selected Issue. The data-science agent uses the user-level `herdr-data-science` permission profile described in [the profile contract](../../../docs/data/data-science-agent.md). If that profile is unavailable, stop and report the blocker; do not fall back to a broader writer profile.
+When this skill is used inside an Issue-to-PR workflow, also follow `../travel-issue-agent-loop/SKILL.md` and the selected Issue. In a Herdr-managed session, use the user-level `herdr-data-science` permission profile described in [the profile contract](../../../docs/data/data-science-agent.md). In a non-Herdr session, use the active session's authorized dedicated data-science agent and access route; if none is available, defer actual-data reads while continuing independent synthetic/code/documentation work. Never substitute an unrestricted writer or bypass the selected session's permission boundary.
 
 ## Core responsibility
 
@@ -116,7 +116,7 @@ Prefer the smallest experiment that directly distinguishes the hypotheses under 
 
 ## Role boundary
 
-The data-science agent may change analysis scripts, tests, notes, or experiment documentation when the Issue authorizes repository writes. It should hand off to `herdr-implementation` when the dominant task becomes product/backend/frontend/infrastructure implementation.
+The data-science agent may change analysis scripts, tests, notes, or experiment documentation when the Issue authorizes repository writes. It should hand off to an implementation agent when the dominant task becomes product/backend/frontend/infrastructure implementation (`herdr-implementation` in Herdr sessions).
 
 Never run two writer agents concurrently in one worktree. If an Issue needs both roles, serialize ownership or use separate confirmed worktrees and an explicit integration step.
 

@@ -67,9 +67,9 @@ git diff --name-only -z origin/dev...HEAD \
 
 ## 병합 후 작업 재개
 
-유지보수 PR이 별도 승인으로 병합된 뒤 maintenance worktree에서 원래 Issue 작업을 이어가지 않습니다. Herdr/Git 상태로 원래 Issue branch와 기존 worktree를 다시 확인한 뒤 그 worktree를 재사용합니다.
+유지보수 PR이 별도 승인으로 병합된 뒤 maintenance worktree에서 원래 Issue 작업을 이어가지 않습니다. 현재 세션에서 허용된 도구와 Git 상태로 원래 Issue branch와 기존 worktree를 다시 확인한 뒤 그 worktree를 재사용합니다. Herdr 관리는 Herdr 관리 세션에서만 사용합니다.
 
-`$BLOCKED_ISSUE_WORKTREE`는 Herdr/Git 매핑에서 확인한 원래 Issue worktree 경로입니다. 경로를 추측하거나 PR에 실제 로컬 경로를 기록하지 않습니다.
+`$BLOCKED_ISSUE_WORKTREE`는 현재 세션에서 허용된 worktree 도구와 Git 매핑으로 확인한 원래 Issue worktree 경로입니다. 경로를 추측하거나 PR에 실제 로컬 경로를 기록하지 않습니다.
 
 ```bash
 git -C "$BLOCKED_ISSUE_WORKTREE" status

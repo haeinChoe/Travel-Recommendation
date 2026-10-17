@@ -123,6 +123,8 @@ test("maintenance PR template preserves branch/worktree isolation and separate m
     "agent/<issue>-maintenance-<slug>",
     "원래 Issue worktree/branch는 그대로 보존",
     "이 PR에는 원래 Issue branch의 미병합 변경이 포함되지 않습니다",
+    "현재 세션에서 허용된 도구와 Git 상태",
+    "Herdr 관리는 Herdr 관리 세션에서만 사용합니다",
     "병합 후 작업 재개",
     'git -C "$BLOCKED_ISSUE_WORKTREE" merge origin/dev',
     "maintenance worktree가 아니라 원래 중단된 Issue worktree",
