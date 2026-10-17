@@ -24,6 +24,18 @@ Decision Issue는 아직 결정되지 않은 데이터·모델·아키텍처 선
 
 ## 작업 전 확인과 중단 기준
 
+Herdr 관련 선행 절차와 명령은 현재 세션이 Herdr 관리 환경이거나 사용자가 Herdr 사용을 명시한 경우에만 적용한다. ChatGPT Desktop Work 등 Herdr와 무관한 세션에서는 Herdr를 호출하지 않고, 그 세션에서 허용된 workspace·Git·GitHub·subagent 경로로 같은 branch/worktree 보존 및 권한 원칙을 지킨다. 사용 가능한 승인 경로가 있으면 Herdr 부재만으로 작업을 중단하지 않는다.
+
+### 기술 실패 복구와 진행 확인
+
+기술 실패는 네트워크/서비스 일시 장애, timeout·정체, 호출·컨텍스트 오류, 자격 증명·권한 부족, 데이터 출처 불확실성, 코드 결함으로 나눠 기록한다. 안전한 상태 정보만 확인하고, 멱등 작업만 backoff를 두어 최대 두 번 재시도한다. 같은 branch/worktree에 두 번째 writer를 시작하지 말고 기존 변경을 보존한다. 외부 의존성이 막혀도 독립적인 코드·문서·synthetic 검증은 계속한다.
+
+필요한 credential은 값이 아닌 존재 여부만 확인한다. 네트워크/DNS/TLS와 endpoint 접근·이용 조건을 확인한 뒤, 허용된 경우에만 제한적이고 비용이 발생하지 않는 smoke 요청을 한다. timeout/DNS/TLS, 401/403, 429, 5xx를 구분한다. 키 발급, 이용 조건 동의, 유료 사용은 수행하지 않는다.
+
+환경 변수 전체, shell history, 헤더, credential이 포함된 URL, 원본 행, 정확한 로컬 경로와 식별자를 로그나 PR에 남기지 않는다. 오류 분류/status, 안전한 request ID, 시각, query를 제거한 host/path만 보존한다. 에이전트가 정체되면 상태를 읽기 전용으로 확인하고 한 번만 제한된 연장 또는 checkpoint를 요청한다. 원 writer가 종료됐는지 확인하기 전 대체 writer를 띄우지 않는다.
+
+이미 승인된 범위의 가역적 일상 작업이고 새 제품·데이터·보안·credential·이용 조건·비용 결정이 필요 없는 단순 “계속할까요?”는 조정자가 자동으로 계속한다. 새 결정, 범위 확대, 파괴적 정리 또는 중대한 모호성이 있으면 해당 지점에서만 멈춘다.
+
 파일이나 실제 데이터에 접근하기 전에 다음을 확인한다.
 
 1. 사용자가 지정한 Issue와 권한 선택
@@ -63,7 +75,7 @@ API Key 발급, 이용 조건 동의, 데이터셋 승인 신청·승인 대행,
 
 ## 데이터 사이언티스트 에이전트 역할
 
-실제 데이터의 반복 분석이나 추천 실험 설계가 중심인 Issue는 저장소의 `travel-data-scientist` skill을 적용하고 `herdr-data-science` 권한 프로필을 사용하는 전담 에이전트에 맡긴다.
+실제 데이터의 반복 분석이나 추천 실험 설계가 중심인 Issue는 저장소의 `travel-data-scientist` skill을 적용한 전담 데이터 사이언스 에이전트에 맡긴다. Herdr 관리 세션에서는 `herdr-data-science` 프로필을 사용하고, Herdr와 무관한 세션에서는 해당 세션에서 승인된 전담 분석 에이전트 경로를 사용한다. 안전한 전담 경로가 없으면 실제 데이터 읽기만 보류하고 독립적인 synthetic 검증과 문서·코드 작업은 계속한다.
 
 - 분석 전에 제품 질문, 예측 시점, user/trip context/item/interaction/feedback 역할, label, feature, split/cohort, baseline, metric이 서로 정렬되는지 확인한다.
 - 방문 같은 implicit interaction은 관측 positive가 될 수 있지만 미관측 item을 자동 negative로 해석하지 않는다. negative sampling과 exposure 가정은 실험별로 명시한다.
@@ -71,7 +83,7 @@ API Key 발급, 이용 조건 동의, 데이터셋 승인 신청·승인 대행,
 - 방문 후 feedback과 추천 시점 feature를 구분하고 동일 trip/user/item 및 시간 기준 leakage를 검토한다.
 - 기존 Issue나 문서의 실험 정의도 제품 목표와 어긋나면 그대로 실행하지 않고 차이, 영향, 더 직접적인 대안을 먼저 보고한다.
 - raw data는 Issue가 승인한 범위에서 read-only로 다루고, raw path·identifier·row·좌표·자유 텍스트를 Git/Issue/PR/log에 남기지 않는다.
-- 데이터 분석 범위를 넘어서는 구현 변경은 `herdr-implementation` 에이전트에 handoff한다. 필요한 profile이 없으면 더 넓은 profile로 대체하지 않는다.
+- 데이터 분석 범위를 넘어서는 구현 변경은 전담 implementation 에이전트에 handoff한다. Herdr 세션은 `herdr-implementation`을 사용하고, 다른 세션은 그 세션의 승인된 writer 경로를 사용한다. 필요한 권한 경로가 없으면 더 넓은 profile로 대체하지 않는다.
 
 상세 역할, Codex profile 계약, handoff 형식은 [`data/data-science-agent.md`](data/data-science-agent.md)를 따른다.
 
@@ -126,7 +138,7 @@ PR에는 실제 데이터 행, 개인 식별 가능 정보, 토큰·비밀값, �
 
 사용자가 특정 blocker에 대해 `유지보수 게이트로 처리`라고 명시하면, 그 blocker에 한해 다음 작업을 승인한 것으로 해석한다.
 
-- 기존 Herdr 승인 경로를 통한 별도 maintenance workspace/worktree 생성
+- Herdr 관리 세션에서는 기존 승인 경로를 통한 별도 maintenance workspace/worktree 생성. 다른 세션에서는 해당 세션에서 승인된 repository/worktree 경로를 사용
 - `dev`에서 분기한 `agent/<중단된-issue>-maintenance-<slug>` 유지보수 브랜치 생성
 - 허용된 유지보수 파일 수정과 검증
 - 검증된 유지보수 브랜치 commit/push
@@ -152,7 +164,7 @@ PR에는 실제 데이터 행, 개인 식별 가능 정보, 토큰·비밀값, �
 
 중단된 원래 Issue branch/worktree는 유지보수 수정 장소로 재사용하지 않는다. 원래 branch에는 아직 PR되지 않은 기능 변경, 데이터 분석 코드 또는 로컬 변경이 존재할 수 있으므로 그 worktree에서 유지보수 파일을 수정하면 유지보수 PR에 원래 Issue diff가 섞일 수 있다. 유지보수 변경은 반드시 `dev`를 base로 한 별도 maintenance branch/worktree에서 수행한다.
 
-이 별도 maintenance worktree 생성은 동일 Issue 작업을 중복 구현하는 것이 아니라 **PR 격리를 위한 명시적 예외**다. `.agents/skills/travel-issue-agent-loop/references/agent-loop.md`의 유지보수 격리 절차와 기존 Herdr 승인 경로를 사용한다. 실제 worktree 경로는 Herdr/Git 상태에서 읽고 임의로 추측하거나 합성하지 않는다.
+이 별도 maintenance worktree 생성은 동일 Issue 작업을 중복 구현하는 것이 아니라 **PR 격리를 위한 명시적 예외**다. `.agents/skills/travel-issue-agent-loop/references/agent-loop.md`의 유지보수 격리 절차를 따른다. Herdr 세션은 기존 승인된 Herdr 경로를 사용하고, 다른 세션은 그 세션의 승인된 repository/worktree 도구를 사용한다. 실제 worktree 경로는 해당 도구와 Git 상태에서 확인하고 임의로 추측하거나 합성하지 않는다.
 
 ### 초기 허용 범위
 
@@ -219,9 +231,9 @@ git diff --name-only -z origin/dev...HEAD \
 
 ### 병합 후 작업 재개
 
-유지보수 PR이 별도 승인으로 `dev`에 병합된 뒤에는 maintenance worktree에서 원래 작업을 계속하지 않는다. Herdr/Git 상태로 중단된 Issue 번호, `agent/<N>-<issue-slug>` branch, 기존 worktree가 정확히 매핑되는지 확인한 다음 **그 원래 Issue worktree**로 돌아간다.
+유지보수 PR이 별도 승인으로 `dev`에 병합된 뒤에는 maintenance worktree에서 원래 작업을 계속하지 않는다. 현재 세션에서 허용된 도구와 Git 상태로 중단된 Issue 번호, `agent/<N>-<issue-slug>` branch, 기존 worktree가 정확히 매핑되는지 확인한 다음 **그 원래 Issue worktree**로 돌아간다.
 
-아래 `$BLOCKED_ISSUE_WORKTREE`는 추측한 경로가 아니라 Herdr/Git 매핑에서 확인한 기존 Issue worktree의 절대 경로를 의미한다.
+아래 `$BLOCKED_ISSUE_WORKTREE`는 추측한 경로가 아니라 현재 세션의 허용된 worktree 도구와 Git 매핑에서 확인한 기존 Issue worktree의 절대 경로를 의미한다.
 
 ```bash
 git -C "$BLOCKED_ISSUE_WORKTREE" status

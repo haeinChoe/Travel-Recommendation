@@ -123,11 +123,52 @@ test("maintenance PR template preserves branch/worktree isolation and separate m
     "agent/<issue>-maintenance-<slug>",
     "원래 Issue worktree/branch는 그대로 보존",
     "이 PR에는 원래 Issue branch의 미병합 변경이 포함되지 않습니다",
+    "현재 세션에서 허용된 도구와 Git 상태",
+    "Herdr 관리는 Herdr 관리 세션에서만 사용합니다",
     "병합 후 작업 재개",
     'git -C "$BLOCKED_ISSUE_WORKTREE" merge origin/dev',
     "maintenance worktree가 아니라 원래 중단된 Issue worktree",
     "merge 권한",
   ]) {
     assert.ok(template.includes(phrase), phrase);
+  }
+});
+
+test("issue recovery and data-science routing work without Herdr", () => {
+  const issueLoop = readRepositoryFile(
+    ".agents/skills/travel-issue-agent-loop/SKILL.md",
+  );
+  const reference = readRepositoryFile(
+    ".agents/skills/travel-issue-agent-loop/references/agent-loop.md",
+  );
+  const dataScientist = readRepositoryFile(
+    ".agents/skills/travel-data-scientist/SKILL.md",
+  );
+  const workflow = readRepositoryFile("docs/agent-workflow.md");
+
+  for (const phrase of [
+    "do not block otherwise authorized work",
+    "In a non-Herdr session, skip Herdr inspection",
+    "In other sessions, establish reuse from the Issue branch",
+    "The branch-isolation requirements below apply in every session",
+    "In other sessions, use the active session's authorized repository/worktree tool",
+  ]) {
+    assert.ok(issueLoop.includes(phrase) || reference.includes(phrase), phrase);
+  }
+
+  assert.ok(dataScientist.includes("In a non-Herdr session"));
+  assert.ok(dataScientist.includes("defer actual-data reads"));
+  assert.ok(workflow.includes("다른 세션은 그 세션의 승인된 writer 경로를 사용"));
+  assert.ok(workflow.includes("다른 세션에서는 해당 세션에서 승인된 repository/worktree 경로를 사용"));
+
+  for (const phrase of [
+    "at most twice",
+    "never print its value",
+    "DNS/TLS",
+    "401/403",
+    "Do not launch a replacement writer",
+    "Routine continuation prompts",
+  ]) {
+    assert.ok([issueLoop, reference, dataScientist, workflow].some((text) => text.includes(phrase)), phrase);
   }
 });
