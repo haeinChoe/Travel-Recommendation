@@ -88,13 +88,15 @@ def _repeat_count_bucket(count: int) -> str:
     return "5+"
 
 
-def _safe_count(value: int) -> str:
-    return shared.count_bucket(value)
+def _safe_count(value: int, *, exact_aggregates: bool = False) -> str:
+    return str(value) if exact_aggregates else shared.count_bucket(value)
 
 
-def _safe_rate(numerator: int, denominator: int) -> str:
+def _safe_rate(numerator: int, denominator: int, *, exact_aggregates: bool = False) -> str:
     if denominator == 0:
         return "not_applicable"
+    if exact_aggregates:
+        return f"{numerator}/{denominator} ({numerator / denominator * 100:.2f}%)"
     return shared.rate_band(numerator, denominator)
 
 
@@ -110,13 +112,21 @@ def _code_fingerprints() -> dict[str, str]:
     }
 
 
-def _summary_row(region: str, metric: str, value: str, support: int) -> dict[str, object]:
+def _summary_row(region: str, metric: str, value: str, support: int, *,
+                 exact_aggregates: bool = False, numerator: int | None = None,
+                 denominator: int | None = None) -> dict[str, object]:
+    exact_support = numerator if exact_aggregates and numerator is not None else support
     return {
         "scope": region,
         "metric": metric,
         "bucket": value,
-        "support": _safe_count(support),
-        "status": "privacy_limited" if 0 < support < shared.MIN_CELL else "observed",
+        "support": _safe_count(exact_support, exact_aggregates=exact_aggregates),
+        "denominator": str(denominator) if exact_aggregates and denominator is not None else "",
+        "rate_percent": (f"{numerator / denominator * 100:.2f}%"
+                         if exact_aggregates and numerator is not None and denominator else ""),
+        "status": "observed_exact" if exact_aggregates else (
+            "privacy_limited" if 0 < support < shared.MIN_CELL else "observed"
+        ),
     }
 
 
@@ -173,6 +183,8 @@ def diagnose_region(
     train: shared.SplitSummary,
     validation: shared.SplitSummary,
     k_values: tuple[int, ...] = shared.DEFAULT_K,
+    *,
+    exact_aggregates: bool = False,
 ) -> list[dict[str, object]]:
     """Return safe aggregates for one explicit region TL/VL role pair."""
     candidates = candidate_universe(train)
@@ -210,36 +222,62 @@ def diagnose_region(
                 seen_rank_data.append((ranked, inside))
 
     rows = [
-        _summary_row(region, "candidate_items", _safe_count(len(candidates)), len(candidates)),
-        _summary_row(region, "validation_trip_units", _safe_count(len(trip_keys)), len(trip_keys)),
-        _summary_row(region, "trip_candidate_coverage", _safe_rate(candidate_covered, len(trip_keys)), len(trip_keys)),
-        _summary_row(region, "trips_with_usable_positive", _safe_rate(trips_with_positive, len(trip_keys)), len(trip_keys)),
-        _summary_row(region, "positive_event_coverage", _safe_rate(
-            sum(event.item_key in candidates for event in validation.events), len(validation.events)
-        ), len(validation.events)),
-        _summary_row(region, "cold_start_positive_event_share", _safe_rate(
-            sum(event.item_key not in candidates for event in validation.events), len(validation.events)
-        ), len(validation.events)),
-        _summary_row(region, "tl_vl_trip_id_overlap", _safe_count(
-            len(train.travel_ids & validation.travel_ids)
-        ), len(train.travel_ids & validation.travel_ids)),
-        _summary_row(region, "tl_vl_traveler_overlap", _safe_count(
-            len({key[1] for key in train.visit_trip_keys} & {key[1] for key in validation.visit_trip_keys})
-        ), len({key[1] for key in train.visit_trip_keys} & {key[1] for key in validation.visit_trip_keys})),
+        _summary_row(region, "candidate_items", _safe_count(len(candidates), exact_aggregates=exact_aggregates),
+                     len(candidates), exact_aggregates=exact_aggregates),
+        _summary_row(region, "validation_trip_units", _safe_count(len(trip_keys), exact_aggregates=exact_aggregates),
+                     len(trip_keys), exact_aggregates=exact_aggregates),
+        _summary_row(region, "trip_candidate_coverage",
+                     _safe_rate(candidate_covered, len(trip_keys), exact_aggregates=exact_aggregates),
+                     len(trip_keys), exact_aggregates=exact_aggregates,
+                     numerator=candidate_covered, denominator=len(trip_keys)),
+        _summary_row(region, "trips_with_usable_positive",
+                     _safe_rate(trips_with_positive, len(trip_keys), exact_aggregates=exact_aggregates),
+                     len(trip_keys), exact_aggregates=exact_aggregates,
+                     numerator=trips_with_positive, denominator=len(trip_keys)),
+        _summary_row(region, "positive_event_coverage",
+                     _safe_rate(sum(event.item_key in candidates for event in validation.events),
+                                len(validation.events), exact_aggregates=exact_aggregates),
+                     len(validation.events), exact_aggregates=exact_aggregates,
+                     numerator=sum(event.item_key in candidates for event in validation.events),
+                     denominator=len(validation.events)),
+        _summary_row(region, "cold_start_positive_event_share",
+                     _safe_rate(sum(event.item_key not in candidates for event in validation.events),
+                                len(validation.events), exact_aggregates=exact_aggregates),
+                     len(validation.events), exact_aggregates=exact_aggregates,
+                     numerator=sum(event.item_key not in candidates for event in validation.events),
+                     denominator=len(validation.events)),
+        _summary_row(region, "tl_vl_trip_id_overlap",
+                     _safe_count(len(train.travel_ids & validation.travel_ids), exact_aggregates=exact_aggregates),
+                     len(train.travel_ids & validation.travel_ids), exact_aggregates=exact_aggregates),
+        _summary_row(region, "tl_vl_traveler_overlap",
+                     _safe_count(len({key[1] for key in train.visit_trip_keys} & {key[1] for key in validation.visit_trip_keys}),
+                                 exact_aggregates=exact_aggregates),
+                     len({key[1] for key in train.visit_trip_keys} & {key[1] for key in validation.visit_trip_keys}),
+                     exact_aggregates=exact_aggregates),
     ]
     for bucket, count in sorted(size_support.items()):
-        rows.append(_summary_row(region, "candidate_size_trip_distribution", bucket, count))
+        rows.append(_summary_row(region, "candidate_size_trip_distribution", bucket, count,
+                                 exact_aggregates=exact_aggregates,
+                                 numerator=count, denominator=len(trip_keys)))
     for bucket, count in sorted(density_support.items()):
-        rows.append(_summary_row(region, "candidate_positive_density_trip_distribution", bucket, count))
+        rows.append(_summary_row(region, "candidate_positive_density_trip_distribution", bucket, count,
+                                 exact_aggregates=exact_aggregates,
+                                 numerator=count, denominator=len(trip_keys)))
     for status, count in sorted(statuses.items()):
-        rows.append(_summary_row(region, "choice_set_status", status, count))
+        rows.append(_summary_row(region, "choice_set_status", status, count,
+                                 exact_aggregates=exact_aggregates,
+                                 numerator=count, denominator=len(trip_keys)))
     for status, count in sorted(candidate_support_statuses.items()):
-        rows.append(_summary_row(region, "candidate_support_status", status, count))
+        rows.append(_summary_row(region, "candidate_support_status", status, count,
+                                 exact_aggregates=exact_aggregates,
+                                 numerator=count, denominator=len(trip_keys)))
     for status, count in sorted(positive_coverage_statuses.items()):
-        rows.append(_summary_row(region, "positive_coverage_status", status, count))
+        rows.append(_summary_row(region, "positive_coverage_status", status, count,
+                                 exact_aggregates=exact_aggregates,
+                                 numerator=count, denominator=len(trip_keys)))
 
-    rows.extend(_structural_diagnostics(region, "tl", train))
-    rows.extend(_structural_diagnostics(region, "vl", validation))
+    rows.extend(_structural_diagnostics(region, "tl", train, exact_aggregates=exact_aggregates))
+    rows.extend(_structural_diagnostics(region, "vl", validation, exact_aggregates=exact_aggregates))
 
     for cohort, data in (("all_observed_positive", trip_rank_data),
                          ("in_candidate_positive", seen_rank_data)):
@@ -258,14 +296,16 @@ def diagnose_region(
                     "scope": output["scope"],
                     "metric": f"{cohort}:{output['metric']}",
                     "bucket": output["value"],
-                    "support": output["cell_size"],
-                    "status": output["status"],
+                    "support": _safe_count(len(data), exact_aggregates=exact_aggregates),
+                    "denominator": str(len(data)) if exact_aggregates else "",
+                    "rate_percent": "",
+                    "status": "observed_exact" if exact_aggregates else output["status"],
                 })
     return rows
 
 
 def _structural_diagnostics(
-    region: str, role: str, split: shared.SplitSummary
+    region: str, role: str, split: shared.SplitSummary, *, exact_aggregates: bool = False
 ) -> list[dict[str, object]]:
     """Summarize traveler trip counts, distinct positives, and repeated events safely."""
     all_trip_keys = split.travel_trip_keys if split.travel_trip_keys is not None else split.visit_trip_keys
@@ -279,27 +319,41 @@ def _structural_diagnostics(
         for trip_key, event_count in events_per_trip.items()
     }
     rows: list[dict[str, object]] = []
+    traveler_count = len(trips_per_traveler)
+    trip_count = len(all_trip_keys)
     for bucket, support in sorted(Counter(_trip_count_bucket(count) for count in trips_per_traveler.values()).items()):
-        rows.append(_summary_row(region, f"{role}_distinct_trips_per_traveler_distribution", bucket, support))
+        rows.append(_summary_row(region, f"{role}_distinct_trips_per_traveler_distribution", bucket, support,
+                                 exact_aggregates=exact_aggregates,
+                                 numerator=support, denominator=traveler_count))
     positive_counts = [len(positives_by_trip.get(key, set())) for key in all_trip_keys]
     for bucket, support in sorted(Counter(_positive_count_bucket(count) for count in positive_counts).items()):
-        rows.append(_summary_row(region, f"{role}_distinct_positive_pois_per_trip_distribution", bucket, support))
+        rows.append(_summary_row(region, f"{role}_distinct_positive_pois_per_trip_distribution", bucket, support,
+                                 exact_aggregates=exact_aggregates,
+                                 numerator=support, denominator=trip_count))
     repeat_counts = [repeats_per_trip.get(key, 0) for key in all_trip_keys]
     for bucket, support in sorted(Counter(_repeat_count_bucket(count) for count in repeat_counts).items()):
-        rows.append(_summary_row(region, f"{role}_repeated_visit_events_per_trip_distribution", bucket, support))
+        rows.append(_summary_row(region, f"{role}_repeated_visit_events_per_trip_distribution", bucket, support,
+                                 exact_aggregates=exact_aggregates,
+                                 numerator=support, denominator=trip_count))
     total_repeated = sum(repeats_per_trip.values())
     rows.append(_summary_row(
         region, f"{role}_repeated_visit_event_share",
-        _safe_rate(total_repeated, len(split.events)), len(split.events),
+        _safe_rate(total_repeated, len(split.events), exact_aggregates=exact_aggregates),
+        len(split.events), exact_aggregates=exact_aggregates,
+        numerator=total_repeated, denominator=len(split.events),
     ))
     rows.append(_summary_row(
         region, f"{role}_trips_with_repeated_visits_share",
-        _safe_rate(sum(count > 0 for count in repeats_per_trip.values()), len(all_trip_keys)),
-        len(all_trip_keys),
+        _safe_rate(sum(count > 0 for count in repeats_per_trip.values()), len(all_trip_keys),
+                   exact_aggregates=exact_aggregates),
+        len(all_trip_keys), exact_aggregates=exact_aggregates,
+        numerator=sum(count > 0 for count in repeats_per_trip.values()), denominator=len(all_trip_keys),
     ))
     rows.append(_summary_row(
         region, f"{role}_missing_poi_event_share",
-        _safe_rate(split.missing_poi_rows, split.visit_rows), split.visit_rows,
+        _safe_rate(split.missing_poi_rows, split.visit_rows, exact_aggregates=exact_aggregates),
+        split.visit_rows, exact_aggregates=exact_aggregates,
+        numerator=split.missing_poi_rows, denominator=split.visit_rows,
     ))
     return rows
 

@@ -73,6 +73,29 @@ The region-popularity protocol check among in-candidate positives produced the f
 
 All released ranking cells have at least `10+` trip support and `10+` retrieved-positive support. The separately reported all-observed-positive metrics include out-of-candidate positives in the relevance denominator, so those metrics include the candidate-coverage limitation.
 
+## Issue #4 product-catalog contract update
+
+위 TL-observed 후보 실험은 과거 proxy 결과로 유지한다. 이후 Issue #66에서 TourAPI KorService2 v4.4 기반 별도 제품 후보 계약을 승인했으며, 지원 type은 `{12,14,28}`, 전체 권역 정책은 [`config/recommendation/poi-catalog-policy-v1.json`](../../../config/recommendation/poi-catalog-policy-v1.json)에 고정했다. AI Hub 네 권역은 공식 광역권 분류에 따라 결정적으로 매핑한다. `jeju-islands`는 제주 코드 `50`을 뜻하며 다른 도서를 포함한다고 주장하지 않는다. TourAPI snapshot 및 AI Hub read-only 실험은 완료했으며 privacy-safe aggregate와 수정 후 재측정 결론을 [POI catalog candidate contract](../poi-catalog-candidate-contract.md)에 별도로 기록했다. 기존 TL-observed 집합을 제품 eligibility로 부르거나 서로 다른 후보 universe의 지표를 같은 조건의 값처럼 비교하지 않는다.
+
+### Issue #4 exact-mode #60 TL-observed proxy 재실행
+
+2026-10-18 exact-mode run에서 기존 `diagnose_region`을 동일한 TL-only 후보 / VL validation 기준으로 다시 호출했다. 아래는 기존 TL-observed proxy와 product-catalog 후보 실험을 구분한 exact 집계다. positive event coverage 분모는 #60의 관측 visit-event이며, TourAPI funnel의 distinct `(TRAVEL_ID, POI_ID)` 양성 쌍과는 단위가 다르다.
+
+| Region | TL-observed candidate items | VL requests / non-empty | VL positive events | Positive event coverage | Cold-start events | Cold-start share | TL/VL trip ID overlap |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| capital | 8,655 | 320 / 320 (100.00%) | 1,942 | 956/1,942 (49.23%) | 986/1,942 | 50.77% | 0 |
+| west | 9,429 | 320 / 320 (100.00%) | 2,596 | 1,655/2,596 (63.75%) | 941/2,596 | 36.25% | 0 |
+| east | 10,381 | 320 / 320 (100.00%) | 2,715 | 1,668/2,715 (61.44%) | 1,047/2,715 | 38.56% | 0 |
+| jeju-islands | 13,152 | 320 / 320 (100.00%) | 4,621 | 3,449/4,621 (74.64%) | 1,172/4,621 | 25.36% | 0 |
+
+각 region-level TL candidate set은 모든 VL 요청에 공통 적용되므로 요청당 후보 수는 candidate items와 같다. 정확한 후보 수는 capital 8,655, west 9,429, east 10,381, jeju-islands 13,152다. 네 권역 모두 VL 320/320 요청 non-empty, TL/VL trip ID overlap 0, traveler overlap 0이었다.
+
+이 exact-mode 재실행에서 이전 privacy band `10+` 후보 수는 위 정확 수로 풀렸고, `90–100%` non-empty request는 모두 `320/320 (100.00%)`였다. 이전 broad event-coverage band도 exact numerator/denominator로 교체했다. 이 표는 #60의 과거 후보 대리값이며 TourAPI canonical identity coverage나 과거 exposure를 뜻하지 않는다.
+
+### Issue #4 identity diagnostic follow-up
+
+2026-10-18 재실행의 고정 TourAPI snapshot + AI Hub 원본 TL/VL exact aggregate identity 진단은 [POI catalog candidate contract](../poi-catalog-candidate-contract.md)의 Identity 진단 funnel 절에 기록했다. 이 진단은 historical TL-observed proxy와 별개이며, API 재호출이나 row-level export 없이 source-name/title, address, row-signal variation, matched type, eligibility reason을 source POI와 observed-positive 단위로 분리한다. exact-title 후보 0은 같은 권역에서 exact normalized title 후보를 찾지 못했다는 뜻이며 catalog 부재로 해석하지 않는다.
+
 ## Candidate alternatives and limits
 
 - **A — region-level TL-observed POIs:** implemented uniformly in all four regions. It creates an auditable catalog proxy, but every trip inherits a `500+` candidate list and most trips have observed-positive density below 1%. It does not show that those items were available or exposed to the traveler.
@@ -85,3 +108,7 @@ All released ranking cells have at least `10+` trip support and `10+` retrieved-
 **Inconclusive.** The same deterministic region-level candidate rule can be built and evaluated across all four regions, with nonempty candidates for 90–100% of VL trip units and ranking metrics supported by the privacy threshold. However, the candidate space is `500+` per trip, positive density is concentrated below 1%, and 25–75% of observed VL positive events are outside the TL candidate catalog depending on region. Most importantly, travel logs contain observed visits rather than a record of what was offered or considered. The data therefore do not establish a serving-time choice set or justify treating unvisited candidates as negatives. Destination/category filters do not resolve that exposure gap under the current contract.
 
 **Follow-up contract:** capture or approve a request-time candidate/exposure snapshot (or an authoritative catalog and deterministic eligibility rule), its region/destination/category availability, and the time at which each field is known. Keep TL as the sole candidate-definition source and VL as validation; group by whole trip; preserve region-scoped item identity; report cold-start and outside-candidate positives; use ranking metrics with the existing support suppression. Only after this contract is fixed should a context-aware ranking baseline be compared.
+
+Issue #4 defines the next product-catalog candidate contract in [`poi-catalog-candidate-contract.md`](../poi-catalog-candidate-contract.md). The TL-observed set above remains a historical proxy. It is not interchangeable with product-defined eligibility, and its metrics must not be compared directly with a future catalog snapshot unless the candidate universe and evaluation support rules are aligned.
+
+The separate Issue #4 `TN_POI_MASTER` link diagnostic uses four regional Other candidate files that the user explicitly confirmed as approved. That approval does not change this TL-only proxy's basis or establish a serving catalog, canonical identity, or product-candidate coverage.
