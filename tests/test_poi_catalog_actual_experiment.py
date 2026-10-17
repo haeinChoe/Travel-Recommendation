@@ -130,6 +130,26 @@ class ActualPoiExperimentTest(unittest.TestCase):
         self.assertEqual(matches["source-private-fixture"].method, "source_signal_conflict")
         self.assertEqual(methods["source_signal_conflict"], 1)
 
+    def test_title_candidate_count_unions_names_across_source_rows(self) -> None:
+        second = CatalogPoi(
+            content_id="second-private-fixture", title="Fixture Place Annex",
+            address="2 Test Road", content_type_id="12", region_codes=frozenset({"11"}),
+        )
+        source_rows = {"source-private-fixture": {
+            ("Fixture Place", "101", "1 Test Road", ""),
+            ("Fixture Place Annex", "101", "2 Test Road", ""),
+        }}
+        rows = _identity_diagnostic_rows(
+            "capital", "TL", source_rows, {("trip-private", "source-private-fixture")},
+            {("capital", "fixture place"): [self.catalog],
+             ("capital", "fixture place annex"): [second]},
+            [self.catalog, second], self.policy, exact_aggregates=True,
+        )
+        union_bucket = next(row for row in rows
+                            if row["metric"] == "TL_source_identity_diagnostic"
+                            and row["bucket"] == "exact_title_candidate_count:2+")
+        self.assertEqual(union_bucket["support"], "1")
+
     def test_matched_unsupported_content_type_is_reported_as_ineligible(self) -> None:
         unsupported = CatalogPoi(
             content_id="catalog-private-fixture", title="Fixture Place", address="1 Test Road",

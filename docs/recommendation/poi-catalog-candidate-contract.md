@@ -210,6 +210,8 @@ candidate-contained resolved positives
 
 exact-title 후보 0은 동일 제품 권역에서 normalize_text(POI_NM)과 exact normalized TourAPI title이 일치하는 항목이 없다는 뜻이다. TourAPI catalog 부재를 뜻하지 않으며, 후보 탐색은 모든 content type을 포함한다.
 
+동일 source POI가 여러 row에서 이름 signal을 달리 가지면 후보 수는 각 distinct normalized name에서 찾은 catalog contentid의 합집합을 중복 제거해 센다. 임의의 대표 row/name을 고르지 않으며, name variation은 별도 분류로 보고한다.
+
 #### Exact-title 후보 수
 
 | 권역 / split | 고유 source POI | source 후보 0 | source 후보 1 | source 후보 2+ | observed positives | positive 후보 0 | positive 후보 1 | positive 후보 2+ |
