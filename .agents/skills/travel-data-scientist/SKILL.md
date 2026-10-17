@@ -5,9 +5,17 @@ description: "Use for actual-data analysis and recommendation experiment design 
 
 # Travel data scientist
 
+## Failure recovery and safe diagnostics
+
+Before data access, preflight the required credential, network/DNS/TLS, endpoint authorization, and applicable terms. Credential originals and derived secrets must never be exposed or stored in stdout/stderr, prompts, Issues, PRs, tracked files, or logs; never print its value or a reversible derivative. For diagnosing an already-authorized official endpoint call, in-memory inspection or transformation of credential encoding/transport representation is allowed (for example, detecting percent-encoding or possible double-encoding); report only a safe finding such as `credential transport appears percent-encoded`. Credential issuance, expanded permissions, accepting terms, and paid use still require separate approval. Use one bounded, non-billable smoke request only when permitted. Classify timeout/DNS/TLS, 401/403, 429, and 5xx separately. If access fails, continue code and synthetic analysis that does not depend on actual data; do not imply actual-data coverage was verified.
+
+Never log environment values, history, headers, credential-bearing URLs, raw rows, exact paths, or identifiers. Keep only redacted failure class/status, safe request ID, timestamp, and URL host/path without query. Retry only idempotent transient operations, at most twice with backoff. Preserve the assigned worktree and avoid duplicate writers. For a stalled agent, inspect status read-only, request one bounded checkpoint, and preserve its last work before reporting a blocker.
+
+Routine continuation prompts for already authorized, in-scope, reversible work may be skipped. Stop for new data permissions, product/data meaning decisions, credential or terms actions, billable access, security boundaries, or material ambiguity.
+
 Use this skill when an Issue requires repeated access to approved project data, exploratory analysis, recommendation-system experiment design, or interpretation of actual-data evidence. This is a **domain role**, not only a data-access helper.
 
-When this skill is used inside an Issue-to-PR workflow, also follow `../travel-issue-agent-loop/SKILL.md` and the selected Issue. The data-science agent uses the user-level `herdr-data-science` permission profile described in [the profile contract](../../../docs/data/data-science-agent.md). If that profile is unavailable, stop and report the blocker; do not fall back to a broader writer profile.
+When this skill is used inside an Issue-to-PR workflow, also follow `../travel-issue-agent-loop/SKILL.md` and the selected Issue. In a Herdr-managed session, use the user-level `herdr-data-science` permission profile described in [the profile contract](../../../docs/data/data-science-agent.md). In a non-Herdr session, use the active session's authorized dedicated data-science agent and access route; if none is available, defer actual-data reads while continuing independent synthetic/code/documentation work; do not fall back to a broader writer profile. Never substitute an unrestricted writer or bypass the selected session's permission boundary.
 
 ## Core responsibility
 
@@ -108,7 +116,7 @@ Prefer the smallest experiment that directly distinguishes the hypotheses under 
 
 ## Role boundary
 
-The data-science agent may change analysis scripts, tests, notes, or experiment documentation when the Issue authorizes repository writes. It should hand off to `herdr-implementation` when the dominant task becomes product/backend/frontend/infrastructure implementation.
+The data-science agent may change analysis scripts, tests, notes, or experiment documentation when the Issue authorizes repository writes. It should hand off to an implementation agent when the dominant task becomes product/backend/frontend/infrastructure implementation (`herdr-implementation` in Herdr sessions).
 
 Never run two writer agents concurrently in one worktree. If an Issue needs both roles, serialize ownership or use separate confirmed worktrees and an explicit integration step.
 

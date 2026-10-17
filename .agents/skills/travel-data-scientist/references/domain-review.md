@@ -21,7 +21,7 @@ Use this reference with the `travel-data-scientist` skill before actual-data ana
 
 ## Source-role provenance review
 
-Before interpreting TL/VL evidence, separate **role binding** from **role validation**.
+Before interpreting TL/VL evidence, separate **role binding** from **Role validation**.
 
 - Role binding comes from the selected Issue/experiment contract, an explicit CLI role such as `capital:TL=...`, or an approved current-process variable such as `CAPITAL_TL` / `CAPITAL_VL`.
 - Once a role is explicitly bound, do not infer it again from whether the directory name literally contains `TL_csv` or `VL_csv`.
