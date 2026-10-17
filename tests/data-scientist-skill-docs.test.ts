@@ -258,3 +258,34 @@ test("markdown code fences stay balanced", () => {
     );
   }
 });
+
+test("agent recovery guidance keeps retries bounded and diagnostics secret-safe", () => {
+  const recoveryDocuments = [agentLoopSkill, agentLoopReference, dataScientistSkill, agentWorkflow];
+  const requiredPhrases = [
+    "at most twice",
+    "never print its value",
+    "DNS/TLS",
+    "401/403",
+    "Do not launch a replacement writer",
+    "Routine continuation prompts",
+  ];
+
+  for (const phrase of requiredPhrases) {
+    assert.ok(
+      recoveryDocuments.some((document) => document.content.includes(phrase)),
+      `recovery guidance should include: ${phrase}`,
+    );
+  }
+
+  assertContainsAll(agentWorkflow, [
+    "최대 두 번 재시도",
+    "환경 변수 전체",
+    "대체 writer를 띄우지 않는다",
+    "조정자가 자동으로 계속한다",
+  ]);
+  assertContainsAll(agentLoopSkill, [
+    "do not block otherwise authorized work",
+    "This section applies only in a Herdr-managed session",
+    "Otherwise, skip Herdr-only inspection and orchestration steps",
+  ]);
+});

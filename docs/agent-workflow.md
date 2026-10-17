@@ -24,6 +24,18 @@ Decision Issue는 아직 결정되지 않은 데이터·모델·아키텍처 선
 
 ## 작업 전 확인과 중단 기준
 
+Herdr 관련 선행 절차와 명령은 현재 세션이 Herdr 관리 환경이거나 사용자가 Herdr 사용을 명시한 경우에만 적용한다. ChatGPT Desktop Work 등 Herdr와 무관한 세션에서는 Herdr를 호출하지 않고, 그 세션에서 허용된 workspace·Git·GitHub·subagent 경로로 같은 branch/worktree 보존 및 권한 원칙을 지킨다. 사용 가능한 승인 경로가 있으면 Herdr 부재만으로 작업을 중단하지 않는다.
+
+### 기술 실패 복구와 진행 확인
+
+기술 실패는 네트워크/서비스 일시 장애, timeout·정체, 호출·컨텍스트 오류, 자격 증명·권한 부족, 데이터 출처 불확실성, 코드 결함으로 나눠 기록한다. 안전한 상태 정보만 확인하고, 멱등 작업만 backoff를 두어 최대 두 번 재시도한다. 같은 branch/worktree에 두 번째 writer를 시작하지 말고 기존 변경을 보존한다. 외부 의존성이 막혀도 독립적인 코드·문서·synthetic 검증은 계속한다.
+
+필요한 credential은 값이 아닌 존재 여부만 확인한다. 네트워크/DNS/TLS와 endpoint 접근·이용 조건을 확인한 뒤, 허용된 경우에만 제한적이고 비용이 발생하지 않는 smoke 요청을 한다. timeout/DNS/TLS, 401/403, 429, 5xx를 구분한다. 키 발급, 이용 조건 동의, 유료 사용은 수행하지 않는다.
+
+환경 변수 전체, shell history, 헤더, credential이 포함된 URL, 원본 행, 정확한 로컬 경로와 식별자를 로그나 PR에 남기지 않는다. 오류 분류/status, 안전한 request ID, 시각, query를 제거한 host/path만 보존한다. 에이전트가 정체되면 상태를 읽기 전용으로 확인하고 한 번만 제한된 연장 또는 checkpoint를 요청한다. 원 writer가 종료됐는지 확인하기 전 대체 writer를 띄우지 않는다.
+
+이미 승인된 범위의 가역적 일상 작업이고 새 제품·데이터·보안·credential·이용 조건·비용 결정이 필요 없는 단순 “계속할까요?”는 조정자가 자동으로 계속한다. 새 결정, 범위 확대, 파괴적 정리 또는 중대한 모호성이 있으면 해당 지점에서만 멈춘다.
+
 파일이나 실제 데이터에 접근하기 전에 다음을 확인한다.
 
 1. 사용자가 지정한 Issue와 권한 선택
@@ -63,7 +75,7 @@ API Key 발급, 이용 조건 동의, 데이터셋 승인 신청·승인 대행,
 
 ## 데이터 사이언티스트 에이전트 역할
 
-실제 데이터의 반복 분석이나 추천 실험 설계가 중심인 Issue는 저장소의 `travel-data-scientist` skill을 적용하고 `herdr-data-science` 권한 프로필을 사용하는 전담 에이전트에 맡긴다.
+실제 데이터의 반복 분석이나 추천 실험 설계가 중심인 Issue는 저장소의 `travel-data-scientist` skill을 적용한 전담 데이터 사이언스 에이전트에 맡긴다. Herdr 관리 세션에서는 `herdr-data-science` 프로필을 사용하고, Herdr와 무관한 세션에서는 해당 세션에서 승인된 전담 분석 에이전트 경로를 사용한다. 안전한 전담 경로가 없으면 실제 데이터 읽기만 보류하고 독립적인 synthetic 검증과 문서·코드 작업은 계속한다.
 
 - 분석 전에 제품 질문, 예측 시점, user/trip context/item/interaction/feedback 역할, label, feature, split/cohort, baseline, metric이 서로 정렬되는지 확인한다.
 - 방문 같은 implicit interaction은 관측 positive가 될 수 있지만 미관측 item을 자동 negative로 해석하지 않는다. negative sampling과 exposure 가정은 실험별로 명시한다.
