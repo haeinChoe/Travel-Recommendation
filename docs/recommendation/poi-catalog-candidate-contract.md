@@ -46,7 +46,7 @@ AI Hub source key는 `(region, nonblank POI_ID)`, provider key는 `(tourapi-kors
 
 ## 구현 및 재현
 
-`scripts/recommendation/tourapi_snapshot_adapter.py` maps KorService2 v4.4 fields, reads mapped local CSV, and provides a sequential read-only API collector. `scripts/recommendation/collect_tourapi_v44_snapshot.py` writes snapshot and metadata under ignored `results/`. The actual-data harness reads only approved AI Hub 2023 TL/VL inputs, keeps identities/rows in memory, rejects TL/VL trip overlap, and emits privacy-suppressed aggregates. Shared reporting must include snapshot size/type distribution, ProductRegion candidate size, TL/VL identity status and method, nonempty request rate and candidate size distribution, observed-positive coverage, outside-candidate/catalog-outside/cold-start shares, and comparison to the #60 TL-observed proxy. Any negative result is reported with a proceed/modify/retire conclusion.
+`scripts/recommendation/tourapi_snapshot_adapter.py` maps KorService2 v4.4 fields, reads mapped local CSV, and provides a sequential read-only API collector. `scripts/recommendation/collect_tourapi_v44_snapshot.py` writes snapshot and metadata under ignored `results/`. The actual-data harness reads only approved AI Hub 2023 TL/VL inputs, keeps identities/rows in memory, rejects TL/VL trip overlap, and emits exact non-identifying counts/rates when Issue #4 runs with `--exact-aggregates`; other analyses retain the existing privacy-banded default. Shared reporting must include snapshot size/type distribution, ProductRegion candidate size, TL/VL identity status and method, nonempty request rate and candidate size distribution, observed-positive coverage, outside-candidate/catalog-outside/cold-start shares, and comparison to the #60 TL-observed proxy. Any negative result is reported with a proceed/modify/retire conclusion.
 
 ### POI Master descriptive link diagnostic
 
@@ -91,35 +91,130 @@ The approved TL/VL proxy reproduction ran on 2026-10-16 using all four regions, 
 - Current TourAPI membership does not establish historical 2023 availability, open/bookable status, exposure, or user consideration.
 - The legal meaning of long-term bulk payload retention is not expanded beyond the official listing; retain the collected snapshot only in the approved ignored local results area.
 - Identity match rates depend on the v1 exact-field rule and are not proof of a provider-declared foreign key. Coordinate matching remains disabled.
-- 실험에서 모든 권역·TL/VL의 후보 요청 non-empty 비율은 90–100%, 요청당 후보 크기는 500+였다. 반면 VL observed positive의 90–100%는 identity 미해결이고, 확정 positive 후보 coverage 하한은 권역별 <10% 구간 또는 privacy suppression이다. 미해결 positive를 카탈로그 밖으로 간주하지 않았으므로 실제 catalog-outside share는 추정할 수 없다. 이에 따라 v1 후보 생성기는 수정 후 재측정 대상으로 판단한다.
+- exact aggregate 재실행에서 모든 권역·TL/VL의 후보 요청은 100% non-empty였지만, observed-positive identity resolution은 TL 2,688/87,010 (3.09%), VL 312/10,630 (2.94%)였다. End-to-end coverage는 각각 1,367/87,010 (1.57%), 163/10,630 (1.53%)다. unresolved는 catalog-outside와 다르므로 카탈로그 부재는 판정하지 않았고, 수정 후 재측정한다. 세 분모와 권역별 값은 아래 exact run 표를 참조한다.
 
-## Issue #4 실제 데이터 실험 (2026-10-18)
+## Issue #4 실제 데이터 실험: 정확 집계 재실행 (2026-10-18)
 
-TourAPI KorService2 v4.4의 `areaBasedList2` read-only 수집 snapshot과 승인된 AI Hub 2023 네 권역 TL/VL 원본을 사용했다. 원본은 read-only로 처리했고, 상세 산출물은 Git-ignored `results/experiments/poi-catalog-v1/actual-data-20261018-final4/`에 저장했다. 공유 결과에는 raw row/ID/좌표/자유 텍스트/경로/secret을 포함하지 않는다.
+2026-10-18에 고정된 TourAPI KorService2 v4.4 snapshot과 승인된 AI Hub 2023 네 권역 TL/VL 원본을 다시 읽어 `--exact-aggregates`로 재현했다. snapshot 수집은 반복하지 않았고 API 호출도 하지 않았다. 입력 원본은 read-only이며, 상세 집계와 manifest는 Git-ignored `results/experiments/poi-catalog-v1/actual-data-20261018-exact3/`에 저장했다. 아래 수치는 개인·여행·POI ID, raw row, 좌표, 텍스트, 원본 경로를 포함하지 않는 집계다. 작은 집계도 값이 10 미만이라는 이유로 억제하지 않았다.
 
-- 고정 snapshot: `tourapi-korservice2-v4.4-20261017T164137+0000-37426ba2`; retrieval time `2026-10-17T16:41:37+00:00`; snapshot SHA-256 `37426ba26078ad309738688af2a2bf15291f1e911c99596edfe7ecccb5fa48b8`.
-- 요청 설정 SHA-256 `036c28a846ab49a7e9e1081cca9e62d558cd98048b0d3ba41547c52bdf29a9f4`; policy SHA-256 `e8b0337f04613c353289dfa2ecf0706673b7a52209866da29bb3b7076032d8f3`; 실험 설정 SHA-256 `e2af746541e1cd762abed8abd68fa0623e3c8d0b4660e021af451c13f46c2e20`; CLI/source loader SHA-256 `7138ada3079e7f5d99bcbe10b39fb1815093a818713c205ea5079783838a204f` / `84a9dbe268efbf7237c258c8547a304b1f2eb1882881a1e429092270cce6ae9a`.
-- snapshot item 48,583개. content type별 수: 12=12,554; 14=2,768; 15=889; 25=52; 28=3,737; 32=2,909; 38=12,271; 39=13,403.
-- 지역별 eligible candidates: capital 5,044; west 6,000; east 7,224; jeju-islands 791.
-- 각 권역 TL/VL에서 identity status MATCHED/AMBIGUOUS/UNMATCHED를 따로 집계했다. 매칭 신호는 exact normalized name+address뿐이며, district crosswalk 미검증과 좌표계 미검증으로 district/좌표 신호는 비활성이다. fuzzy name은 진단 전용이다. 네 권역 모두 각 split에서 AMBIGUOUS와 UNMATCHED가 각각 10+였다. MATCHED는 capital TL/VL 및 west VL에서 <10으로 억제되었고, 나머지 셀은 10+였다. 충돌 신호는 확정 매칭을 억제했다.
-- 모든 권역 TL/VL의 virtual request non-empty 비율은 90–100%, 후보 size는 500+였다. VL observed-positive 중 90–100%는 identity unresolved다. 확인된 positive candidate coverage 하한은 전 권역 <10% 구간 또는 privacy suppression, unresolved를 포함한 상한은 90–100%다. 이는 identity 불확실성 때문에 상한이 넓으며 높은 실제 coverage의 증거가 아니다.
-- identity가 확인된 positive 중 outside-candidate share는 0–<10% 구간 또는 privacy-suppressed였다. identity unresolved가 많아 catalog-outside share는 추정 불가다. cold-start share는 매칭 가능한 positive에 한해 집계되어 대부분 <10%/suppressed이며 jeju-islands는 10–<25%다.
-- 별도로 재현한 #60 TL-observed proxy는 네 권역 모두 TL/VL trip ID overlap 0, VL trip candidate coverage 90–100%, trip당 후보 500+였다. VL positive event coverage는 capital 25–<50%, 나머지 권역 50–<75%; cold-start positive event share는 capital 50–<75%, 나머지 권역 25–<50%였다. 이는 과거 관측 proxy 기준이며 TourAPI 제품 후보 지표와 직접 비교할 수 없다.
-- **결론: 수정 후 재측정.** snapshot 기반 후보 생성·eligibility는 동작하지만 현재 필드만으로는 observed-positive identity coverage를 지지하기 어렵다. 다음 단계는 권위 있는 AI Hub/TourAPI ID crosswalk 또는 추가 검증된 identity 신호 확보이며, 그 전까지 ranker 평가 및 catalog-outside 결론은 보류한다. unvisited POI는 unknown/unlabeled로 유지한다.
+- run ID: `issue4-actual-20261018-exact3`; aggregation mode: `exact_nonidentifying_aggregates`.
+- snapshot: `tourapi-korservice2-v4.4-20261017T164137+0000-37426ba2`; retrieval time `2026-10-17T16:41:37+00:00`; snapshot SHA-256 `37426ba26078ad309738688af2a2bf15291f1e911c99596edfe7ecccb5fa48b8`.
+- request config SHA-256 `036c28a846ab49a7e9e1081cca9e62d558cd98048b0d3ba41547c52bdf29a9f4`; policy SHA-256 `e8b0337f04613c353289dfa2ecf0706673b7a52209866da29bb3b7076032d8f3`; experiment config SHA-256 `fefbdff8dc36b11025e270ad9a723425c06474abc3a035449918ed60bc4651ba`.
+- 실행 파일 SHA-256: analyzer `cdf318aee151060e4162990fa1d38de2db499f5614ceb74d077f3cdf901c736b`; shared loader `84a9dbe268efbf7237c258c8547a304b1f2eb1882881a1e429092270cce6ae9a`.
 
-재현은 같은 승인된 입력 환경에서 실행한다. 입력 경로나 자격 증명은 명령행·로그·공유 문서에 기록하지 않는다.
+### Snapshot과 요청 후보
 
-```bash
-python3 -m scripts.recommendation.collect_tourapi_v44_snapshot \
-  --output results/experiments/poi-catalog-v1/tourapi-korservice2-v44-items.csv
-python3 -m scripts.recommendation.analyze_poi_catalog_candidate_coverage \
-  --raw-root "$RAW_ROOT" --snapshot "$TOURAPI_SNAPSHOT" \
-  --output results/experiments/poi-catalog-v1/actual-data-20261018-final4 \
-  --run-id issue4-actual-20261018-final4 \
-  --confirm-approved --confirm-terms --confirm-poi-candidate
+전체 snapshot은 **48,583개**다. 지원 유형과 제외 유형을 포함한 실제 응답 분포는 다음과 같다.
+
+| `contenttypeid` | 항목 수 |
+| --- | ---: |
+| 12 | 12,554 |
+| 14 | 2,768 |
+| 15 | 889 |
+| 25 | 52 |
+| 28 | 3,737 |
+| 32 | 2,909 |
+| 38 | 12,271 |
+| 39 | 13,403 |
+
+| ProductRegion | eligible candidates | TL non-empty / requests | VL non-empty / requests | 후보 수 min / median / mean / max |
+| --- | ---: | ---: | ---: | ---: |
+| capital | 5,044 | 2,560/2,560 (100.00%) | 320/320 (100.00%) | 5,044 / 5,044 / 5,044 / 5,044 |
+| west | 6,000 | 2,560/2,560 (100.00%) | 320/320 (100.00%) | 6,000 / 6,000 / 6,000 / 6,000 |
+| east | 7,224 | 2,560/2,560 (100.00%) | 320/320 (100.00%) | 7,224 / 7,224 / 7,224 / 7,224 |
+| jeju-islands | 791 | 2,560/2,560 (100.00%) | 320/320 (100.00%) | 791 / 791 / 791 / 791 |
+
+후보 수 순서는 min / median / mean / max이며, 각 권역의 TL·VL 요청은 같은 고정 ProductRegion 후보 집합을 사용한다. 따라서 해당 권역의 모든 요청에서 후보 크기가 동일하다. TL 요청은 권역마다 2,560개, VL 요청은 320개였고 **8개 권역·split 모두 non-empty 요청률 100%**였다.
+
+### identity 단위와 세 분모
+
+관측 양성은 서로 다른 비어 있지 않은 `(TRAVEL_ID, POI_ID)` 쌍으로 센다. 다음 세 분모를 분리한다.
+
+```text
+전체 observed positives
+         ↓ identity resolution
+identity-resolved positives (MATCHED)
+         ↓ 후보 포함 여부
+candidate-contained resolved positives
 ```
 
-실험 metadata는 run ID, input role binding, code/config fingerprints, retrieval/request/policy/snapshot version 및 hash를 Git-ignored 산출물에 기록한다.
+- `identity resolution rate = resolved / all observed positives`
+- `end-to-end positive candidate coverage = candidate-contained / all observed positives`
+- `conditional candidate coverage = candidate-contained / resolved positives`
+
+### Source POI identity별 결과
+
+먼저 `(region, POI_ID)` 고유 source identity를 한 번씩 판정한 결과다. 각 셀은 `count / 고유 source POI_ID 수 (rate)`다.
+
+| 권역 / split | 고유 source POI_ID | MATCHED | AMBIGUOUS | UNMATCHED |
+| --- | ---: | ---: | ---: | ---: |
+| capital / TL | 8,655 | 1/8,655 (0.01%) | 1,425/8,655 (16.46%) | 7,229/8,655 (83.52%) |
+| capital / VL | 1,545 | 1/1,545 (0.06%) | 322/1,545 (20.84%) | 1,222/1,545 (79.09%) |
+| west / TL | 9,429 | 15/9,429 (0.16%) | 1,723/9,429 (18.27%) | 7,691/9,429 (81.57%) |
+| west / VL | 1,784 | 4/1,784 (0.22%) | 385/1,784 (21.58%) | 1,395/1,784 (78.20%) |
+| east / TL | 10,381 | 133/10,381 (1.28%) | 2,185/10,381 (21.05%) | 8,063/10,381 (77.67%) |
+| east / VL | 1,938 | 26/1,938 (1.34%) | 430/1,938 (22.19%) | 1,482/1,938 (76.47%) |
+| jeju-islands / TL | 13,152 | 343/13,152 (2.61%) | 793/13,152 (6.03%) | 12,016/13,152 (91.36%) |
+| jeju-islands / VL | 2,677 | 143/2,677 (5.34%) | 218/2,677 (8.14%) | 2,316/2,677 (86.51%) |
+
+### Observed-positive status와 후보 funnel
+
+각 status/method의 분모는 해당 권역·split 전체 distinct observed-positive 쌍이다. `MATCHED` 수는 identity-resolved positives와 같다. 각 셀은 `count / 전체 observed positives (rate)`다.
+
+| 권역 / split | 전체 observed positives | MATCHED | AMBIGUOUS | UNMATCHED | identity unresolved | candidate-contained | end-to-end coverage | conditional coverage | outside candidate / resolved |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| capital / TL | 13,660 | 3/13,660 (0.02%) | 3,966/13,660 (29.03%) | 9,691/13,660 (70.94%) | 13,657/13,660 (99.98%) | 3/13,660 (0.02%) | 3/13,660 (0.02%) | 3/3 (100.00%) | 0/3 (0.00%) |
+| capital / VL | 1,811 | 2/1,811 (0.11%) | 464/1,811 (25.62%) | 1,345/1,811 (74.27%) | 1,809/1,811 (99.89%) | 2/1,811 (0.11%) | 2/1,811 (0.11%) | 2/2 (100.00%) | 0/2 (0.00%) |
+| west / TL | 19,584 | 28/19,584 (0.14%) | 6,414/19,584 (32.75%) | 13,142/19,584 (67.11%) | 19,556/19,584 (99.86%) | 16/19,584 (0.08%) | 16/19,584 (0.08%) | 16/28 (57.14%) | 12/28 (42.86%) |
+| west / VL | 2,357 | 4/2,357 (0.17%) | 652/2,357 (27.66%) | 1,701/2,357 (72.17%) | 2,353/2,357 (99.83%) | 2/2,357 (0.08%) | 2/2,357 (0.08%) | 2/4 (50.00%) | 2/4 (50.00%) |
+| east / TL | 20,456 | 198/20,456 (0.97%) | 8,616/20,456 (42.12%) | 11,642/20,456 (56.91%) | 20,258/20,456 (99.03%) | 72/20,456 (0.35%) | 72/20,456 (0.35%) | 72/198 (36.36%) | 126/198 (63.64%) |
+| east / VL | 2,468 | 29/2,468 (1.18%) | 756/2,468 (30.63%) | 1,683/2,468 (68.19%) | 2,439/2,468 (98.82%) | 8/2,468 (0.32%) | 8/2,468 (0.32%) | 8/29 (27.59%) | 21/29 (72.41%) |
+| jeju-islands / TL | 33,310 | 2,459/33,310 (7.38%) | 7,698/33,310 (23.11%) | 23,153/33,310 (69.51%) | 30,851/33,310 (92.62%) | 1,276/33,310 (3.83%) | 1,276/33,310 (3.83%) | 1,276/2,459 (51.89%) | 1,183/2,459 (48.11%) |
+| jeju-islands / VL | 3,994 | 277/3,994 (6.94%) | 583/3,994 (14.60%) | 3,134/3,994 (78.47%) | 3,717/3,994 (93.06%) | 151/3,994 (3.78%) | 151/3,994 (3.78%) | 151/277 (54.51%) | 126/277 (45.49%) |
+
+`catalog-outside`는 모든 권역/split에서 **판정 불가**다. `UNMATCHED`나 `AMBIGUOUS`를 실제 카탈로그 부재로 치환하지 않았다. 위 표에는 identity unresolved의 정확한 count/rate가 별도로 있고, outside-candidate는 MATCHED positives 중 v1 eligibility를 통과하지 못한 건만 센다. visit row에 trip ID가 없는 양성 수와 request universe 밖 trip ID 양성 수는 8개 split 모두 0이었다.
+
+### 현재 코드가 구별하는 positive match method
+
+아래 값은 전체 distinct observed-positive 쌍 대비 count/rate다. `no_exact_signal`, `fuzzy_name_candidate`, `source_signal_conflict`, `name_address`, `conflicting_source_address_signals`는 현재 코드가 기록하는 구분만 그대로 집계했다. 다른 method인 `name_district`, `conflicting_exact_signals`, `category_type_conflict`, `region_unmapped`는 모든 셀에서 0이다. 코드는 `no_exact_signal`을 이름 미발견과 주소 결측으로 세분하지 않으므로 새 원인 분류를 추정해 추가하지 않았다.
+
+| 권역 / split | `no_exact_signal` | `fuzzy_name_candidate` | `source_signal_conflict` | `name_address` | `conflicting_source_address_signals` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| capital / TL | 9,691/13,660 (70.94%) | 2,592/13,660 (18.98%) | 1,374/13,660 (10.06%) | 3/13,660 (0.02%) | 0/13,660 (0.00%) |
+| capital / VL | 1,345/1,811 (74.27%) | 385/1,811 (21.26%) | 79/1,811 (4.36%) | 2/1,811 (0.11%) | 0/1,811 (0.00%) |
+| west / TL | 13,142/19,584 (67.11%) | 3,962/19,584 (20.23%) | 2,452/19,584 (12.52%) | 28/19,584 (0.14%) | 0/19,584 (0.00%) |
+| west / VL | 1,701/2,357 (72.17%) | 515/2,357 (21.85%) | 137/2,357 (5.81%) | 4/2,357 (0.17%) | 0/2,357 (0.00%) |
+| east / TL | 11,642/20,456 (56.91%) | 3,174/20,456 (15.52%) | 5,442/20,456 (26.60%) | 198/20,456 (0.97%) | 0/20,456 (0.00%) |
+| east / VL | 1,683/2,468 (68.19%) | 452/2,468 (18.31%) | 304/2,468 (12.32%) | 29/2,468 (1.18%) | 0/2,468 (0.00%) |
+| jeju-islands / TL | 23,153/33,310 (69.51%) | 2,970/33,310 (8.92%) | 4,668/33,310 (14.01%) | 2,459/33,310 (7.38%) | 60/33,310 (0.18%) |
+| jeju-islands / VL | 3,134/3,994 (78.47%) | 405/3,994 (10.14%) | 175/3,994 (4.38%) | 277/3,994 (6.94%) | 3/3,994 (0.08%) |
+
+가중 합계로 보면 TL은 **2,688 / 87,010 (3.09%)**가 MATCHED, **84,322 / 87,010 (96.91%)**가 unresolved다. VL은 **312 / 10,630 (2.94%)**가 MATCHED, **10,318 / 10,630 (97.06%)**가 unresolved다. End-to-end candidate coverage는 TL **1,367 / 87,010 (1.57%)**, VL **163 / 10,630 (1.53%)**다. Conditional coverage는 TL **1,367 / 2,688 (50.86%)**, VL **163 / 312 (52.24%)**다. MATCHED positives 중 outside-candidate는 TL **1,321 / 2,688 (49.14%)**, VL **149 / 312 (47.76%)**다. Conditional coverage만 보면 후보 포함률은 절반가량이지만, identity resolution이 약 3%여서 전체 계약 성능이 충분하다는 근거는 아니다.
+
+### #60 TL-observed proxy와 비교
+
+아래는 같은 실행에서 기존 #60 proxy 함수를 exact mode로 재실행한 별도 결과다. proxy positive denominator는 기존 #60의 VL observed visit-event 단위이고, TourAPI 표의 denominator는 distinct `(TRAVEL_ID, POI_ID)` 쌍이므로 두 positive coverage를 동일한 분모로 취급하지 않는다. 둘 다 후보 universe가 다르며 과거 exposure를 뜻하지 않는다.
+
+| 권역 | TL-observed 후보 수 | VL 요청 / non-empty | VL positive events | proxy positive coverage | cold-start positive events | cold-start share | TL/VL trip ID overlap |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| capital | 8,655 | 320/320 (100.00%) | 1,942 | 956/1,942 (49.23%) | 986/1,942 | 50.77% | 0 |
+| west | 9,429 | 320/320 (100.00%) | 2,596 | 1655/2,596 (63.75%) | 941/2,596 | 36.25% | 0 |
+| east | 10,381 | 320/320 (100.00%) | 2,715 | 1668/2,715 (61.44%) | 1047/2,715 | 38.56% | 0 |
+| jeju-islands | 13,152 | 320/320 (100.00%) | 4,621 | 3449/4,621 (74.64%) | 1172/4,621 | 25.36% | 0 |
+
+권역별 proxy 후보 수는 capital 8,655, west 9,429, east 10,381, jeju-islands 13,152다. 각 권역 320개 VL trip request가 모두 non-empty이며 TL/VL trip ID overlap과 traveler overlap은 각각 0이다. region-level proxy candidate set을 모든 요청에 사용했으므로 요청당 후보 수도 해당 후보 수와 같다.
+
+### 결론: 수정
+
+정확 집계에서는 catalog snapshot과 지역 eligibility가 실제 non-empty 요청을 100% 만들지만, AI Hub observed positives와 TourAPI canonical identity 연결은 TL 3.09%, VL 2.94%에 그쳤다. End-to-end positive coverage도 TL 1.57%, VL 1.53%이며, MATCHED positives 중에서도 절반가량만 eligible 후보에 포함됐다. `no_exact_signal`이 unmatched를 대부분 설명하고, fuzzy-name candidate와 source-signal conflict가 큰 ambiguous 집계를 차지한다. 따라서 현재 identity/coverage 계약으로 ranker 평가를 진행하기에는 근거가 부족하다. 다만 unresolved는 TourAPI catalog 부재를 뜻하지 않으며, 수치만으로 TourAPI source 자체를 폐기할 수는 없다. **공식 ID crosswalk 또는 검증된 추가 identity 신호를 확보하고 outside-candidate 원인을 구분한 뒤 재측정**하는 결론으로 수정한다. 그때까지 `catalog-outside`는 판정 불가, unvisited는 unknown/unlabeled로 둔다.
+
+재현 명령은 승인된 환경에서 `RAW_ROOT`, 권역별 `*_TL`/`*_VL`, 고정 snapshot의 `TOURAPI_SNAPSHOT`을 환경 변수로 설정한 뒤 실행한다. API key는 설정하지 않고 읽지 않는다. 입력 경로나 비밀값은 로그·문서·PR에 출력하지 않는다.
+
+```bash
+python3 scripts/recommendation/analyze_poi_catalog_candidate_coverage.py --raw-root "$RAW_ROOT" --snapshot "$TOURAPI_SNAPSHOT" --output results/experiments/poi-catalog-v1/actual-data-20261018-exact3 --run-id issue4-actual-20261018-exact3 --exact-aggregates --confirm-approved --confirm-terms --confirm-poi-candidate
+```
+
+상세 `metrics.csv`와 `run_metadata.json`은 Git-ignored 결과 경로에 남아 있다. manifest에는 run/config/code fingerprints, snapshot version/hash, retrieval time, role labels, field allowlist 및 privacy flags가 있고 raw path/ID/row/coordinate/text/secret은 없다.
 
 ## Synthetic validation and use
 

@@ -507,7 +507,7 @@ def main(argv: list[str] | None = None) -> int:
                 "source_district_crosswalk_enabled": False,
                 "request_universe": "all distinct TRAVEL_ID values in TN_TRAVEL",
                 "positive_unit": "distinct nonblank (TRAVEL_ID, POI_ID) pairs from visit rows",
-                "aggregation_mode": ("exact_nonidentifying_aggregates" if exact_aggregates
+                "aggregation_mode": ("exact_nonidentifying_aggregates" if args.exact_aggregates
                                      else "privacy_banded"),
                 "candidate_policy_sha256": policy.policy_sha256,
                 "snapshot_sha256": snapshot_meta.get("snapshot_sha256"),
