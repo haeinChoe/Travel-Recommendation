@@ -6,8 +6,9 @@ from scripts.recommendation.poi_catalog_candidate_contract import (
     CandidateRequest,
     CatalogPoi,
     CatalogSnapshot,
+    HistoricalRequestProxy,
     SourcePoi,
-    candidate_requests_from_observations,
+    derive_proxy_requests_from_observations,
     diagnose_catalog,
     diagnose_candidate_coverage,
     eligibility_reason,
@@ -263,23 +264,64 @@ class EligibilityContractTests(unittest.TestCase):
 
 
 class CandidateCoverageTests(unittest.TestCase):
-    def test_request_context_can_be_derived_from_explicit_observations(self) -> None:
-        requests = candidate_requests_from_observations([
+    def test_historical_proxy_requests_are_explicitly_derived_from_observations(self) -> None:
+        requests = derive_proxy_requests_from_observations([
             SourcePoi(source_item_id="a", request_id="trip-1", region=" Region A "),
             SourcePoi(source_item_id="b", request_id="trip-1", region="region a"),
             SourcePoi(source_item_id="c", request_id="trip-2", region="region-b"),
         ])
         self.assertEqual(requests, [
-            CandidateRequest(request_id="trip-1", region="regiona"),
-            CandidateRequest(request_id="trip-2", region="region-b"),
+            HistoricalRequestProxy(request_id="trip-1", region="regiona"),
+            HistoricalRequestProxy(request_id="trip-2", region="region-b"),
         ])
 
     def test_request_context_rejects_mixed_regions(self) -> None:
         with self.assertRaisesRegex(ValueError, "share one region"):
-            candidate_requests_from_observations([
+            derive_proxy_requests_from_observations([
                 SourcePoi(source_item_id="a", request_id="trip-1", region="a"),
                 SourcePoi(source_item_id="b", request_id="trip-1", region="b"),
             ])
+
+    def test_product_request_region_is_independent_of_observation_region(self) -> None:
+        catalog = CatalogSnapshot("snapshot-v1", (
+            CatalogPoi(
+                "product-region-poi", title="Place", address="Road 1",
+                content_type_id="12", region_codes=frozenset({"request-admin", "history-admin"}),
+                catalog_status="active",
+            ),
+            CatalogPoi(
+                "history-only-poi", title="Elsewhere", content_type_id="12",
+                region_codes=frozenset({"history-admin"}), catalog_status="active",
+            ),
+        ))
+        requests = [CandidateRequest(f"trip-{index}", "product-region") for index in range(10)]
+        positives = [SourcePoi(
+            f"source-poi-{index}", "historical-region", "Place", address="Road 1",
+            request_id=f"trip-{index}",
+        ) for index in range(10)]
+
+        result = diagnose_candidate_coverage(
+            requests, positives, catalog,
+            region_admin_codes={
+                "product-region": frozenset({"request-admin"}),
+                "historical-region": frozenset({"history-admin"}),
+            },
+            supported_content_types=frozenset({"12"}),
+        )
+
+        self.assertEqual(result["candidate_size_distribution"]["1"], "10+")
+        self.assertEqual(result["positive_candidate_coverage"], "90-100%")
+
+    def test_historical_proxy_is_rejected_as_product_request_context(self) -> None:
+        proxies = derive_proxy_requests_from_observations([
+            SourcePoi("source", "historical-region", request_id="trip-1"),
+        ])
+
+        with self.assertRaisesRegex(TypeError, "independently supplied CandidateRequest"):
+            diagnose_candidate_coverage(
+                proxies, [], CatalogSnapshot("snapshot-v1", ()),
+                region_admin_codes={}, supported_content_types=frozenset(),
+            )
 
     def test_real_path_aggregates_requests_without_emitting_ids(self) -> None:
         catalog = CatalogSnapshot("snapshot-v1", (CatalogPoi(

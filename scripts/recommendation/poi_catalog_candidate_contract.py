@@ -15,7 +15,7 @@ from typing import Mapping
 
 @dataclass(frozen=True)
 class SourcePoi:
-    """Historical source observation; identity is namespaced by ``region``."""
+    """Historical observation; its ``region`` is the observed source region."""
 
     source_item_id: str
     region: str
@@ -42,11 +42,19 @@ class CatalogPoi:
 
 @dataclass(frozen=True)
 class CandidateRequest:
-    """Hypothetical request context used to group observed positives by trip."""
+    """Request-time region context, supplied independently for product coverage."""
 
     request_id: str
     region: str
     district_code: str | None = None
+
+
+@dataclass(frozen=True)
+class HistoricalRequestProxy:
+    """Historical feasibility proxy derived from observed source regions."""
+
+    request_id: str
+    region: str
 
 
 @dataclass(frozen=True)
@@ -55,8 +63,13 @@ class CatalogSnapshot:
     records: tuple[CatalogPoi, ...]
 
 
-def candidate_requests_from_observations(observations: list[SourcePoi]) -> list[CandidateRequest]:
-    """Build one historical request proxy per trip, requiring a stable region."""
+def derive_proxy_requests_from_observations(observations: list[SourcePoi]) -> list[HistoricalRequestProxy]:
+    """Build historical feasibility proxies; never use these as product requests.
+
+    ``SourcePoi.region`` is the historical observation's region. The returned
+    ``HistoricalRequestProxy.region`` is only a proxy copied from those observations,
+    not request-time product context.
+    """
     regions_by_request: dict[str, str] = {}
     for observation in observations:
         request_id = observation.request_id
@@ -66,7 +79,7 @@ def candidate_requests_from_observations(observations: list[SourcePoi]) -> list[
         previous = regions_by_request.setdefault(request_id, region)
         if previous != region:
             raise ValueError("all observations for a request must share one region")
-    return [CandidateRequest(request_id=request_id, region=region)
+    return [HistoricalRequestProxy(request_id=request_id, region=region)
             for request_id, region in sorted(regions_by_request.items())]
 
 
@@ -355,6 +368,8 @@ def diagnose_candidate_coverage(
     hypothetical product-eligibility diagnostic; it does not measure historical
     exposure. Positives with unresolved identity are reported separately.
     """
+    if any(not isinstance(request, CandidateRequest) for request in requests):
+        raise TypeError("product coverage requires independently supplied CandidateRequest contexts")
     if not snapshot.snapshot_version.strip():
         raise ValueError("catalog snapshot version is required")
     snapshot_ids = [item.content_id for item in snapshot.records]
@@ -369,9 +384,6 @@ def diagnose_candidate_coverage(
     for source in observed_positives:
         if source.request_id not in request_by_id:
             raise ValueError("every observed positive must reference a known request")
-        request = request_by_id[source.request_id]
-        if normalize_code(source.region) != normalize_code(request.region):
-            raise ValueError("source region must match its request region")
         identity = (source.request_id, source.source_item_id)
         previous = seen_positives.get(identity)
         if previous is not None:
