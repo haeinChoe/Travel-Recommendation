@@ -92,6 +92,10 @@ All released ranking cells have at least `10+` trip support and `10+` retrieved-
 
 이 exact-mode 재실행에서 이전 privacy band `10+` 후보 수는 위 정확 수로 풀렸고, `90–100%` non-empty request는 모두 `320/320 (100.00%)`였다. 이전 broad event-coverage band도 exact numerator/denominator로 교체했다. 이 표는 #60의 과거 후보 대리값이며 TourAPI canonical identity coverage나 과거 exposure를 뜻하지 않는다.
 
+### Issue #4 identity diagnostic follow-up
+
+2026-10-18 재실행의 고정 TourAPI snapshot + AI Hub 원본 TL/VL exact aggregate identity 진단은 [POI catalog candidate contract](../poi-catalog-candidate-contract.md)의 Identity 진단 funnel 절에 기록했다. 이 진단은 historical TL-observed proxy와 별개이며, API 재호출이나 row-level export 없이 source-name/title, address, row-signal variation, matched type, eligibility reason을 source POI와 observed-positive 단위로 분리한다. exact-title 후보 0은 같은 권역에서 exact normalized title 후보를 찾지 못했다는 뜻이며 catalog 부재로 해석하지 않는다.
+
 ## Candidate alternatives and limits
 
 - **A — region-level TL-observed POIs:** implemented uniformly in all four regions. It creates an auditable catalog proxy, but every trip inherits a `500+` candidate list and most trips have observed-positive density below 1%. It does not show that those items were available or exposed to the traveler.

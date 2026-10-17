@@ -154,7 +154,8 @@ def match_source_item(
         "name_address": set(), "name_district": set(), "normalized_name": set(),
     }
     exact_signal_conflicts: set[str] = set()
-    near_candidates: set[str] = set()
+    exact_name_only_candidates: set[str] = set()
+    fuzzy_candidates: set[str] = set()
     category_types = None
     if source_category_to_content_types is not None:
         category_types = _normalize_code_map(source_category_to_content_types).get(normalize_code(source.category))
@@ -176,7 +177,7 @@ def match_source_item(
         address = normalize_text(item.address)
         if source_name and name and source_name == name:
             evidence["normalized_name"].add(item.content_id)
-            near_candidates.add(item.content_id)
+            exact_name_only_candidates.add(item.content_id)
             if source_district and source_district in districts:
                 evidence["name_district"].add(item.content_id)
             if source_address and address and source_address == address:
@@ -191,7 +192,8 @@ def match_source_item(
 
         if source_name and name and fuzzy_threshold is not None:
             if SequenceMatcher(None, source_name, name, autojunk=False).ratio() >= fuzzy_threshold:
-                near_candidates.add(item.content_id)
+                if source_name != name:
+                    fuzzy_candidates.add(item.content_id)
 
     # A bare name can identify multiple physical places. Keep
     # those signals useful for candidate discovery, but require an exact name
@@ -213,8 +215,12 @@ def match_source_item(
         if category_types is not None and item.content_type_id and normalize_code(item.content_type_id) not in category_types:
             return MatchResult(source.source_item_id, "AMBIGUOUS", None, "category_type_conflict", 1)
         return MatchResult(source.source_item_id, "MATCHED", canonical_id, strongest_method, 1)
-    if near_candidates:
-        return MatchResult(source.source_item_id, "AMBIGUOUS", None, "fuzzy_name_candidate", len(near_candidates))
+    if exact_name_only_candidates:
+        return MatchResult(source.source_item_id, "AMBIGUOUS", None,
+                           "exact_name_only_candidate", len(exact_name_only_candidates))
+    if fuzzy_candidates:
+        return MatchResult(source.source_item_id, "AMBIGUOUS", None,
+                           "fuzzy_name_candidate", len(fuzzy_candidates))
     return MatchResult(source.source_item_id, "UNMATCHED", None, None, 0)
 
 
@@ -309,7 +315,8 @@ def diagnose_catalog(
     method_counts = {
         method: count_bucket(sum(result.method == method for result in matches))
         for method in ("name_address", "name_district", "conflicting_exact_signals",
-                       "category_type_conflict", "fuzzy_name_candidate", "region_unmapped", "unmatched")
+                       "category_type_conflict", "exact_name_only_candidate", "fuzzy_name_candidate",
+                       "region_unmapped", "unmatched")
     }
     return {
         "source_item_count": count_bucket(len(source_items)),

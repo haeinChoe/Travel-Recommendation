@@ -134,7 +134,7 @@ class IdentityContractTests(unittest.TestCase):
         source_item = source("src", name="Same name")
         result = match_synthetic_region(source_item, [synthetic_catalog_record("target", name="Same name")])
         self.assertEqual((result.status, result.canonical_item_id, result.method),
-                         ("AMBIGUOUS", None, "fuzzy_name_candidate"))
+                         ("AMBIGUOUS", None, "exact_name_only_candidate"))
 
     def test_coordinate_fields_are_absent_until_crs_semantics_are_verified(self) -> None:
         self.assertNotIn("latitude", SourcePoi.__dataclass_fields__)

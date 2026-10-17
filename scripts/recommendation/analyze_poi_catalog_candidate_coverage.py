@@ -42,7 +42,7 @@ SIZE_BUCKETS = ((1, 9, "1-9"), (10, 49, "10-49"), (50, 99, "50-99"),
                 (100, 499, "100-499"), (500, None, "500+"))
 MATCH_METHODS = (
     "name_address", "name_district", "conflicting_exact_signals", "category_type_conflict",
-    "fuzzy_name_candidate", "region_unmapped", "source_signal_conflict",
+    "exact_name_only_candidate", "fuzzy_name_candidate", "region_unmapped", "source_signal_conflict",
     "conflicting_source_address_signals", "no_exact_signal",
 )
 ROLE_ENV = {
@@ -210,6 +210,233 @@ def _match_sources(region: str, source_map, catalog_by_region_name, policy):
     return results, methods
 
 
+def _source_signal_variation(signal_sets: set[tuple[str, str, str, str]]) -> str:
+    """Classify row-to-row source signal variation without changing identity rules."""
+    raw_rows = set(signal_sets)
+    rows = {(normalize_text(name), normalize_text(district), normalize_text(lot), normalize_text(road))
+            for name, district, lot, road in raw_rows}
+    if len(raw_rows) > 1 and len(rows) <= 1:
+        return "whitespace_only_differs"
+    if len(rows) <= 1:
+        return "no_variation"
+    address_pairs = {(row[2], row[3]) for row in rows}
+    address_presence = {bool(lot.strip() or road.strip())
+                        for _, _, lot, road in raw_rows}
+    address_unions = {frozenset(value for value in (row[2], row[3]) if value) for row in rows}
+    name_states = {row[0] for row in rows}
+    district_states = {row[1] for row in rows}
+    dimensions = sum((len(name_states) > 1, len(district_states) > 1,
+                      len(address_pairs) > 1 or len(address_presence) > 1))
+    if dimensions > 1:
+        return "multiple_meaningful_fields_differ"
+    if len(name_states) > 1:
+        return "name_differs"
+    if len(district_states) > 1:
+        return "sgg_only_differs"
+    if address_presence == {False, True}:
+        return "address_presence_differs"
+    if len(address_pairs) > 1 and len(address_unions) == 1 and address_presence == {True}:
+        return "road_lot_representation_only_differs"
+    if len(address_pairs) > 1:
+        return "address_value_differs"
+    return "other_signal_variation"
+
+
+def _identity_diagnostic_rows(region: str, role: str, source_map, positive_pairs,
+                              catalog_by_region_name, catalog, policy,
+                              *, exact_aggregates: bool = False) -> list[dict[str, str]]:
+    """Exact, identifier-free source and observed-positive identity funnel counts."""
+    sources_n = len(source_map)
+    positives_n = len(positive_pairs)
+    positive_multiplicity = Counter(poi_id for _, poi_id in positive_pairs)
+    source_counts: Counter[str] = Counter()
+    positive_counts: Counter[str] = Counter()
+    matches, _ = _match_sources(region, source_map, catalog_by_region_name, policy)
+    catalog_by_id = {item.content_id: item for item in catalog}
+    admin_codes = {key: frozenset(value)
+                   for key, value in policy.product_region_to_ldong_regn_cd.items()}
+    supported = frozenset(policy.supported_content_type_ids)
+
+    for source_id, signal_sets in source_map.items():
+        # Rows can differ; field-presence metrics are at POI level, based on any
+        # nonblank observed signal. The separate variation metric records row differences.
+        names = {normalize_text(name) for name, _, _, _ in signal_sets if normalize_text(name)}
+        has_road = any(bool(road.strip()) for _, _, _, road in signal_sets)
+        has_lot = any(bool(lot.strip()) for _, _, lot, _ in signal_sets)
+        has_address = has_road or has_lot
+        source_counts["source_name_nonblank" if names else "source_name_blank"] += 1
+        source_counts["source_road_address_present" if has_road else "source_road_address_missing"] += 1
+        source_counts["source_lot_address_present" if has_lot else "source_lot_address_missing"] += 1
+        source_counts["source_any_address_present" if has_address else "source_any_address_missing"] += 1
+        source_counts[f"source_signal_variation:{_source_signal_variation(signal_sets)}"] += 1
+
+        # A deterministic representative is only used for name-candidate diagnostics;
+        # per-row signal variation above keeps inconsistencies visible.
+        candidates_by_id = {}
+        for name in sorted(names):
+            candidates_by_id.update({item.content_id: item
+                                     for item in catalog_by_region_name.get((region, name), [])})
+        candidates = list(candidates_by_id.values())
+        bucket = "0" if not candidates else "1" if len(candidates) == 1 else "2+"
+        source_counts[f"exact_title_candidate_count:{bucket}"] += 1
+        if candidates:
+            address_flags = [bool(item.address.strip()) for item in candidates]
+            has_catalog_address = any(address_flags)
+            source_counts["exact_title_catalog_address_present" if has_catalog_address
+                          else "exact_title_catalog_address_missing"] += 1
+            if any(address_flags) and not all(address_flags):
+                source_counts["exact_title_catalog_address_mixed"] += 1
+        if len(candidates) == 1:
+            item = candidates[0]
+            source_address_values = {(normalize_text(lot), normalize_text(road))
+                                     for _, _, lot, road in signal_sets}
+            roads = {road for _, road in source_address_values if road}
+            lots = {lot for lot, _ in source_address_values if lot}
+            catalog_address = normalize_text(item.address)
+            any_source_address = bool(roads or lots)
+            if not any_source_address:
+                single_address_status = "single_title_source_address_missing"
+            elif not catalog_address:
+                single_address_status = "single_title_catalog_address_missing"
+            elif catalog_address in roads or catalog_address in lots:
+                single_address_status = "single_title_address_exact_match"
+            else:
+                single_address_status = "single_title_address_present_mismatch"
+            source_counts[single_address_status] += 1
+            if catalog_address and catalog_address in roads:
+                source_counts["single_title_source_road_exact_match"] += 1
+            if catalog_address and catalog_address in lots:
+                source_counts["single_title_source_lot_exact_match"] += 1
+        elif len(candidates) > 1:
+            source_counts["multiple_exact_title_candidates"] += 1
+
+    # Expand POI-level diagnostics to positive-pair counts using each POI's
+    # number of distinct observed (TRAVEL_ID, POI_ID) positives.
+    for source_id, multiplicity in positive_multiplicity.items():
+        signal_sets = source_map.get(source_id)
+        if not signal_sets:
+            continue
+        names = {normalize_text(name) for name, _, _, _ in signal_sets if normalize_text(name)}
+        has_road = any(bool(road.strip()) for _, _, _, road in signal_sets)
+        has_lot = any(bool(lot.strip()) for _, _, lot, _ in signal_sets)
+        has_address = has_road or has_lot
+        positive_counts["source_name_nonblank" if names else "source_name_blank"] += multiplicity
+        positive_counts["source_road_address_present" if has_road else "source_road_address_missing"] += multiplicity
+        positive_counts["source_lot_address_present" if has_lot else "source_lot_address_missing"] += multiplicity
+        positive_counts["source_any_address_present" if has_address else "source_any_address_missing"] += multiplicity
+        positive_counts[f"source_signal_variation:{_source_signal_variation(signal_sets)}"] += multiplicity
+        candidates_by_id = {}
+        for name in sorted(names):
+            candidates_by_id.update({item.content_id: item
+                                     for item in catalog_by_region_name.get((region, name), [])})
+        candidates = list(candidates_by_id.values())
+        bucket = "0" if not candidates else "1" if len(candidates) == 1 else "2+"
+        positive_counts[f"exact_title_candidate_count:{bucket}"] += multiplicity
+        if candidates:
+            address_flags = [bool(item.address.strip()) for item in candidates]
+            has_catalog_address = any(address_flags)
+            positive_counts["exact_title_catalog_address_present" if has_catalog_address
+                            else "exact_title_catalog_address_missing"] += multiplicity
+            if any(address_flags) and not all(address_flags):
+                positive_counts["exact_title_catalog_address_mixed"] += multiplicity
+        if len(candidates) == 1:
+            item = candidates[0]
+            address_pairs = {(normalize_text(lot), normalize_text(road))
+                             for _, _, lot, road in signal_sets}
+            roads = {road for _, road in address_pairs if road}
+            lots = {lot for lot, _ in address_pairs if lot}
+            catalog_address = normalize_text(item.address)
+            if not (roads or lots):
+                single_address_status = "single_title_source_address_missing"
+            elif not catalog_address:
+                single_address_status = "single_title_catalog_address_missing"
+            elif catalog_address in roads or catalog_address in lots:
+                single_address_status = "single_title_address_exact_match"
+            else:
+                single_address_status = "single_title_address_present_mismatch"
+            positive_counts[single_address_status] += multiplicity
+            if catalog_address and catalog_address in roads:
+                positive_counts["single_title_source_road_exact_match"] += multiplicity
+            if catalog_address and catalog_address in lots:
+                positive_counts["single_title_source_lot_exact_match"] += multiplicity
+        elif len(candidates) > 1:
+            positive_counts["multiple_exact_title_candidates"] += multiplicity
+
+        result = matches.get(source_id)
+        if result and result.status == "MATCHED" and result.canonical_item_id:
+            item = catalog_by_id.get(result.canonical_item_id)
+            if item is not None:
+                positive_counts[f"matched_contenttypeid:{item.content_type_id or 'blank'}"] += multiplicity
+                reason = eligibility_reason(item, request_region=region,
+                                            region_admin_codes=admin_codes,
+                                            supported_content_types=supported)
+                if not item.content_id.strip() or not item.title.strip():
+                    reason = "required_field_invalid"
+                if reason != "eligible":
+                    positive_counts[f"matched_but_ineligible:{reason}"] += multiplicity
+
+    source_fixed_buckets = {
+        "source_name_blank", "source_name_nonblank",
+        "source_road_address_present", "source_road_address_missing",
+        "source_lot_address_present", "source_lot_address_missing",
+        "source_any_address_present", "source_any_address_missing",
+        "exact_title_candidate_count:0", "exact_title_candidate_count:1",
+        "exact_title_candidate_count:2+", "exact_title_catalog_address_present",
+        "exact_title_catalog_address_missing", "exact_title_catalog_address_mixed",
+        "single_title_source_road_exact_match",
+        "single_title_source_lot_exact_match", "single_title_address_exact_match",
+        "single_title_address_present_mismatch", "single_title_source_address_missing",
+        "single_title_catalog_address_missing", "multiple_exact_title_candidates",
+    }
+    variation_kinds = (
+        "no_variation", "name_differs", "address_value_differs", "address_presence_differs",
+        "road_lot_representation_only_differs", "sgg_only_differs", "whitespace_only_differs",
+        "multiple_meaningful_fields_differ", "other_signal_variation",
+    )
+    source_fixed_buckets.update(f"source_signal_variation:{kind}" for kind in variation_kinds)
+    positive_fixed_buckets = set(source_fixed_buckets)
+    for type_id in sorted({item.content_type_id or "blank" for item in catalog}):
+        positive_fixed_buckets.add(f"matched_contenttypeid:{type_id}")
+    ineligible_reasons = {
+        "unsupported_content_type", "outside_request_region", "outside_request_district",
+        "required_field_invalid", "request_region_unmapped", "request_district_invalid",
+    }
+    observed_ineligible = {bucket.split(":", 1)[1] for bucket in positive_counts
+                           if bucket.startswith("matched_but_ineligible:")}
+    ineligible_reasons.update(observed_ineligible)
+    positive_fixed_buckets.update(f"matched_but_ineligible:{reason}"
+                                  for reason in ineligible_reasons)
+
+    rows: list[dict[str, str]] = []
+    for metric, counts, denominator, buckets, positive in (
+        (f"{role}_source_identity_diagnostic", source_counts, sources_n,
+         source_fixed_buckets, False),
+        (f"{role}_positive_identity_diagnostic", positive_counts, positives_n,
+         positive_fixed_buckets, True),
+    ):
+        candidate_denominator = sum(counts.get(f"exact_title_candidate_count:{bucket}", 0)
+                                    for bucket in ("1", "2+"))
+        single_title_denominator = counts.get("exact_title_candidate_count:1", 0)
+        matched_denominator = sum(count for bucket, count in counts.items()
+                                  if bucket.startswith("matched_contenttypeid:"))
+        for bucket in sorted(buckets | set(counts)):
+            count = counts.get(bucket, 0)
+            if bucket.startswith("exact_title_catalog_address_"):
+                row_denominator = candidate_denominator
+            elif bucket.startswith("single_title_"):
+                row_denominator = single_title_denominator
+            elif bucket.startswith("matched_contenttypeid:") or bucket.startswith("matched_but_ineligible:"):
+                row_denominator = matched_denominator
+            else:
+                row_denominator = denominator
+            # Do not add fabricated source-level values for outcome-only dimensions.
+            if not positive and bucket.startswith(("matched_contenttypeid:", "matched_but_ineligible:")):
+                continue
+            rows.append(_row(region, metric, bucket, count, exact=exact_aggregates,
+                             denominator=row_denominator))
+    return rows
+
+
 def analyze(catalog: list[CatalogPoi], split_data, source_maps, positive_maps,
             missing_trip_counts, policy, *, exact_aggregates: bool = False):
     rows: list[dict[str, str]] = []
@@ -254,6 +481,10 @@ def analyze(catalog: list[CatalogPoi], split_data, source_maps, positive_maps,
             for item in catalog:
                 if admin_codes[region].intersection(item.region_codes) and item.title:
                     catalog_index[(region, normalize_text(item.title))].append(item)
+            rows.extend(_identity_diagnostic_rows(
+                region, role, source_map, positive_maps[(region, role)],
+                catalog_index, catalog, policy, exact_aggregates=exact_aggregates,
+            ))
             matches, method_counts = _match_sources(region, source_map, catalog_index, policy)
             role_matches[role] = matches
             role_methods[role] = method_counts

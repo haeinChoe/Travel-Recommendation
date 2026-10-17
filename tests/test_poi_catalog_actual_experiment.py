@@ -7,9 +7,11 @@ from unittest.mock import patch
 from scripts.recommendation.analyze_poi_catalog_candidate_coverage import (
     REGIONS,
     ROLES,
+    _identity_diagnostic_rows,
     _match_sources,
     _rate,
     _row,
+    _source_signal_variation,
     analyze,
 )
 from scripts.recommendation.analyze_candidate_choice_feasibility import _summary_row, diagnose_region
@@ -19,7 +21,10 @@ from scripts.recommendation.poi_catalog_candidate_contract import CatalogPoi
 
 class ActualPoiExperimentTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.policy = SimpleNamespace(product_region_to_ldong_regn_cd={"capital": frozenset({"11"})})
+        self.policy = SimpleNamespace(
+            product_region_to_ldong_regn_cd={"capital": frozenset({"11"})},
+            supported_content_type_ids=frozenset({"12", "14", "28"}),
+        )
         self.catalog = CatalogPoi(
             content_id="catalog-private-fixture", title="Fixture Place", address="1 Test Road",
             content_type_id="12", region_codes=frozenset({"11"}),
@@ -59,6 +64,88 @@ class ActualPoiExperimentTest(unittest.TestCase):
         self.assertEqual(matches["source-private-fixture"].method, "source_signal_conflict")
         self.assertEqual(methods["source_signal_conflict"], 1)
 
+    def test_exact_title_candidate_funnel_and_address_failure_reasons(self) -> None:
+        cases = (
+            ({"source-private-fixture": {("Missing Place", "", "", "")}},
+             "no_exact_signal", 0),
+            ({"source-private-fixture": {("Fixture Place", "", "", "1 Test Road")}},
+             "name_address", 1),
+            ({"source-private-fixture": {("Fixture Place", "", "", "9 Other Road")}},
+             "exact_name_only_candidate", 1),
+            ({"source-private-fixture": {("Fixture Place", "", "", "")}},
+             "exact_name_only_candidate", 1),
+        )
+        for sources, expected_method, expected_candidates in cases:
+            with self.subTest(expected_method=expected_method, expected_candidates=expected_candidates):
+                matches, _ = _match_sources("capital", sources, self.index, self.policy)
+                result = matches["source-private-fixture"]
+                self.assertEqual(result.method or "no_exact_signal", expected_method)
+                diagnostics = _identity_diagnostic_rows(
+                    "capital", "TL", sources, {("trip-private", "source-private-fixture")},
+                    self.index, [self.catalog], self.policy, exact_aggregates=True,
+                )
+                candidate_row = next(row for row in diagnostics
+                                     if row["metric"] == "TL_source_identity_diagnostic"
+                                     and row["bucket"] == f"exact_title_candidate_count:{expected_candidates}")
+                self.assertEqual(candidate_row["bucket"],
+                                 f"exact_title_candidate_count:{expected_candidates if expected_candidates < 2 else '2+'}")
+
+    def test_multiple_exact_title_candidates_are_reported_and_not_matched(self) -> None:
+        second = CatalogPoi(
+            content_id="second-private-fixture", title="Fixture Place", address="",
+            content_type_id="12", region_codes=frozenset({"11"}),
+        )
+        index = {("capital", "fixture place"): [self.catalog, second]}
+        sources = {"source-private-fixture": {("Fixture Place", "", "", "")}}
+        matches, _ = _match_sources("capital", sources, index, self.policy)
+        self.assertEqual(matches["source-private-fixture"].status, "AMBIGUOUS")
+        self.assertEqual(matches["source-private-fixture"].method, "exact_name_only_candidate")
+        rows = _identity_diagnostic_rows("capital", "TL", sources,
+                                         {("trip-private", "source-private-fixture")},
+                                         index, [self.catalog, second], self.policy,
+                                         exact_aggregates=True)
+        self.assertIn("multiple_exact_title_candidates",
+                      {row["bucket"] for row in rows})
+        self.assertIn("exact_title_catalog_address_mixed",
+                      {row["bucket"] for row in rows})
+
+    def test_source_signal_variation_is_subtyped_without_relaxing_match(self) -> None:
+        address_only = {
+            ("Fixture Place", "101", "", "1 Test Road"),
+            ("Fixture Place", "101", "1 Test Road", ""),
+        }
+        name_variation = {
+            ("Fixture Place", "101", "1 Test Road", ""),
+            ("Fixture Place Annex", "101", "1 Test Road", ""),
+        }
+        whitespace_variation = {
+            ("Fixture Place", "101", " 1 Test Road ", ""),
+            ("Fixture Place", "101", "1 Test Road", ""),
+        }
+        self.assertEqual(_source_signal_variation(address_only), "road_lot_representation_only_differs")
+        self.assertEqual(_source_signal_variation(name_variation), "name_differs")
+        self.assertEqual(_source_signal_variation(whitespace_variation), "whitespace_only_differs")
+        conflict_sources = {"source-private-fixture": address_only}
+        matches, methods = _match_sources("capital", conflict_sources, self.index, self.policy)
+        self.assertEqual(matches["source-private-fixture"].method, "source_signal_conflict")
+        self.assertEqual(methods["source_signal_conflict"], 1)
+
+    def test_matched_unsupported_content_type_is_reported_as_ineligible(self) -> None:
+        unsupported = CatalogPoi(
+            content_id="catalog-private-fixture", title="Fixture Place", address="1 Test Road",
+            content_type_id="39", region_codes=frozenset({"11"}),
+        )
+        sources = {"source-private-fixture": {("Fixture Place", "", "", "1 Test Road")}}
+        rows = _identity_diagnostic_rows(
+            "capital", "TL", sources, {("trip-private", "source-private-fixture")},
+            {("capital", "fixture place"): [unsupported]}, [unsupported],
+            SimpleNamespace(product_region_to_ldong_regn_cd={"capital": frozenset({"11"})},
+                            supported_content_type_ids=frozenset({"12", "14", "28"})),
+            exact_aggregates=True,
+        )
+        self.assertIn("matched_but_ineligible:unsupported_content_type",
+                      {row["bucket"] for row in rows})
+
     def test_default_aggregate_mode_keeps_existing_suppression(self) -> None:
         row = _row("capital", "MATCHED", "name_address", 2)
         self.assertEqual(row["support"], "<10")
@@ -75,6 +162,21 @@ class ActualPoiExperimentTest(unittest.TestCase):
         self.assertEqual(row["status"], "observed_exact")
         self.assertNotIn("source-private-fixture", str(row))
         self.assertNotIn("catalog-private-fixture", str(row))
+
+    def test_identity_diagnostics_keep_exact_counts_opt_in(self) -> None:
+        sources = {"source-private-fixture": {("Fixture Place", "", "", "1 Test Road")}}
+        exact = _identity_diagnostic_rows(
+            "capital", "TL", sources, {("trip-private", "source-private-fixture")},
+            self.index, [self.catalog], self.policy, exact_aggregates=True,
+        )
+        default = _identity_diagnostic_rows(
+            "capital", "TL", sources, {("trip-private", "source-private-fixture")},
+            self.index, [self.catalog], self.policy,
+        )
+        exact_row = next(row for row in exact if row["bucket"] == "source_any_address_present")
+        default_row = next(row for row in default if row["bucket"] == "source_any_address_present")
+        self.assertEqual(exact_row["support"], "1")
+        self.assertEqual(default_row["support"], "<10")
 
     def test_exact_rate_includes_numerator_denominator_and_percentage(self) -> None:
         self.assertEqual(_rate(2, 3, exact=True), "2/3 (66.67%)")
