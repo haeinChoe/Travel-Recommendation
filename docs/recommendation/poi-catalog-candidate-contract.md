@@ -174,6 +174,21 @@ candidate-contained resolved positives
 
 `catalog-outside`는 모든 권역/split에서 **판정 불가**다. `UNMATCHED`나 `AMBIGUOUS`를 실제 카탈로그 부재로 치환하지 않았다. 위 표에는 identity unresolved의 정확한 count/rate가 별도로 있고, outside-candidate는 MATCHED positives 중 v1 eligibility를 통과하지 못한 건만 센다. visit row에 trip ID가 없는 양성 수와 request universe 밖 trip ID 양성 수는 8개 split 모두 0이었다.
 
+### 고유 source POI별 match method
+
+아래 method별 분모는 각 권역/split의 고유 `(region, POI_ID)` 수다. 이 표는 source identity 단위이고, 다음 positive method 표는 관측 양성 쌍 단위다.
+
+| 권역 / split | `no_exact_signal` | `fuzzy_name_candidate` | `source_signal_conflict` | `name_address` | `conflicting_source_address_signals` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| capital / TL | 7,229/8,655 (83.52%) | 1,160/8,655 (13.40%) | 265/8,655 (3.06%) | 1/8,655 (0.01%) | 0/8,655 (0.00%) |
+| capital / VL | 1,222/1,545 (79.09%) | 298/1,545 (19.29%) | 24/1,545 (1.55%) | 1/1,545 (0.06%) | 0/1,545 (0.00%) |
+| west / TL | 7,691/9,429 (81.57%) | 1,366/9,429 (14.49%) | 357/9,429 (3.79%) | 15/9,429 (0.16%) | 0/9,429 (0.00%) |
+| west / VL | 1,395/1,784 (78.20%) | 352/1,784 (19.73%) | 33/1,784 (1.85%) | 4/1,784 (0.22%) | 0/1,784 (0.00%) |
+| east / TL | 8,063/10,381 (77.67%) | 1,385/10,381 (13.34%) | 800/10,381 (7.71%) | 133/10,381 (1.28%) | 0/10,381 (0.00%) |
+| east / VL | 1,482/1,938 (76.47%) | 345/1,938 (17.80%) | 85/1,938 (4.39%) | 26/1,938 (1.34%) | 0/1,938 (0.00%) |
+| jeju-islands / TL | 12,016/13,152 (91.36%) | 339/13,152 (2.58%) | 452/13,152 (3.44%) | 343/13,152 (2.61%) | 2/13,152 (0.02%) |
+| jeju-islands / VL | 2,316/2,677 (86.51%) | 171/2,677 (6.39%) | 46/2,677 (1.72%) | 143/2,677 (5.34%) | 1/2,677 (0.04%) |
+
 ### 현재 코드가 구별하는 positive match method
 
 아래 값은 전체 distinct observed-positive 쌍 대비 count/rate다. `no_exact_signal`, `fuzzy_name_candidate`, `source_signal_conflict`, `name_address`, `conflicting_source_address_signals`는 현재 코드가 기록하는 구분만 그대로 집계했다. 다른 method인 `name_district`, `conflicting_exact_signals`, `category_type_conflict`, `region_unmapped`는 모든 셀에서 0이다. 코드는 `no_exact_signal`을 이름 미발견과 주소 결측으로 세분하지 않으므로 새 원인 분류를 추정해 추가하지 않았다.
