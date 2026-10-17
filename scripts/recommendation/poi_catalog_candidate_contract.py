@@ -7,8 +7,6 @@ to in-memory joins and must not be emitted to public artifacts.
 
 from __future__ import annotations
 
-import math
-import re
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
@@ -16,18 +14,60 @@ from typing import Mapping
 
 
 @dataclass(frozen=True)
-class PoiRecord:
-    item_id: str
+class SourcePoi:
+    """Historical source observation; identity is namespaced by ``region``."""
+
+    source_item_id: str
+    region: str
     name: str = ""
     district_code: str = ""
     address: str = ""
-    latitude: str = ""
-    longitude: str = ""
     category: str = ""
+    request_id: str = ""
+
+
+@dataclass(frozen=True)
+class CatalogPoi:
+    """Serving catalog item with provider-scoped canonical identity."""
+
+    content_id: str
+    title: str = ""
+    district_code: str = ""
+    address: str = ""
     content_type_id: str = ""
     region_codes: frozenset[str] = frozenset()
     district_codes: frozenset[str] = frozenset()
     catalog_status: str = "unknown"  # active | inactive | unknown
+
+
+@dataclass(frozen=True)
+class CandidateRequest:
+    """Hypothetical request context used to group observed positives by trip."""
+
+    request_id: str
+    region: str
+    district_code: str | None = None
+
+
+@dataclass(frozen=True)
+class CatalogSnapshot:
+    snapshot_version: str
+    records: tuple[CatalogPoi, ...]
+
+
+def candidate_requests_from_observations(observations: list[SourcePoi]) -> list[CandidateRequest]:
+    """Build one historical request proxy per trip, requiring a stable region."""
+    regions_by_request: dict[str, str] = {}
+    for observation in observations:
+        request_id = observation.request_id
+        region = normalize_code(observation.region)
+        if not request_id.strip() or not region:
+            raise ValueError("observations require nonblank request IDs and regions")
+        previous = regions_by_request.setdefault(request_id, region)
+        if previous != region:
+            raise ValueError("all observations for a request must share one region")
+    return [CandidateRequest(request_id=request_id, region=region)
+            for request_id, region in sorted(regions_by_request.items())]
 
 
 @dataclass(frozen=True)
@@ -50,121 +90,91 @@ def normalize_code(value: str | None) -> str:
     return "".join(unicodedata.normalize("NFKC", value or "").split()).casefold()
 
 
-def _coord(value: str) -> float | None:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
-
-
-def _distance_meters(left: PoiRecord, right: PoiRecord) -> float | None:
-    lat1, lon1 = _coord(left.latitude), _coord(left.longitude)
-    lat2, lon2 = _coord(right.latitude), _coord(right.longitude)
-    if None in (lat1, lon1, lat2, lon2):
-        return None
-    if not (-90 <= lat1 <= 90 and -90 <= lat2 <= 90 and -180 <= lon1 <= 180 and -180 <= lon2 <= 180):
-        return None
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi, dlambda = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    return 6_371_000 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+def _normalize_code_map(mapping: Mapping[str, frozenset[str]]) -> dict[str, frozenset[str]]:
+    normalized: dict[str, frozenset[str]] = {}
+    for key, values in mapping.items():
+        normalized_key = normalize_code(key)
+        normalized_values = frozenset(filter(None, (normalize_code(value) for value in values)))
+        if not normalized_key:
+            continue
+        if normalized_key in normalized and normalized[normalized_key] != normalized_values:
+            raise ValueError("policy keys collide after normalization")
+        normalized[normalized_key] = normalized_values
+    return normalized
 
 
 def match_source_item(
-    source: PoiRecord,
-    catalog: list[PoiRecord],
+    source: SourcePoi,
+    catalog: list[CatalogPoi],
     *,
-    source_region: str,
     source_region_to_admin_codes: Mapping[str, frozenset[str]],
     fuzzy_threshold: float | None = None,
-    distance_threshold_m: float | None = None,
     source_category_to_content_types: Mapping[str, frozenset[str]] | None = None,
 ) -> MatchResult:
     """Resolve a source item only when all available exact signals agree.
 
-    Fuzzy-name and distance thresholds are disabled unless explicitly supplied.
-    Such near matches are diagnostic candidates only and produce AMBIGUOUS.
+    Fuzzy-name thresholds are disabled unless explicitly supplied. Such near
+    matches are diagnostic candidates only and produce AMBIGUOUS. Coordinates
+    are intentionally absent because their CRS and encoding are unverified.
     Category is a consistency check only when a reviewed crosswalk is supplied;
     it never creates an identity match by itself. Identity matching also requires
     an explicit reviewed source-region-to-catalog-admin-code mapping.
     """
-    if not source.item_id.strip():
-        return MatchResult(source.item_id, "UNMATCHED", None, None, 0)
+    if not source.source_item_id.strip():
+        return MatchResult(source.source_item_id, "UNMATCHED", None, None, 0)
     if not 0 <= (fuzzy_threshold if fuzzy_threshold is not None else 0) <= 1:
         raise ValueError("fuzzy threshold must be between 0 and 1")
-    if distance_threshold_m is not None and (
-        not math.isfinite(distance_threshold_m) or distance_threshold_m < 0
-    ):
-        raise ValueError("distance threshold must be finite and nonnegative")
-
-    source_region_key = normalize_code(source_region)
-    reviewed_region_codes = next(
-        (
-            {normalize_code(code) for code in codes if normalize_code(code)}
-            for region, codes in source_region_to_admin_codes.items()
-            if normalize_code(region) == source_region_key
-        ),
-        None,
-    ) if source_region_key else None
+    reviewed_region_codes = _normalize_code_map(source_region_to_admin_codes).get(normalize_code(source.region))
     if not reviewed_region_codes:
-        return MatchResult(source.item_id, "UNMATCHED", None, "region_unmapped", 0)
+        return MatchResult(source.source_item_id, "UNMATCHED", None, "region_unmapped", 0)
 
     source_name = normalize_text(source.name)
     source_district = normalize_code(source.district_code)
     source_address = normalize_text(source.address)
-    source_lat, source_lon = _coord(source.latitude), _coord(source.longitude)
     evidence: dict[str, set[str]] = {
         "name_address": set(), "name_district": set(), "normalized_name": set(),
-        "exact_coordinate": set(),
     }
     exact_signal_conflicts: set[str] = set()
     near_candidates: set[str] = set()
     category_types = None
     if source_category_to_content_types is not None:
-        category_types = source_category_to_content_types.get(normalize_code(source.category))
+        category_types = _normalize_code_map(source_category_to_content_types).get(normalize_code(source.category))
 
     seen_catalog_ids: set[str] = set()
     for item in catalog:
-        if not item.item_id.strip():
+        if not item.content_id.strip():
             continue
-        if item.item_id in seen_catalog_ids:
+        if item.content_id in seen_catalog_ids:
             raise ValueError("catalog canonical IDs must be unique within a snapshot")
-        seen_catalog_ids.add(item.item_id)
+        seen_catalog_ids.add(item.content_id)
         item_region_codes = {normalize_code(code) for code in item.region_codes if normalize_code(code)}
         if not item_region_codes or not reviewed_region_codes.intersection(item_region_codes):
             continue
-        name = normalize_text(item.name)
-        district = normalize_code(item.district_code)
+        name = normalize_text(item.title)
+        districts = {normalize_code(code) for code in item.district_codes if normalize_code(code)}
+        if item.district_code:
+            districts.add(normalize_code(item.district_code))
         address = normalize_text(item.address)
         if source_name and name and source_name == name:
-            evidence["normalized_name"].add(item.item_id)
-            near_candidates.add(item.item_id)
-            if source_district and district and source_district == district:
-                evidence["name_district"].add(item.item_id)
+            evidence["normalized_name"].add(item.content_id)
+            near_candidates.add(item.content_id)
+            if source_district and source_district in districts:
+                evidence["name_district"].add(item.content_id)
             if source_address and address and source_address == address:
-                evidence["name_address"].add(item.item_id)
-                if source_district and district and source_district != district:
-                    exact_signal_conflicts.add(item.item_id)
+                evidence["name_address"].add(item.content_id)
+                if source_district and districts and source_district not in districts:
+                    exact_signal_conflicts.add(item.content_id)
             if (
-                source_district and district and source_district == district
+                source_district and source_district in districts
                 and source_address and address and source_address != address
             ):
-                exact_signal_conflicts.add(item.item_id)
-        lat, lon = _coord(item.latitude), _coord(item.longitude)
-        if source_lat is not None and source_lon is not None and lat == source_lat and lon == source_lon:
-            evidence["exact_coordinate"].add(item.item_id)
-            near_candidates.add(item.item_id)
+                exact_signal_conflicts.add(item.content_id)
 
         if source_name and name and fuzzy_threshold is not None:
             if SequenceMatcher(None, source_name, name, autojunk=False).ratio() >= fuzzy_threshold:
-                near_candidates.add(item.item_id)
-        if distance_threshold_m is not None:
-            distance = _distance_meters(source, item)
-            if distance is not None and distance <= distance_threshold_m:
-                near_candidates.add(item.item_id)
+                near_candidates.add(item.content_id)
 
-    # A bare name or coordinate can identify multiple physical places. Keep
+    # A bare name can identify multiple physical places. Keep
     # those signals useful for candidate discovery, but require an exact name
     # plus an administrative area/address before assigning identity.
     method_order = ("name_address", "name_district")
@@ -172,46 +182,25 @@ def match_source_item(
     exact_candidates = evidence[strongest_method] if strongest_method else set()
     if exact_signal_conflicts & exact_candidates:
         conflict_count = len(set().union(*evidence.values()) | exact_signal_conflicts)
-        return MatchResult(source.item_id, "AMBIGUOUS", None, "conflicting_exact_signals", conflict_count)
+        return MatchResult(source.source_item_id, "AMBIGUOUS", None, "conflicting_exact_signals", conflict_count)
     if len(exact_candidates) > 1:
-        return MatchResult(source.item_id, "AMBIGUOUS", None, strongest_method, len(exact_candidates))
+        return MatchResult(source.source_item_id, "AMBIGUOUS", None, strongest_method, len(exact_candidates))
     if len(exact_candidates) == 1:
         canonical_id = next(iter(exact_candidates))
         if any(candidates and canonical_id not in candidates for candidates in evidence.values()):
             conflict_count = len(set().union(*evidence.values()) | exact_signal_conflicts)
-            return MatchResult(source.item_id, "AMBIGUOUS", None, "conflicting_exact_signals", conflict_count)
-        item = next(item for item in catalog if item.item_id == canonical_id)
-        if category_types is not None and item.content_type_id and item.content_type_id not in category_types:
-            return MatchResult(source.item_id, "AMBIGUOUS", None, "category_type_conflict", 1)
-        return MatchResult(source.item_id, "MATCHED", canonical_id, strongest_method, 1)
+            return MatchResult(source.source_item_id, "AMBIGUOUS", None, "conflicting_exact_signals", conflict_count)
+        item = next(item for item in catalog if item.content_id == canonical_id)
+        if category_types is not None and item.content_type_id and normalize_code(item.content_type_id) not in category_types:
+            return MatchResult(source.source_item_id, "AMBIGUOUS", None, "category_type_conflict", 1)
+        return MatchResult(source.source_item_id, "MATCHED", canonical_id, strongest_method, 1)
     if near_candidates:
-        return MatchResult(source.item_id, "AMBIGUOUS", None, "fuzzy_or_distance_candidate", len(near_candidates))
-    return MatchResult(source.item_id, "UNMATCHED", None, None, 0)
-
-
-def audit_experiment_design(design: Mapping[str, object]) -> tuple[str, ...]:
-    """Return deterministic blockers for common recommendation-contract errors.
-
-    Inputs are deliberately plain values so the gate can be used in docs/tests
-    without opening travel-log rows. It diagnoses a design; it does not score
-    model quality.
-    """
-    findings: list[str] = []
-    if design.get("claim") == "ranking_quality" and design.get("task") == "post_visit_satisfaction_classification":
-        findings.append("post_visit_classification_is_not_ranking_evidence")
-    if design.get("unvisited_label") == 0 and not design.get("negative_sampling_protocol"):
-        findings.append("unvisited_items_are_unknown_without_exposure_or_sampling_protocol")
-    if design.get("task") == "ranking" and set(design.get("metrics", ())) <= {"accuracy"}:
-        findings.append("ranking_requires_ranking_metrics")
-    if set(design.get("features", ())) & {"DGSTFN", "REVISIT_INTENTION", "RCMDTN_INTENTION"}:
-        findings.append("post_event_feedback_is_unavailable_at_request_time")
-    if design.get("claims_incremental_feature_value") and design.get("cohorts_comparable") is False:
-        findings.append("feature_ablation_cohorts_are_not_comparable")
-    return tuple(findings)
+        return MatchResult(source.source_item_id, "AMBIGUOUS", None, "fuzzy_name_candidate", len(near_candidates))
+    return MatchResult(source.source_item_id, "UNMATCHED", None, None, 0)
 
 
 def eligibility_reason(
-    item: PoiRecord,
+    item: CatalogPoi,
     *,
     request_region: str,
     region_admin_codes: Mapping[str, frozenset[str]],
@@ -219,22 +208,28 @@ def eligibility_reason(
     request_district_code: str | None = None,
 ) -> str:
     """Return a stable fail-closed eligibility reason for one catalog record."""
-    region_codes = region_admin_codes.get(normalize_code(request_region))
+    region_codes = _normalize_code_map(region_admin_codes).get(normalize_code(request_region))
     if not region_codes:
         return "request_region_unmapped"
-    if item.catalog_status == "inactive":
+    status = normalize_code(item.catalog_status)
+    if status == "inactive":
         return "catalog_inactive"
-    if item.catalog_status != "active":
+    if status != "active":
         return "catalog_status_unknown"
-    if not item.content_type_id or item.content_type_id not in supported_content_types:
+    supported_types = {normalize_code(value) for value in supported_content_types if normalize_code(value)}
+    if not item.content_type_id or normalize_code(item.content_type_id) not in supported_types:
         return "unsupported_content_type"
-    if not item.region_codes or not item.region_codes.intersection(region_codes):
+    item_regions = {normalize_code(code) for code in item.region_codes if normalize_code(code)}
+    if not item_regions or not item_regions.intersection(region_codes):
         return "outside_request_region"
     if request_district_code is not None:
         district = normalize_code(request_district_code)
         if not district:
             return "request_district_invalid"
-        if not item.district_codes or district not in {normalize_code(c) for c in item.district_codes}:
+        item_districts = {normalize_code(code) for code in item.district_codes if normalize_code(code)}
+        if item.district_code:
+            item_districts.add(normalize_code(item.district_code))
+        if not item_districts or district not in item_districts:
             return "outside_request_district"
     return "eligible"
 
@@ -273,8 +268,8 @@ def match_summary(results: list[MatchResult]) -> dict[str, str]:
 
 
 def diagnose_catalog(
-    source_items: list[PoiRecord],
-    catalog: list[PoiRecord],
+    source_items: list[SourcePoi],
+    catalog: list[CatalogPoi],
     *,
     source_region_to_admin_codes: Mapping[str, frozenset[str]],
     request_region: str,
@@ -287,7 +282,6 @@ def diagnose_catalog(
     matches = [match_source_item(
         source,
         catalog,
-        source_region=request_region,
         source_region_to_admin_codes=source_region_to_admin_codes,
         source_category_to_content_types=source_category_to_content_types,
     ) for source in source_items]
@@ -301,7 +295,7 @@ def diagnose_catalog(
     method_counts = {
         method: count_bucket(sum(result.method == method for result in matches))
         for method in ("name_address", "name_district", "conflicting_exact_signals",
-                       "category_type_conflict", "fuzzy_or_distance_candidate", "region_unmapped", "unmatched")
+                       "category_type_conflict", "fuzzy_name_candidate", "region_unmapped", "unmatched")
     }
     return {
         "source_item_count": count_bucket(len(source_items)),
@@ -329,4 +323,118 @@ def positive_coverage(positive_item_ids: set[str], eligible_item_ids: set[str]) 
     return {
         "matched_positive": _rate_band(inside, denominator),
         "outside_positive": _rate_band(outside, denominator),
+    }
+
+
+def _candidate_size_bucket(size: int) -> str:
+    if size == 0:
+        return "0"
+    if size == 1:
+        return "1"
+    if size < 10:
+        return "2-9"
+    if size < 50:
+        return "10-49"
+    if size < 500:
+        return "50-499"
+    return "500+"
+
+
+def diagnose_candidate_coverage(
+    requests: list[CandidateRequest],
+    observed_positives: list[SourcePoi],
+    snapshot: CatalogSnapshot,
+    *,
+    region_admin_codes: Mapping[str, frozenset[str]],
+    supported_content_types: frozenset[str],
+    source_category_to_content_types: Mapping[str, frozenset[str]] | None = None,
+) -> dict[str, object]:
+    """Build request-level candidates and privacy-safe coverage aggregates.
+
+    Request IDs and item IDs are used only for in-memory grouping. This is a
+    hypothetical product-eligibility diagnostic; it does not measure historical
+    exposure. Positives with unresolved identity are reported separately.
+    """
+    if not snapshot.snapshot_version.strip():
+        raise ValueError("catalog snapshot version is required")
+    snapshot_ids = [item.content_id for item in snapshot.records]
+    if any(not item_id.strip() for item_id in snapshot_ids) or len(set(snapshot_ids)) != len(snapshot_ids):
+        raise ValueError("snapshot provider content IDs must be nonblank and unique")
+    request_by_id = {request.request_id: request for request in requests}
+    if len(request_by_id) != len(requests) or any(not key.strip() for key in request_by_id):
+        raise ValueError("request IDs must be nonblank and unique")
+
+    positives_by_request: dict[str, list[SourcePoi]] = {key: [] for key in request_by_id}
+    seen_positives: dict[tuple[str, str], SourcePoi] = {}
+    for source in observed_positives:
+        if source.request_id not in request_by_id:
+            raise ValueError("every observed positive must reference a known request")
+        request = request_by_id[source.request_id]
+        if normalize_code(source.region) != normalize_code(request.region):
+            raise ValueError("source region must match its request region")
+        identity = (source.request_id, source.source_item_id)
+        previous = seen_positives.get(identity)
+        if previous is not None:
+            if previous != source:
+                raise ValueError("duplicate source identity has conflicting observation fields")
+            continue
+        positives_by_request[source.request_id].append(source)
+        seen_positives[identity] = source
+
+    candidate_sizes: list[int] = []
+    request_positive_total = 0
+    identity_counts = {status: 0 for status in ("MATCHED", "AMBIGUOUS", "UNMATCHED")}
+    resolved_positive_count = 0
+    covered_positive_count = 0
+    outside_candidate_positive_count = 0
+
+    for request in requests:
+        eligible = [
+            item for item in snapshot.records
+            if eligibility_reason(
+                item,
+                request_region=request.region,
+                region_admin_codes=region_admin_codes,
+                supported_content_types=supported_content_types,
+                request_district_code=request.district_code,
+            ) == "eligible"
+        ]
+        eligible_ids = {item.content_id for item in eligible}
+        candidate_sizes.append(len(eligible_ids))
+        for source in positives_by_request[request.request_id]:
+            request_positive_total += 1
+            result = match_source_item(
+                source,
+                list(snapshot.records),
+                source_region_to_admin_codes=region_admin_codes,
+                source_category_to_content_types=source_category_to_content_types,
+            )
+            identity_counts[result.status] += 1
+            if result.status == "MATCHED" and result.canonical_item_id is not None:
+                resolved_positive_count += 1
+                if result.canonical_item_id in eligible_ids:
+                    covered_positive_count += 1
+                else:
+                    outside_candidate_positive_count += 1
+
+    size_buckets = ("0", "1", "2-9", "10-49", "50-499", "500+")
+    size_distribution = {
+        bucket: count_bucket(sum(_candidate_size_bucket(size) == bucket for size in candidate_sizes))
+        for bucket in size_buckets
+    }
+    nonempty_requests = sum(size > 0 for size in candidate_sizes)
+    return {
+        "snapshot_version": snapshot.snapshot_version,
+        "request_count": count_bucket(len(requests)),
+        "nonempty_candidate_request_rate": _rate_band(nonempty_requests, len(requests)),
+        "candidate_size_distribution": size_distribution,
+        "observed_positive_count": count_bucket(request_positive_total),
+        "identity_status": {status: count_bucket(count) for status, count in identity_counts.items()},
+        "resolved_positive_count": count_bucket(resolved_positive_count),
+        "positive_candidate_coverage": _rate_band(covered_positive_count, resolved_positive_count),
+        "outside_candidate_positive_share": _rate_band(
+            outside_candidate_positive_count, resolved_positive_count
+        ),
+        "unresolved_identity_excluded_from_candidate_coverage": True,
+        "interpretation": "hypothetical_product_eligibility_not_historical_exposure",
     }

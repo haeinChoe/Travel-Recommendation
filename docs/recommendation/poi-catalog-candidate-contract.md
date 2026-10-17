@@ -2,7 +2,7 @@
 
 ## Status
 
-**Outcome: incomplete, with a deterministic implementation contract ready for an authorized, verified catalog snapshot.** A one-result GET to the official TourAPI `areaBasedList2` endpoint in a fresh guarded session, using the approved raw environment key, returned HTTP 200 / API code `0000`. Inspected sample response fields were strings; no field values, key, or key-bearing URL were retained. This evidence is limited to that sampled request: it does not establish catalog coverage, complete field semantics, authorization beyond the sample, or retention rights. No catalog snapshot or product-candidate coverage was produced.
+**Outcome: product decisions and actual-data coverage remain incomplete; deterministic implementation scaffolding is available for an explicitly mapped, authorized snapshot.** A one-result GET to the official TourAPI `areaBasedList2` endpoint returned HTTP 200 / API code `0000`. Inspected sample response fields were strings; no values, key, or key-bearing URL were retained. This sampled request does not establish complete field semantics, authorization beyond the sample, catalog coverage, or bulk-retention rights. No catalog snapshot or product-candidate coverage was produced.
 
 The four official AI Hub 2023 region pages define their regional datasets and roles but do not map those region labels to TourAPI areas or provinces. The approved TL/VL role bindings are not an area-code crosswalk. No product-owner-approved mapping or eligible content-type list is available, so product-candidate coverage cannot be measured; this current response cannot establish 2023 availability.
 
@@ -16,7 +16,7 @@ Recommendation-time eligibility may use an explicit request region, an explicitl
 
 ## Catalog record and snapshot contract
 
-For any future verified snapshot, store only fields needed for candidate construction and identity diagnostics. Names below are normalized internal adapter fields, not claims about literal TourAPI response property names; map them only after reviewing the current official endpoint guide:
+For any future verified snapshot, store only fields needed for candidate construction and identity diagnostics. Names below are normalized internal adapter fields, not claims about literal TourAPI response property names. The adapter requires callers to provide an explicit field map; it has no guessed provider-field defaults:
 
 | Field | Contract |
 | --- | --- |
@@ -43,7 +43,7 @@ The reusable matcher is deterministic and fail-closed. Every call must provide t
 
 1. Normalize text with Unicode NFKC, casefolding, and whitespace collapse; do not strip punctuation, transliterate, or use edit-distance as identity.
 2. A unique exact normalized name plus exact nonblank address, or exact normalized name plus reviewed administrative area, can return `MATCHED` if all other available exact signals agree. An explicitly supplied category/type crosswalk may veto a match when it shows a conflict; a missing or unmapped type is unresolved evidence, not a contradiction.
-3. Exact name alone, coordinate coincidence, fuzzy-name similarity, and distance are discovery evidence only; they return `AMBIGUOUS` when candidates exist.
+3. Exact name alone and fuzzy-name similarity are discovery evidence only; they return `AMBIGUOUS` when candidates exist. Coordinates and distance are excluded from matching until their CRS and encoding are documented and validated.
 4. Multiple equally strong candidates, contradictory exact signals, duplicate catalog keys in a snapshot, explicit taxonomy conflicts, or missing identity evidence never silently resolve to one item.
 5. No qualifying candidate returns `UNMATCHED`. The matcher returns status, method, and candidate count with in-memory source/catalog keys. Any future persisted mapping record must additionally store source identity, catalog snapshot/version, and validation state. Confidence scores and thresholds are not implemented or enabled by default.
 
@@ -54,6 +54,12 @@ The data dictionary describes `TN_POI_MASTER.POI_ID`, name, administrative code,
 `eligibility_reason` is a pure function over a catalog record and explicit policy. It applies hard constraints in this order: request-region mapping, catalog active status, supported content type, catalog membership in the requested region, and (only when explicitly supplied) request district. Unknown status, unmapped request region, missing type, and missing region mapping fail closed. Category and theme are not hard filters unless a request explicitly includes them and the product contract defines their meaning.
 
 The current helper is policy plumbing only. It does not declare a set of TourAPI content types as supported, derive a live/closed state from descriptive fields, or treat an AI Hub table as eligible catalog records.
+
+### Snapshot adapter and coverage path
+
+`scripts/recommendation/tourapi_snapshot_adapter.py` provides a small local adapter for an already authorized CSV snapshot. The caller must supply the reviewed provider-field map, the snapshot version, and any explicit provider-status-to-product-status mapping. Unknown provider status values remain `unknown` and fail eligibility closed. Content IDs remain strings, including leading zeroes. The adapter does not make HTTP requests or choose endpoint fields because the complete official response schema and bulk-retention conditions have not been verified.
+
+For an authorized validation run, `read_source_observations_csv` reads only explicitly mapped source columns into `SourcePoi` records, and `diagnose_candidate_coverage` combines those observations with `CandidateRequest` contexts and a `CatalogSnapshot`. It emits privacy-bucketed candidate-size, nonempty-request, identity-status, and observed-positive coverage aggregates; request/item IDs remain in memory. Unresolved positive identities are excluded from the positive-coverage denominator and reported separately. The result is hypothetical product eligibility, not historical exposure. No local snapshot or actual-data run is included in this PR; product-owner-approved region mapping and supported content types are still required before producing product coverage.
 
 ## Analysis protocol and evidence boundary
 
@@ -110,6 +116,6 @@ The approved TL/VL proxy reproduction ran on 2026-10-16 using all four regions, 
 
 ## Synthetic validation and use
 
-Run `python3 -m unittest discover -s tests -p 'test_poi_catalog_candidate_contract.py' -v`. Tests cover deterministic exact-signal matching, ambiguity, conflict handling, diagnostic-only fuzzy/coordinate signals, fail-closed eligibility, privacy-bucketed summaries, and the five domain-review smoke cases. The contract helper does not issue TourAPI requests. Its candidate eligibility function must not receive observed category or post-event feedback.
+Run `python3 -m unittest discover -s tests -p 'test_poi_catalog_candidate_contract.py' -v`, plus the TourAPI snapshot adapter and experiment-design audit test modules. Tests cover deterministic exact-signal matching, ambiguity, conflict handling, coordinate exclusion, fail-closed eligibility, normalized code handling, request-level candidate coverage, explicit CSV field maps, and domain-review checks. The adapter reads an already authorized local snapshot and does not issue TourAPI requests. `candidate_requests_from_observations` builds a historical request proxy only when every item in a request has the same explicit region; it does not infer district selection. The candidate eligibility function must not receive observed category or post-event feedback.
 
 Follow-up context-aware ranking work must use a versioned product catalog and this candidate contract, keep observed positives and unknowns distinct, and compare ranking metrics only within the same candidate definition.
