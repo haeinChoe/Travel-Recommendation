@@ -128,6 +128,10 @@ test("any actual-data read is delegated away from the entry coordinator", () => 
     "read-only 진단",
     "조정자는 raw root나 TL/VL 입력을 직접 탐색하거나 파일 개수를 세지 않고",
   ]);
+  assertContainsAll(agentLoopReference, [
+    "Use this reference only in a Herdr-managed session",
+    "In non-Herdr sessions, use the active session's authorized dedicated data-science route",
+  ]);
 });
 
 test("data-science startup uses the guarded MCP path before CLI fallback", () => {
