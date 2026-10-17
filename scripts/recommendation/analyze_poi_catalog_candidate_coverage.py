@@ -17,6 +17,7 @@ import sys
 from collections import Counter, defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
+from statistics import mean, median
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -37,21 +38,29 @@ from tourapi_snapshot_adapter import TourApiFieldMap, read_tourapi_snapshot_csv
 
 REGIONS = ("capital", "west", "east", "jeju-islands")
 ROLES = ("TL", "VL")
-MIN_CELL = shared.MIN_CELL
 SIZE_BUCKETS = ((1, 9, "1-9"), (10, 49, "10-49"), (50, 99, "50-99"),
                 (100, 499, "100-499"), (500, None, "500+"))
+MATCH_METHODS = (
+    "name_address", "name_district", "conflicting_exact_signals", "category_type_conflict",
+    "fuzzy_name_candidate", "region_unmapped", "source_signal_conflict",
+    "conflicting_source_address_signals", "no_exact_signal",
+)
 ROLE_ENV = {
     (region, role): f"{'JEJU' if region == 'jeju-islands' else region.upper()}_{role}"
     for region in REGIONS for role in ROLES
 }
 
 
-def _count(value: int) -> str:
-    return shared.count_bucket(value)
+def _count(value: int, *, exact: bool = False) -> str:
+    return str(value) if exact else shared.count_bucket(value)
 
 
-def _rate(num: int, den: int) -> str:
-    return shared.rate_band(num, den) if den else "not_applicable"
+def _rate(num: int, den: int, *, exact: bool = False) -> str:
+    if not den:
+        return "not_applicable"
+    if exact:
+        return f"{num}/{den} ({num / den * 100:.2f}%)"
+    return shared.rate_band(num, den)
 
 
 def _size_bucket(n: int) -> str:
@@ -61,10 +70,23 @@ def _size_bucket(n: int) -> str:
     return "0"
 
 
-def _row(scope: str, metric: str, bucket: str, support: int) -> dict[str, str]:
-    return {"scope": scope, "metric": metric, "bucket": bucket,
-            "support": _count(support),
-            "status": "privacy_limited" if 0 < support < MIN_CELL else "observed"}
+def _row(scope: str, metric: str, bucket: str, support: int, *,
+         exact: bool = False, denominator: int | None = None) -> dict[str, str]:
+    return {
+        "scope": scope, "metric": metric, "bucket": bucket,
+        "support": _count(support, exact=exact),
+        "denominator": str(denominator) if exact and denominator is not None else "",
+        "rate_percent": (f"{support / denominator * 100:.2f}%"
+                         if exact and denominator else ""),
+        "status": "observed_exact" if exact else (
+            "privacy_limited" if 0 < support < shared.MIN_CELL else "observed"
+        ),
+    }
+
+
+def _value_row(scope: str, metric: str, value: object) -> dict[str, str]:
+    return {"scope": scope, "metric": metric, "bucket": str(value), "support": "",
+            "denominator": "", "rate_percent": "", "status": "observed_exact"}
 
 
 def _read_catalog(path: Path, metadata: dict[str, object], policy) -> list[CatalogPoi]:
@@ -189,7 +211,7 @@ def _match_sources(region: str, source_map, catalog_by_region_name, policy):
 
 
 def analyze(catalog: list[CatalogPoi], split_data, source_maps, positive_maps,
-            missing_trip_counts, policy):
+            missing_trip_counts, policy, *, exact_aggregates: bool = False):
     rows: list[dict[str, str]] = []
     admin_codes = {k: frozenset(v) for k, v in policy.product_region_to_ldong_regn_cd.items()}
     supported = frozenset(policy.supported_content_type_ids)
@@ -220,7 +242,8 @@ def analyze(catalog: list[CatalogPoi], split_data, source_maps, positive_maps,
             rows.append({"scope": region, "metric": "snapshot_region_content_type_count", "bucket": type_id,
                          "support": str(count), "status": "observed_public_catalog_count"})
         for reason, count in sorted(reason_counts.items()):
-            rows.append(_row(region, "eligibility_reason", reason, count))
+            rows.append(_row(region, "eligibility_reason", reason, count,
+                             exact=exact_aggregates, denominator=len(catalog)))
         request_counts: Counter[str] = Counter()
         role_matches = {}
         role_methods = {}
@@ -236,9 +259,22 @@ def analyze(catalog: list[CatalogPoi], split_data, source_maps, positive_maps,
             role_methods[role] = method_counts
             status_counts = Counter(result.status for result in matches.values())
             for status in ("MATCHED", "AMBIGUOUS", "UNMATCHED"):
-                rows.append(_row(region, f"{role}_identity_status", status, status_counts[status]))
-            for method, count in sorted(method_counts.items()):
-                rows.append(_row(region, f"{role}_match_method", method, count))
+                rows.append(_row(region, f"{role}_identity_status", status, status_counts[status],
+                                 exact=exact_aggregates, denominator=len(matches)))
+            for method in MATCH_METHODS:
+                count = method_counts[method]
+                rows.append(_row(region, f"{role}_match_method", method, count,
+                                 exact=exact_aggregates, denominator=len(matches)))
+            status_method_counts = Counter(
+                f"{result.status}:{result.method or 'no_exact_signal'}"
+                for result in matches.values()
+            )
+            for status in ("MATCHED", "AMBIGUOUS", "UNMATCHED"):
+                for method in MATCH_METHODS:
+                    category = f"{status}:{method}"
+                    rows.append(_row(region, f"{role}_identity_status_method", category,
+                                     status_method_counts[category], exact=exact_aggregates,
+                                     denominator=len(matches)))
 
             # The request universe comes from the role's trip table. Region context
             # is fixed by this experiment configuration, not inferred from visits.
@@ -247,14 +283,105 @@ def analyze(catalog: list[CatalogPoi], split_data, source_maps, positive_maps,
             request_n = len(virtual_requests)
             request_counts[role] = request_n
             nonempty = request_n if eligible else 0
-            rows.append(_row(region, f"{role}_virtual_request_nonempty", _rate(nonempty, request_n), nonempty))
-            rows.append(_row(region, f"{role}_virtual_candidate_size", _size_bucket(len(eligible)), request_n))
+            rows.append(_row(region, f"{role}_request_count", "all", request_n,
+                             exact=exact_aggregates))
+            rows.append(_row(region, f"{role}_virtual_request_nonempty",
+                             _rate(nonempty, request_n, exact=exact_aggregates), nonempty,
+                             exact=exact_aggregates, denominator=request_n))
+            rows.append(_row(region, f"{role}_nonempty_candidate_request_count", "nonempty",
+                             nonempty, exact=exact_aggregates, denominator=request_n))
+            if request_n:
+                for statistic, value in (
+                    ("min", min(len(eligible) for _ in virtual_requests)),
+                    ("median", median(len(eligible) for _ in virtual_requests)),
+                    ("mean", mean(len(eligible) for _ in virtual_requests)),
+                    ("max", max(len(eligible) for _ in virtual_requests)),
+                ):
+                    metric = f"{role}_candidate_size_{statistic}"
+                    rows.append(_value_row(region, metric, value) if exact_aggregates else
+                                _row(region, metric, _size_bucket(len(eligible)), request_n))
 
             all_positives = positive_maps[(region, role)]
             request_trip_ids = split.travel_ids
             orphan_positives = {pair for pair in all_positives if pair[0] not in request_trip_ids}
             positives = {pair for pair in all_positives if pair[0] in request_trip_ids}
             event_total = len(positives)
+            all_observed_positives = positive_maps[(region, role)]
+            all_event_total = len(all_observed_positives)
+            all_status_counts: Counter[str] = Counter()
+            all_method_counts: Counter[str] = Counter()
+            all_status_method_counts: Counter[str] = Counter()
+            all_covered_events = all_outside_candidate_events = 0
+            for trip_id, item_id in all_observed_positives:
+                result = matches.get(item_id)
+                status = result.status if result else "UNMATCHED"
+                method = (result.method if result and result.method else "no_exact_signal")
+                all_status_counts[status] += 1
+                all_method_counts[method] += 1
+                all_status_method_counts[f"{status}:{method}"] += 1
+                if result and result.status == "MATCHED" and result.canonical_item_id:
+                    if result.canonical_item_id in eligible:
+                        all_covered_events += 1
+                    else:
+                        all_outside_candidate_events += 1
+            for status in ("MATCHED", "AMBIGUOUS", "UNMATCHED"):
+                rows.append(_row(region, f"{role}_positive_identity_status", status,
+                                 all_status_counts[status], exact=exact_aggregates,
+                                 denominator=all_event_total))
+            for method, count in sorted(all_method_counts.items()):
+                rows.append(_row(region, f"{role}_positive_match_method", method, count,
+                                 exact=exact_aggregates, denominator=all_event_total))
+            for method in MATCH_METHODS:
+                if method not in all_method_counts:
+                    rows.append(_row(region, f"{role}_positive_match_method", method, 0,
+                                     exact=exact_aggregates, denominator=all_event_total))
+            for status in ("MATCHED", "AMBIGUOUS", "UNMATCHED"):
+                for method in MATCH_METHODS:
+                    category = f"{status}:{method}"
+                    rows.append(_row(region, f"{role}_positive_identity_status_method", category,
+                                     all_status_method_counts[category], exact=exact_aggregates,
+                                     denominator=all_event_total))
+            resolved_positive_events = all_status_counts["MATCHED"]
+            unresolved_positive_events = all_event_total - resolved_positive_events
+            orphan_positive_events = len(all_observed_positives - positives)
+            rows.append(_row(region, f"{role}_observed_positive_count", "all", all_event_total,
+                             exact=exact_aggregates))
+            rows.append(_row(region, f"{role}_requestable_positive_count", "in_request_universe",
+                             event_total, exact=exact_aggregates, denominator=all_event_total))
+            rows.append(_row(region, f"{role}_identity_resolved_count", "MATCHED",
+                             resolved_positive_events, exact=exact_aggregates,
+                             denominator=all_event_total))
+            rows.append(_row(region, f"{role}_identity_resolution_rate", "resolved",
+                             resolved_positive_events, exact=exact_aggregates,
+                             denominator=all_event_total))
+            rows.append(_row(region, f"{role}_identity_unresolved_count", "AMBIGUOUS+UNMATCHED",
+                             unresolved_positive_events, exact=exact_aggregates,
+                             denominator=all_event_total))
+            rows.append(_row(region, f"{role}_identity_unresolved_rate", "unresolved",
+                             unresolved_positive_events, exact=exact_aggregates,
+                             denominator=all_event_total))
+            rows.append(_row(region, f"{role}_candidate_contained_resolved_positive_count", "contained",
+                             all_covered_events, exact=exact_aggregates,
+                             denominator=all_event_total))
+            rows.append(_row(region, f"{role}_end_to_end_positive_candidate_coverage",
+                             "contained/all_observed_positives", all_covered_events,
+                             exact=exact_aggregates, denominator=all_event_total))
+            rows.append(_row(region, f"{role}_conditional_candidate_coverage",
+                             "contained/resolved_positives", all_covered_events,
+                             exact=exact_aggregates, denominator=resolved_positive_events))
+            rows.append(_row(region, f"{role}_outside_candidate_resolved_positive_count", "outside",
+                             all_outside_candidate_events, exact=exact_aggregates,
+                             denominator=resolved_positive_events))
+            rows.append(_row(region, f"{role}_outside_candidate_positive_share_all_observed",
+                             "outside/all_observed_positives", all_outside_candidate_events,
+                             exact=exact_aggregates, denominator=all_event_total))
+            rows.append(_row(region, f"{role}_outside_candidate_positive_share_resolved",
+                             "outside/resolved_positives", all_outside_candidate_events,
+                             exact=exact_aggregates, denominator=resolved_positive_events))
+            rows.append({"scope": region, "metric": f"{role}_catalog_outside_count",
+                         "bucket": "not_estimable_from_identity_unresolved", "support": "",
+                         "denominator": str(all_event_total) if exact_aggregates else "",
+                         "rate_percent": "", "status": "not_estimable"})
             matched_events = eligible_events = catalog_outside = cold = 0
             eligible_trips: set[str] = set()
             tl_canonical_ids = {
@@ -273,33 +400,38 @@ def analyze(catalog: list[CatalogPoi], split_data, source_maps, positive_maps,
                     else:
                         catalog_outside += 1
             unresolved = event_total - matched_events
-            rows.append(_row(region, f"{role}_confirmed_positive_candidate_coverage_lower_bound",
-                             _rate(eligible_events, event_total), event_total))
-            rows.append(_row(region, f"{role}_positive_candidate_coverage_upper_bound",
-                             _rate(eligible_events + unresolved, event_total), event_total))
-            rows.append(_row(region, f"{role}_confirmed_positive_request_coverage_lower_bound",
-                             _rate(len(eligible_trips), request_n), len(eligible_trips)))
-            rows.append(_row(region, f"{role}_positive_matched", _rate(matched_events, event_total), matched_events))
-            rows.append(_row(region, f"{role}_positive_outside_candidate_share",
-                             _rate(catalog_outside, event_total), catalog_outside))
-            rows.append(_row(region, f"{role}_positive_unresolved_identity",
-                             _rate(unresolved, event_total), unresolved))
+            rows.append(_row(region, f"{role}_requestable_positive_candidate_coverage",
+                             "contained/requestable_positives", eligible_events,
+                             exact=exact_aggregates, denominator=event_total))
+            rows.append(_row(region, f"{role}_requestable_positive_identity_unresolved_count",
+                             "AMBIGUOUS+UNMATCHED", unresolved, exact=exact_aggregates,
+                             denominator=event_total))
+            rows.append(_row(region, f"{role}_requestable_resolved_positive_count", "MATCHED",
+                             matched_events, exact=exact_aggregates, denominator=event_total))
+            rows.append(_row(region, f"{role}_requestable_resolved_positive_candidate_covered_count",
+                             "contained", eligible_events, exact=exact_aggregates,
+                             denominator=matched_events))
+            rows.append(_row(region, f"{role}_requestable_outside_candidate_resolved_count", "outside",
+                             catalog_outside, exact=exact_aggregates, denominator=matched_events))
             rows.append({"scope": region, "metric": f"{role}_catalog_outside_share",
-                         "bucket": "not_estimable_from_identity_unresolved",
-                         "support": "not_applicable", "status": "not_estimable"})
-            rows.append(_row(region, f"{role}_cold_start_positive_share",
-                             _rate(cold, eligible_events), cold))
-            rows.append(_row(region, f"{role}_positive_without_request_trip", "unmatched_trip_id",
-                             len(orphan_positives)))
-            rows.append(_row(region, f"{role}_positive_missing_trip_id", "missing_trip_id",
-                             missing_trip_counts[(region, role)]))
+                         "bucket": "not_estimable_from_identity_unresolved", "support": "",
+                         "denominator": str(all_event_total) if exact_aggregates else "",
+                         "rate_percent": "", "status": "not_estimable"})
+            rows.append(_row(region, f"{role}_cold_start_positive_count", "eligible_matched_not_in_TL",
+                             cold, exact=exact_aggregates, denominator=eligible_events))
+            rows.append(_row(region, f"{role}_positive_without_request_trip_count", "outside_request_universe",
+                             len(orphan_positives), exact=exact_aggregates,
+                             denominator=all_event_total))
+            rows.append(_row(region, f"{role}_positive_missing_trip_id_count", "missing_trip_id_rows",
+                             missing_trip_counts[(region, role)], exact=exact_aggregates))
 
             # Existing Issue #60 style: candidate universe consists of TL-observed POI_IDs.
             # These metrics remain explicitly proxy-scoped and are separate from virtual catalog requests.
             if role == "VL":
                 rows.extend({**r, "metric": f"proxy_{r['metric']}"}
                             for r in diagnose_region(region, split_data[(region, "TL")], split,
-                                                     tuple(shared.DEFAULT_K)))
+                                                     tuple(shared.DEFAULT_K),
+                                                     exact_aggregates=exact_aggregates))
     return rows
 
 
@@ -314,6 +446,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--confirm-approved", action="store_true")
     parser.add_argument("--confirm-terms", action="store_true")
     parser.add_argument("--confirm-poi-candidate", action="store_true")
+    parser.add_argument("--exact-aggregates", action="store_true",
+                        help="write exact non-identifying aggregate counts and rates")
     args = parser.parse_args(argv)
     started_utc = datetime.now(UTC).isoformat(timespec="seconds")
     try:
@@ -337,16 +471,17 @@ def main(argv: list[str] | None = None) -> int:
         missing_trip_counts = {key: value[2] for key, value in source_results.items()}
         catalog = _read_catalog(snapshot, snapshot_meta, policy)
         rows = analyze(catalog, split_data, source_maps, positive_maps,
-                       missing_trip_counts, policy)
+                       missing_trip_counts, policy, exact_aggregates=args.exact_aggregates)
         resolved = (REPO_ROOT / output).resolve()
         results_root = (REPO_ROOT / "results").resolve()
         if not shared.within(resolved, results_root) or resolved == results_root:
             raise ValueError("unsafe output")
         resolved.mkdir(parents=True, exist_ok=True)
-        fields = ("scope", "metric", "bucket", "support", "status")
+        fields = ("scope", "metric", "bucket", "support", "denominator", "rate_percent", "status")
         with (resolved / "metrics.csv").open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=fields)
-            writer.writeheader(); writer.writerows(rows)
+            writer.writeheader()
+            writer.writerows({field: row.get(field, "") for field in fields} for row in rows)
         manifest = {
             "run_id": args.run_id,
             "dataset": {"name": "AI Hub Domestic Travel Log", "version": "2023"},
@@ -372,6 +507,8 @@ def main(argv: list[str] | None = None) -> int:
                 "source_district_crosswalk_enabled": False,
                 "request_universe": "all distinct TRAVEL_ID values in TN_TRAVEL",
                 "positive_unit": "distinct nonblank (TRAVEL_ID, POI_ID) pairs from visit rows",
+                "aggregation_mode": ("exact_nonidentifying_aggregates" if exact_aggregates
+                                     else "privacy_banded"),
                 "candidate_policy_sha256": policy.policy_sha256,
                 "snapshot_sha256": snapshot_meta.get("snapshot_sha256"),
             }, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
@@ -380,6 +517,8 @@ def main(argv: list[str] | None = None) -> int:
             "cli_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "source_loader_sha256": hashlib.sha256(Path(shared.__file__).read_bytes()).hexdigest(),
             "input_role_map": {region: region for region in REGIONS},
+            "aggregation_mode": ("exact_nonidentifying_aggregates" if args.exact_aggregates
+                                 else "privacy_banded"),
             "input_fields": {
                 "TN_TRAVEL": ["TRAVEL_ID"],
                 "TN_VISIT_AREA_INFO": ["TRAVEL_ID", "POI_ID", "POI_NM", "SGG_CD", "LOTNO_ADDR", "ROAD_NM_ADDR"],
