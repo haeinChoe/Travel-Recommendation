@@ -1,17 +1,19 @@
-"""Explicit-field adapter for an already authorized TourAPI item snapshot.
-
-The official endpoint field semantics and bulk-retention terms remain under
-review. Callers must therefore supply a verified field map and an explicit
-status-value map; this module performs no network requests and guesses no
-TourAPI field names.
-"""
+"""TourAPI KorService2 v4.4 snapshot adapter and read-only collector."""
 
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
+import os
+import time
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
+from urllib.error import HTTPError, URLError
+from urllib.parse import unquote, urlencode
+from urllib.request import Request, urlopen
 
 from scripts.recommendation.poi_catalog_candidate_contract import (
     CatalogPoi,
@@ -23,13 +25,14 @@ from scripts.recommendation.poi_catalog_candidate_contract import (
 
 @dataclass(frozen=True)
 class TourApiFieldMap:
-    content_id: str
-    content_type_id: str
-    title: str
-    region_codes: tuple[str, ...]
-    district_codes: tuple[str, ...]
-    address: str | None = None
-    status: str | None = None
+    content_id: str = "contentid"
+    content_type_id: str = "contenttypeid"
+    title: str = "title"
+    region_codes: tuple[str, ...] = ("lDongRegnCd",)
+    district_codes: tuple[str, ...] = ("lDongSignguCd",)
+    classification_codes: tuple[str, ...] = ("lclsSystm1", "lclsSystm2", "lclsSystm3")
+    address: str | None = "addr1"
+    modified_time: str | None = "modifiedtime"
 
 
 @dataclass(frozen=True)
@@ -55,22 +58,15 @@ def adapt_tourapi_snapshot(
     *,
     snapshot_version: str,
     fields: TourApiFieldMap,
-    status_values: Mapping[str, str] | None = None,
+    retrieved_at: str = "",
+    request_config_hash: str = "",
+    policy_version: str = "poi-catalog-candidate-v1",
 ) -> CatalogSnapshot:
-    """Map verified provider rows while preserving IDs and unknown statuses."""
+    """Map v4.4 provider rows without assigning provider activity semantics."""
     if not snapshot_version.strip():
         raise ValueError("snapshot version is required")
     if not fields.region_codes or not all(field.strip() for field in fields.region_codes):
         raise ValueError("at least one reviewed region-code field is required")
-    status_map: dict[str, str] = {}
-    for key, value in (status_values or {}).items():
-        normalized_key = normalize_code(key)
-        normalized_value = normalize_code(value)
-        if normalized_key in status_map and status_map[normalized_key] != normalized_value:
-            raise ValueError("status mapping keys collide after normalization")
-        status_map[normalized_key] = normalized_value
-    if any(value not in {"active", "inactive"} for value in status_map.values()):
-        raise ValueError("status values must map explicitly to active or inactive")
 
     records: list[CatalogPoi] = []
     seen_ids: set[str] = set()
@@ -92,10 +88,13 @@ def adapt_tourapi_snapshot(
         address = row.get(fields.address, "") if fields.address else ""
         if not isinstance(address, str):
             raise ValueError("snapshot address field must be text")
-        raw_status = row.get(fields.status, "") if fields.status else ""
-        if not isinstance(raw_status, str):
-            raise ValueError("snapshot status field must be text")
-        status = status_map.get(normalize_code(raw_status), "unknown") if raw_status else "unknown"
+        classification_codes = tuple(
+            value.strip() for field in fields.classification_codes
+            if isinstance((value := row.get(field)), str) and value.strip()
+        )
+        modified_time = row.get(fields.modified_time, "") if fields.modified_time else ""
+        if not isinstance(modified_time, str):
+            raise ValueError("snapshot modified-time field must be text")
         records.append(CatalogPoi(
             content_id=content_id,
             title=title,
@@ -103,9 +102,16 @@ def adapt_tourapi_snapshot(
             content_type_id=content_type,
             region_codes=region_codes,
             district_codes=district_codes,
-            catalog_status=status,
+            classification_codes=classification_codes,
+            modified_time=modified_time.strip(),
         ))
-    return CatalogSnapshot(snapshot_version=snapshot_version, records=tuple(records))
+    return CatalogSnapshot(
+        snapshot_version=snapshot_version,
+        records=tuple(records),
+        retrieved_at=retrieved_at,
+        request_config_hash=request_config_hash,
+        policy_version=policy_version,
+    )
 
 
 def read_tourapi_snapshot_csv(
@@ -113,7 +119,9 @@ def read_tourapi_snapshot_csv(
     *,
     snapshot_version: str,
     fields: TourApiFieldMap,
-    status_values: Mapping[str, str] | None = None,
+    retrieved_at: str = "",
+    request_config_hash: str = "",
+    policy_version: str = "poi-catalog-candidate-v1",
 ) -> CatalogSnapshot:
     """Read a caller-approved, local CSV snapshot without emitting row data."""
     try:
@@ -124,18 +132,237 @@ def read_tourapi_snapshot_csv(
             required = {fields.content_id, fields.content_type_id, fields.title, *fields.region_codes}
             if fields.address:
                 required.add(fields.address)
-            if fields.status:
-                required.add(fields.status)
+            if fields.modified_time:
+                required.add(fields.modified_time)
+            required.update(fields.classification_codes)
             if not required.issubset(reader.fieldnames):
                 raise ValueError("snapshot CSV is missing one or more explicitly mapped columns")
             return adapt_tourapi_snapshot(
                 reader,
                 snapshot_version=snapshot_version,
                 fields=fields,
-                status_values=status_values,
+                retrieved_at=retrieved_at,
+                request_config_hash=request_config_hash,
+                policy_version=policy_version,
             )
     except UnicodeDecodeError as error:
         raise ValueError("snapshot CSV encoding is unsupported") from error
+
+
+TOURAPI_BASE_URL = "https://apis.data.go.kr/B551011/KorService2/areaBasedList2"
+TOURAPI_SERVICE_KEY_ENV = "TOUR_API_SERVICE_KEY"
+MAX_PAGE_SIZE = 1000
+MAX_NETWORK_ATTEMPTS = 3
+
+
+class TourApiCollectionError(RuntimeError):
+    """Safe collection failure; never includes a URL, key, body, or provider row."""
+
+
+def _read_json(request: Request, *, opener, sleep, failure_prefix: str) -> object:
+    """Read a JSON GET response with bounded retries for transient transport errors."""
+    for attempt in range(MAX_NETWORK_ATTEMPTS):
+        try:
+            with opener(request, timeout=45) as response:
+                return json.loads(response.read())
+        except HTTPError as error:
+            if error.code not in (429, 500, 502, 503, 504) or attempt + 1 == MAX_NETWORK_ATTEMPTS:
+                raise TourApiCollectionError(f"{failure_prefix} HTTP failure: {error.code}") from None
+        except (URLError, TimeoutError, OSError):
+            if attempt + 1 == MAX_NETWORK_ATTEMPTS:
+                raise TourApiCollectionError(f"{failure_prefix} network or timeout failure") from None
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            if attempt + 1 == MAX_NETWORK_ATTEMPTS:
+                raise TourApiCollectionError(f"{failure_prefix} response was not valid JSON") from None
+        sleep(float(2 ** attempt))
+    raise TourApiCollectionError(f"{failure_prefix} network or timeout failure")
+
+
+def collect_tourapi_snapshot(
+    *,
+    region_codes: Iterable[str],
+    content_type_ids: Iterable[str],
+    page_size: int = 1000,
+    service_key: str | None = None,
+    opener=urlopen,
+    sleep=time.sleep,
+) -> tuple[list[dict[str, str]], dict[str, object]]:
+    """Read every paginated v4.4 area list for explicit codes and types.
+
+    Requests are sequential and capped to reduce quota pressure. The API key is
+    read from the process environment by default and never included in errors.
+    """
+    key = service_key if service_key is not None else os.environ.get(TOURAPI_SERVICE_KEY_ENV)
+    if not key or not key.strip():
+        raise TourApiCollectionError("TourAPI credential is unavailable")
+    # Public-data-portal keys are sometimes stored URL-encoded. Decode once
+    # in memory before urlencode to avoid sending a double-encoded key.
+    key = unquote(key.strip())
+    codes = tuple(sorted({str(code).strip() for code in region_codes if str(code).strip()}))
+    types = tuple(sorted({str(code).strip() for code in content_type_ids if str(code).strip()}))
+    if not codes or any(not code.isdigit() for code in codes):
+        raise ValueError("explicit numeric legal-dong region codes are required")
+    if not types or any(not code.isdigit() for code in types):
+        raise ValueError("explicit numeric content type IDs are required")
+    if not 1 <= page_size <= MAX_PAGE_SIZE:
+        raise ValueError("page size is outside the supported range")
+
+    rows: dict[str, dict[str, str]] = {}
+    for region_code in codes:
+        for content_type_id in types:
+            page = 1
+            total_count: int | None = None
+            while total_count is None or page <= (total_count + page_size - 1) // page_size:
+                params = {
+                    "serviceKey": key,
+                    "MobileOS": "ETC",
+                    "MobileApp": "TravelRecommendationIssue4",
+                    "_type": "json",
+                    "numOfRows": str(page_size),
+                    "pageNo": str(page),
+                    "arrange": "A",
+                    "contentTypeId": content_type_id,
+                    "lDongRegnCd": region_code,
+                }
+                url = f"{TOURAPI_BASE_URL}?{urlencode(params)}"
+                request = Request(url, headers={"Accept": "application/json"})
+                payload = _read_json(request, opener=opener, sleep=sleep, failure_prefix="TourAPI")
+                if not isinstance(payload, dict):
+                    raise TourApiCollectionError("TourAPI response had an unexpected shape")
+                response_payload = payload.get("response", {})
+                if not isinstance(response_payload, dict):
+                    raise TourApiCollectionError("TourAPI response wrapper had an unexpected shape")
+                header = response_payload.get("header", {})
+                if not isinstance(header, dict):
+                    raise TourApiCollectionError("TourAPI response header had an unexpected shape")
+                if header.get("resultCode") != "0000":
+                    code = str(header.get("resultCode", "unknown"))
+                    raise TourApiCollectionError(f"TourAPI application failure: {code}")
+                body = response_payload.get("body", {})
+                if body is None or body == "":
+                    body = {"totalCount": 0, "items": {"item": []}}
+                if not isinstance(body, dict):
+                    raise TourApiCollectionError("TourAPI response body had an unexpected shape")
+                try:
+                    total_count = int(body.get("totalCount", 0))
+                except (TypeError, ValueError):
+                    raise TourApiCollectionError("TourAPI total count was malformed") from None
+                items_block = body.get("items", {})
+                if (items_block is None or items_block == "") and total_count == 0:
+                    items_block = {"item": []}
+                if not isinstance(items_block, dict):
+                    raise TourApiCollectionError("TourAPI item collection had an unexpected shape")
+                item_block = items_block.get("item", [])
+                if (item_block is None or item_block == "") and total_count == 0:
+                    item_block = []
+                if isinstance(item_block, dict):
+                    item_block = [item_block]
+                if not isinstance(item_block, list):
+                    raise TourApiCollectionError("TourAPI item collection had an unexpected shape")
+                for item in item_block:
+                    if not isinstance(item, dict):
+                        continue
+                    clean = {str(k): str(v) for k, v in item.items() if v is not None}
+                    content_id = clean.get("contentid", "").strip()
+                    if not content_id:
+                        raise TourApiCollectionError("TourAPI returned an item without contentid")
+                    previous = rows.get(content_id)
+                    if previous is not None and previous != clean:
+                        raise TourApiCollectionError("TourAPI returned conflicting duplicate contentid")
+                    rows[content_id] = clean
+                page += 1
+                sleep(0.25)
+    request_config = {
+        "endpoint": TOURAPI_BASE_URL.rsplit("/", 1)[-1],
+        "manual_version": "4.4",
+        "region_codes": codes,
+        "content_type_ids": types,
+        "page_size": page_size,
+        "arrange": "A",
+        "read_only": True,
+    }
+    request_hash = hashlib.sha256(
+        json.dumps(request_config, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return list(rows.values()), request_config | {"request_config_hash": request_hash}
+
+
+def fetch_current_legal_region_codes(
+    *,
+    service_key: str | None = None,
+    opener=urlopen,
+) -> tuple[str, ...]:
+    """Read the current KorService2 legal-dong province codes and names safely."""
+    key = service_key if service_key is not None else os.environ.get(TOURAPI_SERVICE_KEY_ENV)
+    if not key or not key.strip():
+        raise TourApiCollectionError("TourAPI credential is unavailable")
+    endpoint = "https://apis.data.go.kr/B551011/KorService2/ldongCode2"
+    common_params = {
+        "serviceKey": unquote(key.strip()),
+        "MobileOS": "ETC",
+        "MobileApp": "TravelRecommendationIssue4",
+        "_type": "json",
+        "numOfRows": str(MAX_PAGE_SIZE),
+        "lDongListYn": "Y",
+    }
+    codes: set[str] = set()
+    total_count: int | None = None
+    page = 1
+    while total_count is None or page <= (total_count + MAX_PAGE_SIZE - 1) // MAX_PAGE_SIZE:
+        params = common_params | {"pageNo": str(page)}
+        url = f"{endpoint}?{urlencode(params)}"
+        request = Request(url, headers={"Accept": "application/json"})
+        payload = _read_json(request, opener=opener, sleep=time.sleep, failure_prefix="TourAPI legal-code")
+        if not isinstance(payload, dict):
+            raise TourApiCollectionError("TourAPI legal-code response had an unexpected shape")
+        response_payload = payload.get("response", {})
+        if not isinstance(response_payload, dict):
+            raise TourApiCollectionError("TourAPI legal-code response wrapper had an unexpected shape")
+        header = response_payload.get("header", {})
+        if not isinstance(header, dict):
+            raise TourApiCollectionError("TourAPI legal-code response header had an unexpected shape")
+        if header.get("resultCode") != "0000":
+            raise TourApiCollectionError(
+                f"TourAPI legal-code application failure: {header.get('resultCode', 'unknown')}"
+            )
+        body = response_payload.get("body", {})
+        if not isinstance(body, dict):
+            raise TourApiCollectionError("TourAPI legal-code response body had an unexpected shape")
+        try:
+            total_count = int(body.get("totalCount", 0))
+        except (TypeError, ValueError):
+            raise TourApiCollectionError("TourAPI legal-code total count was malformed") from None
+        items_block = body.get("items", {})
+        if not isinstance(items_block, dict):
+            raise TourApiCollectionError("TourAPI legal-code collection had an unexpected shape")
+        items = items_block.get("item", [])
+        if isinstance(items, dict):
+            items = [items]
+        if not isinstance(items, list):
+            raise TourApiCollectionError("TourAPI legal-code collection had an unexpected shape")
+        codes.update(
+            str(item.get("lDongRegnCd", "")).strip()
+            for item in items if isinstance(item, dict)
+        )
+        page += 1
+    codes.discard("")
+    if not codes or any(not code.isdigit() for code in codes):
+        raise TourApiCollectionError("TourAPI legal-code list was empty or malformed")
+    return tuple(sorted(codes))
+
+
+def write_snapshot_csv(path: str | Path, rows: Iterable[Mapping[str, str]]) -> None:
+    """Write only contract fields to a caller-selected Git-ignored path."""
+    fields = (
+        "contentid", "contenttypeid", "title", "addr1", "lDongRegnCd",
+        "lDongSignguCd", "lclsSystm1", "lclsSystm2", "lclsSystm3", "modifiedtime",
+    )
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows({field: row.get(field, "") for field in fields} for row in rows)
 
 
 def read_source_observations_csv(

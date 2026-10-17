@@ -68,7 +68,7 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 
 이때 자연어 해석 기능을 사용하더라도 실제 추천 후보 생성과 랭킹은 검증 가능한 추천 모델과 카탈로그 데이터를 기반으로 수행하는 것을 기본 방향으로 한다.
 
-**현재 계약 상태:** authoritative catalog source, eligible content types, canonical identity, serving-time policy는 미확정이다. 제품 후보는 검증된 snapshot과 명시적 request-time 제약으로 결정하며, historical exposure를 뜻하지 않는다. 근거와 선행 결정을 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)에서 관리한다.
+**현재 계약 상태:** Issue #66에서 v1을 승인했다. 기준 catalog는 TourAPI KorService2, provider identity는 `(tourapi-korservice2, contentid)`, 추천 가능 type은 `12/14/28`이다. 버전 정책의 전체 권역 매핑과 eligibility는 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)에 기록하며, 후보 집합은 과거 노출을 뜻하지 않는다.
 
 ---
 
@@ -308,7 +308,7 @@ occurredAt
 
 ### 9.2 Item Catalog Mapping
 
-AI Hub 방문 POI와 serving catalog는 서로 다른 식별 체계를 사용할 수 있으므로 검증된 catalog snapshot을 대상으로 entity-resolution을 수행한다. TourAPI를 authoritative catalog로 지정하기 전에는 endpoint field semantics와 snapshot retention 조건을 확인한다. `TN_POI_MASTER`는 별도 historical reference이며 `TN_VISIT_AREA_INFO.POI_ID`의 FK 또는 동일 key 보장을 의미하지 않는다. AI Hub source identity는 `(region, nonblank POI_ID)`로 보존한다.
+AI Hub 방문 POI와 serving catalog는 서로 다른 식별 체계를 사용하므로 고정된 TourAPI KorService2 v4.4 snapshot을 대상으로 entity-resolution을 수행한다. Provider canonical identity는 `(tourapi-korservice2, contentid)`이고, AI Hub source identity는 `(region, nonblank POI_ID)`로 보존한다. `TN_POI_MASTER`는 별도 historical reference이며 `TN_VISIT_AREA_INFO.POI_ID`의 FK 또는 동일 key 보장을 의미하지 않는다.
 
 매핑 신호 후보:
 
@@ -318,9 +318,9 @@ AI Hub 방문 POI와 serving catalog는 서로 다른 식별 체계를 사용할
 
 Coordinates and distance are not used until their CRS and encoding are documented and validated.
 
-단독 name, coordinate/distance, fuzzy match는 candidate discovery 진단으로만 사용한다. 불확실하거나 여러 신호가 충돌하는 결과는 임의 확정하지 않고 `AMBIGUOUS` 또는 `UNMATCHED`로 보존한다. 확정된 link에는 source identity, provider content ID, match method, catalog snapshot/version 및 validation status를 남긴다. Confidence threshold와 cross-region namespace 제거는 검증 전까지 미결정이다.
+단독 name, coordinate/distance, fuzzy match는 candidate discovery 진단으로만 사용한다. 불확실하거나 여러 신호가 충돌하는 결과는 임의 확정하지 않고 `AMBIGUOUS` 또는 `UNMATCHED`로 보존한다. 확정된 link에는 source identity, provider content ID, match method, catalog snapshot/version 및 validation status를 남긴다. Confidence threshold는 활성화하지 않으며 source-region namespace는 v1에서 보존한다.
 
-Serving candidate는 catalog 전체와 구분하며, explicit request region, 명시적으로 선택된 district, 제품이 지원하는 content type, 검증된 active status만 hard eligibility 조건 후보로 둔다. 방문 후 feedback과 observed visit location/category는 추천 요청 feature나 eligibility filter로 사용하지 않는다. 이 request-time eligible set은 과거 historical exposure를 의미하지 않는다. 상세 구현·근거 상태는 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)를 따른다.
+Serving candidate는 catalog 전체와 구분하며, snapshot membership, 필수 필드 유효성, 지원 type `{12,14,28}`, versioned 권역 정책, 그리고 요청에서 명시된 경우의 district만 eligibility 조건으로 사용한다. Provider가 보장하지 않는 active/inactive 상태는 만들지 않는다. 방문 후 feedback과 observed visit location/category는 추천 요청 feature나 eligibility filter로 사용하지 않는다. 이 request-time eligible set은 과거 historical exposure를 의미하지 않는다. 상세 구현·근거 상태는 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)를 따른다.
 
 ```text
 sourceVisitId

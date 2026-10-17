@@ -73,6 +73,10 @@ The region-popularity protocol check among in-candidate positives produced the f
 
 All released ranking cells have at least `10+` trip support and `10+` retrieved-positive support. The separately reported all-observed-positive metrics include out-of-candidate positives in the relevance denominator, so those metrics include the candidate-coverage limitation.
 
+## Issue #4 product-catalog contract update
+
+위 TL-observed 후보 실험은 과거 proxy 결과로 유지한다. 이후 Issue #66에서 TourAPI KorService2 v4.4 기반 별도 제품 후보 계약을 승인했으며, 지원 type은 `{12,14,28}`, 전체 권역 정책은 [`config/recommendation/poi-catalog-policy-v1.json`](../../../config/recommendation/poi-catalog-policy-v1.json)에 고정했다. AI Hub 네 권역은 공식 광역권 분류에 따라 결정적으로 매핑한다. `jeju-islands`는 제주 코드 `50`을 뜻하며 다른 도서를 포함한다고 주장하지 않는다. TourAPI snapshot 및 AI Hub read-only 실험은 완료했으며 privacy-safe aggregate와 수정 후 재측정 결론을 [POI catalog candidate contract](../poi-catalog-candidate-contract.md)에 별도로 기록했다. 기존 TL-observed 집합을 제품 eligibility로 부르거나 서로 다른 후보 universe의 지표를 같은 조건의 값처럼 비교하지 않는다.
+
 ## Candidate alternatives and limits
 
 - **A — region-level TL-observed POIs:** implemented uniformly in all four regions. It creates an auditable catalog proxy, but every trip inherits a `500+` candidate list and most trips have observed-positive density below 1%. It does not show that those items were available or exposed to the traveler.

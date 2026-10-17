@@ -1,4 +1,4 @@
-"""Deterministic, conservative POI identity and candidate eligibility rules.
+"""Deterministic POI identity and candidate eligibility rules.
 
 This module never calls TourAPI. Callers must provide an authorized, versioned
 catalog snapshot and explicit product policy. Raw item identifiers are inputs
@@ -37,7 +37,8 @@ class CatalogPoi:
     content_type_id: str = ""
     region_codes: frozenset[str] = frozenset()
     district_codes: frozenset[str] = frozenset()
-    catalog_status: str = "unknown"  # active | inactive | unknown
+    classification_codes: tuple[str, ...] = ()
+    modified_time: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,11 @@ class HistoricalRequestProxy:
 class CatalogSnapshot:
     snapshot_version: str
     records: tuple[CatalogPoi, ...]
+    provider: str = "tourapi-korservice2"
+    manual_version: str = "4.4"
+    retrieved_at: str = ""
+    request_config_hash: str = ""
+    policy_version: str = "poi-catalog-candidate-v1"
 
 
 def derive_proxy_requests_from_observations(observations: list[SourcePoi]) -> list[HistoricalRequestProxy]:
@@ -220,15 +226,10 @@ def eligibility_reason(
     supported_content_types: frozenset[str],
     request_district_code: str | None = None,
 ) -> str:
-    """Return a stable fail-closed eligibility reason for one catalog record."""
+    """Return v1 eligibility; snapshot membership is established by the caller."""
     region_codes = _normalize_code_map(region_admin_codes).get(normalize_code(request_region))
     if not region_codes:
         return "request_region_unmapped"
-    status = normalize_code(item.catalog_status)
-    if status == "inactive":
-        return "catalog_inactive"
-    if status != "active":
-        return "catalog_status_unknown"
     supported_types = {normalize_code(value) for value in supported_content_types if normalize_code(value)}
     if not item.content_type_id or normalize_code(item.content_type_id) not in supported_types:
         return "unsupported_content_type"

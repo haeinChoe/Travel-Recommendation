@@ -191,7 +191,7 @@ class IdentityContractTests(unittest.TestCase):
         result = diagnose_catalog(
             [SourcePoi("private-source", region="seoul", name="Place", address="Road 1")],
             [synthetic_catalog_record("private-target", name="Place", address="Road 1", content_type_id="12",
-                       region_codes=frozenset({"11"}), catalog_status="active")],
+                       region_codes=frozenset({"11"}))],
             source_region_to_admin_codes={"seoul": frozenset({"11"})},
             request_region="seoul", region_admin_codes={"seoul": frozenset({"11"})},
             supported_content_types=frozenset({"12"}),
@@ -214,9 +214,9 @@ class IdentityContractTests(unittest.TestCase):
 
 
 class EligibilityContractTests(unittest.TestCase):
-    def test_region_district_active_status_and_supported_type_are_hard_constraints(self) -> None:
+    def test_snapshot_membership_region_district_and_supported_type_are_hard_constraints(self) -> None:
         item = CatalogPoi("id", content_type_id="12", region_codes=frozenset({"11"}),
-                         district_codes=frozenset({"11110"}), catalog_status="active")
+                         district_codes=frozenset({"11110"}))
         rules = {"seoul": frozenset({"11"})}
         types = frozenset({"12"})
         self.assertEqual(eligibility_reason(item, request_region="seoul", region_admin_codes=rules,
@@ -224,14 +224,14 @@ class EligibilityContractTests(unittest.TestCase):
         self.assertEqual(eligibility_reason(item, request_region="seoul", region_admin_codes=rules,
                                             supported_content_types=types, request_district_code="11120"),
                          "outside_request_district")
-        unknown = CatalogPoi("id", content_type_id="12", region_codes=frozenset({"11"}))
-        self.assertEqual(eligibility_reason(unknown, request_region="seoul", region_admin_codes=rules,
-                                            supported_content_types=types), "catalog_status_unknown")
+        unknown_provider_state = CatalogPoi("id", content_type_id="12", region_codes=frozenset({"11"}))
+        self.assertEqual(eligibility_reason(unknown_provider_state, request_region="seoul", region_admin_codes=rules,
+                                            supported_content_types=types), "eligible")
 
     def test_single_district_code_field_is_considered_for_eligibility(self) -> None:
         item = CatalogPoi(
             "id", content_type_id="12", region_codes=frozenset({"11"}),
-            district_code="11110", catalog_status="active",
+            district_codes=frozenset({"11110"}),
         )
         self.assertEqual(
             eligibility_reason(
@@ -244,7 +244,7 @@ class EligibilityContractTests(unittest.TestCase):
     def test_observed_category_and_feedback_do_not_become_eligibility_inputs(self) -> None:
         # The API takes only request region/district and catalog policy. It has
         # no hook for observed visit category or post-event feedback.
-        item = CatalogPoi("id", content_type_id="12", region_codes=frozenset({"11"}), catalog_status="active")
+        item = CatalogPoi("id", content_type_id="12", region_codes=frozenset({"11"}))
         result = eligibility_reason(item, request_region="seoul", region_admin_codes={"seoul": frozenset({"11"})},
                                     supported_content_types=frozenset({"12"}))
         self.assertEqual(result, "eligible")
@@ -252,7 +252,7 @@ class EligibilityContractTests(unittest.TestCase):
 
     def test_region_and_content_type_codes_normalize_on_both_sides(self) -> None:
         item = CatalogPoi(
-            "id", content_type_id=" 12 ", region_codes=frozenset({" 11 "}), catalog_status=" ACTIVE "
+            "id", content_type_id=" 12 ", region_codes=frozenset({" 11 "})
         )
         self.assertEqual(
             eligibility_reason(
@@ -287,11 +287,10 @@ class CandidateCoverageTests(unittest.TestCase):
             CatalogPoi(
                 "product-region-poi", title="Place", address="Road 1",
                 content_type_id="12", region_codes=frozenset({"request-admin", "history-admin"}),
-                catalog_status="active",
             ),
             CatalogPoi(
                 "history-only-poi", title="Elsewhere", content_type_id="12",
-                region_codes=frozenset({"history-admin"}), catalog_status="active",
+                region_codes=frozenset({"history-admin"}),
             ),
         ))
         requests = [CandidateRequest(f"trip-{index}", "product-region") for index in range(10)]
@@ -326,7 +325,7 @@ class CandidateCoverageTests(unittest.TestCase):
     def test_real_path_aggregates_requests_without_emitting_ids(self) -> None:
         catalog = CatalogSnapshot("snapshot-v1", (CatalogPoi(
             "private-content-id", title="Place", address="Road 1", content_type_id="12",
-            region_codes=frozenset({"admin-11"}), catalog_status="active",
+            region_codes=frozenset({"admin-11"}),
         ),))
         requests = [CandidateRequest(f"private-trip-{index}", "synthetic-region") for index in range(10)]
         positives = [SourcePoi(f"private-source-{index}", "synthetic-region", "Place", address="Road 1",
