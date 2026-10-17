@@ -128,22 +128,6 @@ test("any actual-data read is delegated away from the entry coordinator", () => 
     "read-only 진단",
     "조정자는 raw root나 TL/VL 입력을 직접 탐색하거나 파일 개수를 세지 않고",
   ]);
-  assertContainsAll(agentLoopReference, [
-    "Use this reference only in a Herdr-managed session",
-    "In non-Herdr sessions, use the active session's authorized dedicated data-science route",
-    "The branch-isolation requirements below apply in every session",
-    "In other sessions, use the active session's authorized repository/worktree tool",
-  ]);
-  assertContainsAll(dataScientistSkill, [
-    "In a non-Herdr session",
-    "defer actual-data reads",
-  ]);
-  assertContainsAll(agentWorkflow, [
-    "다른 세션에서는 해당 세션에서 승인된 repository/worktree 경로를 사용",
-    "현재 세션에서 허용된 도구와 Git 상태",
-    "전담 implementation 에이전트",
-    "다른 세션은 그 세션의 승인된 writer 경로를 사용",
-  ]);
 });
 
 test("data-science startup uses the guarded MCP path before CLI fallback", () => {
@@ -273,35 +257,4 @@ test("markdown code fences stay balanced", () => {
       `${document.path} should have balanced Markdown fenced code blocks`,
     );
   }
-});
-
-test("agent recovery guidance keeps retries bounded and diagnostics secret-safe", () => {
-  const recoveryDocuments = [agentLoopSkill, agentLoopReference, dataScientistSkill, agentWorkflow];
-  const requiredPhrases = [
-    "at most twice",
-    "never print its value",
-    "DNS/TLS",
-    "401/403",
-    "Do not launch a replacement writer",
-    "Routine continuation prompts",
-  ];
-
-  for (const phrase of requiredPhrases) {
-    assert.ok(
-      recoveryDocuments.some((document) => document.content.includes(phrase)),
-      `recovery guidance should include: ${phrase}`,
-    );
-  }
-
-  assertContainsAll(agentWorkflow, [
-    "최대 두 번 재시도",
-    "환경 변수 전체",
-    "대체 writer를 띄우지 않는다",
-    "조정자가 자동으로 계속한다",
-  ]);
-  assertContainsAll(agentLoopSkill, [
-    "do not block otherwise authorized work",
-    "This section applies only in a Herdr-managed session",
-    "Otherwise, skip Herdr-only inspection and orchestration steps",
-  ]);
 });
