@@ -105,6 +105,15 @@ def _master_visit_diagnostics(visits, masters):
         key: _rate(value, denominator) for key, value in sorted(output.items())
         if key != "visit_poi_ids"
     }
+    stable_denominator = output.get("master_exists_stable", 0)
+    field_keys = ("name_differs", "sgg_differs", "lot_address_differs", "road_address_differs")
+    output["field_mismatch_rates_per_master_stable_poi"] = {
+        key: _rate(output.get(key, 0), stable_denominator) for key in field_keys
+    }
+    conflict_denominator = output.get("visit_internally_inconsistent", 0)
+    output["conflict_stabilization_rate"] = _rate(
+        output.get("visit_conflict_stabilized_by_master", 0), conflict_denominator
+    )
     return output
 
 
