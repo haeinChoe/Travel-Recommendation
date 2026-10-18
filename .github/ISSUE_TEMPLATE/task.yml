@@ -70,8 +70,8 @@ body:
   - type: textarea
     id: non_goals
     attributes:
-      label: Non-Goals
-      description: 함께 수행하지 않을 인접 작업과 결정하지 않을 사항을 적어주세요.
+      label: 범위 밖(Non-Goals)
+      description: 이번 작업에서 의도적으로 수행하지 않거나 결정하지 않을 인접 사항을 적어주세요.
     validations:
       required: true
 
