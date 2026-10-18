@@ -93,27 +93,27 @@ When the selected Issue requires any actual-data read or asks whether a recommen
 
 The permission contract, machine-local profile example, and validation boundary are documented in [`docs/data/data-science-agent.md`](../../../docs/data/data-science-agent.md).
 
-## Human-readable documentation review
+## 사람이 읽기 쉬운 문서 검토
 
-For documentation, Issue text, and PR descriptions, apply `docs/documentation-style-guide.md` as a review contract.
+문서, Issue 본문, PR 설명을 검토할 때 `docs/documentation-style-guide.md`를 검토 기준으로 적용한다.
 
-Before delivery, verify that a reader who did not see the agent conversation can answer:
+이전 에이전트 대화를 보지 않은 독자가 다음 질문에 답할 수 있는지 확인한다.
 
-1. Why does this change exist?
-2. What is the current status or result?
-3. What changed in meaning, if anything?
-4. What remains undecided?
-5. What should be reviewed or done next?
+1. 왜 이 변경이 필요한가?
+2. 현재 상태나 결과는 무엇인가?
+3. 기술적 의미가 바뀌었는가?
+4. 아직 결정되지 않은 것은 무엇인가?
+5. 사람이 무엇을 검토하거나 다음에 해야 하는가?
 
-Use Korean for ordinary explanation, while preserving exact identifiers and official technical names. Define specialized English terms at first use and align recommender terminology with `docs/recommendation/glossary.md`.
+일반 설명은 한국어를 우선하고 정확한 식별자·공식 기술명은 원문을 유지한다. 전문 영문 용어는 첫 등장 시 설명하고 추천 시스템 용어는 `docs/recommendation/glossary.md`와 의미를 맞춘다.
 
-Do not accept a document only because it is technically complete. Flag documentation that:
+다음 문서는 기술 내용이 맞더라도 가독성 문제로 지적한다.
 
-- places long command/output logs before the conclusion,
-- uses unexplained project-internal English terminology,
-- mixes facts, interpretation, decisions, and unresolved questions,
-- presents a table without explaining what decision it supports,
-- changes a data/model/evaluation contract while claiming to be wording-only cleanup.
+- 결론보다 긴 실행 명령·출력 로그가 먼저 나오는 문서
+- 프로젝트 내부 영문 용어를 설명 없이 사용하는 문서
+- 확인된 사실, 해석, 결정, 미결정을 섞어 쓰는 문서
+- 표가 어떤 판단을 지원하는지 설명하지 않는 문서
+- 표현만 정리한다고 하면서 데이터·모델·평가 계약의 의미를 바꾸는 문서
 
 ## Autonomous review loop
 
