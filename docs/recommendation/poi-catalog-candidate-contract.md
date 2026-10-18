@@ -470,6 +470,38 @@ same-region Master에 없는 ID만 네 권역 Master union에서 진단했다. m
 모든 split에서 `found_in_one_other_master`, `found_in_multiple_masters_same_metadata`, `found_in_multiple_masters_conflicting_metadata`는 source POI와 positive 단위 모두 0건 (각 same-region-missing 분모 대비 0.00%)이다. TL/VL positive 합계는 same-region missing 26,884/97,640이며 전부 네 권역 Master union에도 없었다. 교차 조회가 복구하는 positive가 0건이므로 지금은 D2를 추가하지 않고, canonical D를 유지한다.
 
 이번 follow-up에서는 기존 v4.4 fixed snapshot을 찾아 provider/manual/version/content hash metadata를 검증한 뒤 전체 comparator CLI를 다시 실행했다. API는 재호출하지 않았으며 승인된 TL/VL·Master 원본은 read-only로 사용했다. Git-ignored aggregate artifact를 full run 결과로 갱신했다.
+
+#### Arm E: Master-first + explicit visit fallback (후속 탐색 arm)
+
+Arm E는 canonical D를 대체하지 않는 별도 진단 경로다. `POI_ID`가 same-region `TN_POI_MASTER`에 있으면 Master signal을 사용하고, 없을 때만 visit-row signal로 fallback한다. 각 positive의 provenance를 `identity_metadata_source` (`master` / `visit_fallback`)로 집계해 artifact에 기록한다. TourAPI title/address identity search는 global snapshot을 사용하며 D와 같은 exact matching만 적용한다. Fuzzy, 좌표, 주소 유사도 matching은 추가하지 않았다.
+
+| 비교 지표 | D: Master + global | E: Master-first + visit fallback | E−D |
+| --- | ---: | ---: | ---: |
+| 전체 observed positives | 97,640 | 97,640 | — |
+| MATCHED | 4,696 (4.81%) | 5,195 (5.32%) | +499 |
+| AMBIGUOUS | 15,127 | 20,297 | +5,170 |
+| UNMATCHED | 50,933 | 72,148 | +21,215 |
+| candidate-contained | 2,097 (2.15%) | 2,423 (2.48%) | +326 |
+| conditional coverage | 44.66% | 46.64% | — |
+
+D의 세 status는 Master metadata를 가진 70,756 positives를 분모로 하며, 나머지 26,884건은 `identity_source_missing`이었다. E에서는 이 26,884건이 모두 `visit_fallback`으로 처리되어 전체 status 분포가 positives 전체를 포함한다. E status rate는 MATCHED 5,195/97,640 (5.32%), AMBIGUOUS 20,297/97,640 (20.79%), UNMATCHED 72,148/97,640 (73.89%)이다. E provenance는 positive 단위 `master` 70,756건 (72.47%), `visit_fallback` 26,884건 (27.53%)이다.
+
+Fallback subset의 exact 진단은 다음과 같다.
+
+| 지표 | count / denominator | 비율 |
+| --- | ---: | ---: |
+| fallback positives | 26,884 / 26,884 | 100.00% |
+| MATCHED | 499 / 26,884 | 1.86% |
+| AMBIGUOUS | 5,170 / 26,884 | 19.23% |
+| UNMATCHED | 21,215 / 26,884 | 78.91% |
+| global exact-title 후보 0 | 22,777 / 26,884 | 84.72% |
+| global exact-title 후보 1 | 3,894 / 26,884 | 14.48% |
+| global exact-title 후보 2+ | 213 / 26,884 | 0.79% |
+| candidate-contained | 326 / 26,884 | 1.21% |
+
+Fallback MATCHED 499건의 eligibility는 `eligible` 326 (65.33%), `unsupported_content_type` 173 (34.67%)다. Fallback의 identity resolution은 1.86%로 낮고, 5,170건은 source signal conflict 또는 exact matching ambiguity로 남았다. E가 D 대비 identity MATCHED를 499건, candidate-contained를 326건 늘렸지만, 이 fallback 결과만으로 source metadata의 품질이나 serving suitability를 확정할 수 없으므로 **E는 연구 arm으로 유지하고 canonical identity arm은 D로 유지한다.** `UNMATCHED`/`AMBIGUOUS`는 TourAPI catalog absence를 뜻하지 않으며 `catalog-outside = 판정 불가`를 유지한다.
+
+전체 비교와 fallback subset의 exact aggregate는 Git-ignored `results/experiments/poi-catalog-v1/identity-arms-20261018.json`에 기록했다. A/B/C/D 재계산 값은 이번에도 앞선 실행과 동일했다.
 #### Match method 및 eligibility reason
 
 B/D match method 비율 분모는 `identity_source_available`이며 `identity_source_missing`은 match method 집계에서 제외한다. Eligibility reason 분모는 각 arm의 MATCHED다.

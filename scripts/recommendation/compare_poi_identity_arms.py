@@ -25,9 +25,27 @@ from poi_catalog_policy import load_poi_catalog_policy
 from tourapi_snapshot_adapter import TourApiFieldMap, read_tourapi_snapshot_csv
 
 FIELDS = ("POI_NM", "SGG_CD", "LOTNO_ADDR", "ROAD_NM_ADDR")
-ARM_META = {"A": "visit", "B": "master", "C": "visit", "D": "master"}
-ARM_SCOPE = {"A": "source_region", "B": "source_region", "C": "global", "D": "global"}
+ARM_META = {"A": "visit", "B": "master", "C": "visit", "D": "master",
+            "E": "master_first_visit_fallback"}
+ARM_SCOPE = {"A": "source_region", "B": "source_region", "C": "global", "D": "global",
+             "E": "global"}
 CANONICAL_IDENTITY_ARM = "D"
+
+
+def _arm_e_sources(master_sources, visit_sources, poi_ids):
+    """Choose metadata explicitly for Arm E and retain aggregateable provenance."""
+    selected = {}
+    provenance = {}
+    for poi_id in poi_ids:
+        if poi_id in master_sources:
+            selected[poi_id] = master_sources[poi_id]
+            provenance[poi_id] = "master"
+        elif poi_id in visit_sources:
+            selected[poi_id] = visit_sources[poi_id]
+            provenance[poi_id] = "visit_fallback"
+        else:
+            provenance[poi_id] = "identity_source_missing"
+    return selected, provenance
 
 
 def _master_rows(root: Path) -> dict[str, set[tuple[str, str, str, str]]]:
@@ -153,7 +171,7 @@ def _cross_region_master_diagnostic(source_poi_ids, positives, region, masters_b
 
 
 def _arm_counts(region, role, sources, positives, catalog, regional_index, global_index,
-                all_codes, policy, arm):
+                all_codes, policy, arm, provenance_by_id=None):
     scope, metadata = ARM_SCOPE[arm], ARM_META[arm]
     admin = {k: frozenset(v) for k, v in policy.product_region_to_ldong_regn_cd.items()}
     supported = frozenset(policy.supported_content_type_ids)
@@ -176,8 +194,6 @@ def _arm_counts(region, role, sources, positives, catalog, regional_index, globa
         if not regional_candidates:
             title_diag[{0: "global_exact_title_absent", 1: "exact_title_exists_outside_source_region_single"}.get(
                 len(global_candidates), "exact_title_exists_outside_source_region_multiple")] += 1
-        if metadata == "master" and not signals:
-            continue
         matches[poi_id] = _resolve_one(poi_id, signals, region, lookup, admin,
                                        global_scope=scope == "global")
     catalog_by_id = {item.content_id: item for item in catalog}
@@ -195,8 +211,18 @@ def _arm_counts(region, role, sources, positives, catalog, regional_index, globa
     identity_source_available = 0
     identity_source_missing = 0
     title_diagnostic_positive_denominator = 0
+    provenance_positive = Counter()
+    fallback_status = Counter()
+    fallback_title_buckets = Counter()
+    fallback_contained = 0
+    fallback_eligibility = Counter()
     for _trip, poi_id in positives:
-        source_available = metadata != "master" or bool(sources.get(poi_id))
+        provenance = (provenance_by_id or {}).get(poi_id)
+        if arm == "E":
+            provenance_positive[provenance or "identity_source_missing"] += 1
+            source_available = provenance in {"master", "visit_fallback"}
+        else:
+            source_available = metadata != "master" or bool(sources.get(poi_id))
         if source_available:
             identity_source_available += 1
             title_diagnostic_positive_denominator += 1
@@ -211,13 +237,18 @@ def _arm_counts(region, role, sources, positives, catalog, regional_index, globa
         regional_count = len({item.content_id for name in names
                               for item in regional_index.get((region, name), [])})
         selected_count = global_count if scope == "global" else regional_count
-        positive_title_buckets["0" if selected_count == 0 else "1" if selected_count == 1 else "2+"] += 1
+        title_bucket = "0" if selected_count == 0 else "1" if selected_count == 1 else "2+"
+        positive_title_buckets[title_bucket] += 1
+        if arm == "E" and provenance == "visit_fallback":
+            fallback_title_buckets[title_bucket] += 1
         if regional_count == 0:
             positive_global_diagnostic["global_exact_title_absent" if global_count == 0 else
                                        "exact_title_exists_outside_source_region_single" if global_count == 1 else
                                        "exact_title_exists_outside_source_region_multiple"] += 1
         positive_status[result.status] += 1
         methods[result.method or "no_exact_signal"] += 1
+        if arm == "E" and provenance == "visit_fallback":
+            fallback_status[result.status] += 1
         if result.status == "MATCHED" and result.canonical_item_id:
             item = catalog_by_id[result.canonical_item_id]
             reason = eligibility_reason(item, request_region=region,
@@ -228,8 +259,14 @@ def _arm_counts(region, role, sources, positives, catalog, regional_index, globa
             ineligible[reason] += 1
             if result.canonical_item_id in eligible_ids:
                 contained += 1
+                if arm == "E" and provenance == "visit_fallback":
+                    fallback_contained += 1
+            if arm == "E" and provenance == "visit_fallback":
+                fallback_eligibility[reason] += 1
     total = len(positives)
     resolved = positive_status["MATCHED"]
+    fallback_total = sum(fallback_status.values())
+    fallback_resolved = fallback_status["MATCHED"]
     return {
         "arm": arm, "metadata": metadata, "identity_scope": scope,
         "all_positives": total, "MATCHED": positive_status["MATCHED"],
@@ -250,6 +287,23 @@ def _arm_counts(region, role, sources, positives, catalog, regional_index, globa
         "global_exact_title_diagnostic_positive_rates": _rate_map(
             dict(positive_global_diagnostic), title_diagnostic_positive_denominator),
         "positive_match_methods": dict(methods), "identity_source_missing": identity_source_missing,
+        "identity_metadata_source_by_positive": dict(provenance_positive),
+        "identity_metadata_source_by_source_poi": dict(Counter(
+            (provenance_by_id or {}).get(poi_id, "master") for poi_id in sources
+        )) if arm == "E" else {},
+        "visit_fallback_subset": ({
+            "all_positives": fallback_total,
+            "MATCHED": fallback_status["MATCHED"],
+            "AMBIGUOUS": fallback_status["AMBIGUOUS"],
+            "UNMATCHED": fallback_status["UNMATCHED"],
+            "identity_resolution_rate": _rate(fallback_resolved, fallback_total),
+            "exact_title_candidate_count_0_1_2plus": dict(fallback_title_buckets),
+            "exact_title_candidate_denominator": sum(fallback_title_buckets.values()),
+            "exact_title_candidate_rates": _rate_map(dict(fallback_title_buckets), sum(fallback_title_buckets.values())),
+            "candidate_contained": fallback_contained,
+            "matched_eligibility_reasons": dict(fallback_eligibility),
+            "matched_eligibility_reason_rates": _rate_map(dict(fallback_eligibility), fallback_resolved),
+        } if arm == "E" else {}),
         "positive_match_method_rates": _rate_map(
             dict(methods), identity_source_available if metadata == "master" else len(positives)),
         "candidate_contained": contained, "outside_candidate": resolved - contained,
@@ -333,26 +387,44 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
                 visit_all[poi_id].update(signals)
             for poi_id, signals in visit_master.items():
                 master_all[poi_id].update(signals)
-            for arm in "ABCD":
+            for arm in "ABCDE":
+                provenance = None
                 if ARM_META[arm] == "visit":
                     source_map = visits
                 else:
                     positive_ids = {poi_id for _, poi_id in positives}
-                    source_map = {poi_id: master[poi_id] for poi_id in positive_ids if poi_id in master}
+                    if arm == "E":
+                        source_map, provenance = _arm_e_sources(master, visits, positive_ids)
+                    else:
+                        source_map = {poi_id: master[poi_id] for poi_id in positive_ids if poi_id in master}
                 row = _arm_counts(region, role, source_map, positives, catalog,
-                                  regional_index, global_index, all_codes, policy, arm)
+                                  regional_index, global_index, all_codes, policy, arm, provenance)
                 row["region"], row["split"] = region, role
                 out["by_region_split_arm"].append(row)
         out["master_visit_metadata"][region + ":unique_poi_id"] = _master_visit_diagnostics(visit_all, master_all)
-    for arm in "ABCD":
+    for arm in "ABCDE":
         totals = Counter()
         for row in out["by_region_split_arm"]:
             if row["arm"] == arm:
                 for key in ("all_positives", "MATCHED", "AMBIGUOUS", "UNMATCHED", "candidate_contained", "outside_candidate",
                             "identity_source_available", "identity_source_missing", "positives_with_identity_source"):
                     totals[key] += row[key]
+                if arm == "E":
+                    totals.setdefault("identity_metadata_source_by_positive", Counter()).update(
+                        row["identity_metadata_source_by_positive"])
+                    totals.setdefault("identity_metadata_source_by_source_poi", Counter()).update(
+                        row["identity_metadata_source_by_source_poi"])
+                    fallback = totals.setdefault("visit_fallback_subset", Counter())
+                    subset = row["visit_fallback_subset"]
+                    for key in ("all_positives", "MATCHED", "AMBIGUOUS", "UNMATCHED", "candidate_contained"):
+                        fallback[key] += subset[key]
+                    for key in ("exact_title_candidate_count_0_1_2plus", "matched_eligibility_reasons"):
+                        fallback.setdefault(key, Counter()).update(subset[key])
         totals["identity_resolution_rate"] = _rate(totals["MATCHED"], totals["all_positives"])
         totals["identity_resolution_rate_all"] = _rate(totals["MATCHED"], totals["all_positives"])
+        totals["identity_resolution_status_rates"] = _rate_map(
+            {key: totals[key] for key in ("MATCHED", "AMBIGUOUS", "UNMATCHED")},
+            totals["all_positives"])
         totals["identity_resolution_rate_source_available"] = _rate(
             totals["MATCHED"], totals["identity_source_available"] or totals["all_positives"])
         totals["end_to_end_coverage"] = _rate(totals["candidate_contained"], totals["all_positives"])
@@ -377,7 +449,45 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
             }[metric]
             totals[rate_key] = _rate_map(dict(aggregate), denominator)
         totals["global_exact_title_diagnostic_positive_denominator"] = totals["positives_with_identity_source"]
+        if arm == "E":
+            provenance_positive = totals.pop("identity_metadata_source_by_positive")
+            provenance_source_poi = totals.pop("identity_metadata_source_by_source_poi")
+            totals["identity_metadata_source_by_positive"] = dict(provenance_positive)
+            totals["identity_metadata_source_positive_rates"] = _rate_map(
+                dict(provenance_positive), totals["all_positives"])
+            totals["identity_metadata_source_by_source_poi"] = dict(provenance_source_poi)
+            fallback = totals["visit_fallback_subset"]
+            fallback_total = fallback["all_positives"]
+            fallback_matched = fallback["MATCHED"]
+            fallback["exact_title_candidate_denominator"] = sum(
+                fallback["exact_title_candidate_count_0_1_2plus"].values())
+            fallback["exact_title_candidate_rates"] = _rate_map(
+                dict(fallback["exact_title_candidate_count_0_1_2plus"]),
+                fallback["exact_title_candidate_denominator"])
+            fallback["matched_eligibility_reason_rates"] = _rate_map(
+                dict(fallback["matched_eligibility_reasons"]), fallback_matched)
+            fallback["identity_resolution_rate"] = _rate(fallback_matched, fallback_total)
+            fallback["candidate_contained_rate_all"] = _rate(
+                fallback["candidate_contained"], fallback_total)
+            fallback["conditional_coverage"] = _rate(
+                fallback["candidate_contained"], fallback_matched)
+            fallback["identity_metadata_source"] = "visit_fallback"
+            fallback["identity_resolution_status_rates"] = _rate_map(
+                {key: fallback[key] for key in ("MATCHED", "AMBIGUOUS", "UNMATCHED")}, fallback_total)
         out["weighted_TL_VL"][arm] = dict(totals)
+    d, e = out["weighted_TL_VL"]["D"], out["weighted_TL_VL"]["E"]
+    fallback = e["visit_fallback_subset"]
+    out["D_to_E_comparison"] = {
+        "D_MATCHED": d["MATCHED"], "E_MATCHED": e["MATCHED"],
+        "MATCHED_increase": e["MATCHED"] - d["MATCHED"],
+        "D_candidate_contained": d["candidate_contained"],
+        "E_candidate_contained": e["candidate_contained"],
+        "candidate_contained_increase": e["candidate_contained"] - d["candidate_contained"],
+        "visit_fallback_subset_identity_resolution_rate": fallback["identity_resolution_rate"],
+        "visit_fallback_matched_eligibility_reasons": fallback["matched_eligibility_reasons"],
+        "canonical_identity_arm_remains": CANONICAL_IDENTITY_ARM,
+        "promotion_decision": "not_promoted_fallback_quality_requires_review",
+    }
     cross_weighted = {}
     for unit in ("source_poi", "observed_positive"):
         missing_total = Counter()

@@ -4,7 +4,7 @@ import unittest
 from collections import defaultdict
 
 from scripts.recommendation.compare_poi_identity_arms import (
-    CANONICAL_IDENTITY_ARM, _arm_counts, _cross_region_master_diagnostic,
+    CANONICAL_IDENTITY_ARM, _arm_counts, _arm_e_sources, _cross_region_master_diagnostic,
     _master_visit_diagnostics, _resolve_one,
 )
 from scripts.recommendation.poi_catalog_candidate_contract import (
@@ -87,6 +87,66 @@ class IdentityArmComparisonTests(unittest.TestCase):
         self.assertEqual(result["candidate_title_count_0_1_2plus_by_positive"], {"1": 1})
         self.assertEqual(result["MATCHED"] + result["AMBIGUOUS"] + result["UNMATCHED"]
                          + result["identity_source_missing"], result["all_positives"])
+
+    def _arm_e(self, master, visits, item, poi_id="poi"):
+        sources, provenance = _arm_e_sources(master, visits, {poi_id})
+        catalog = [item] if item else []
+        regional = {("capital", "name"): catalog} if item and item.title == "Name" else {}
+        global_ = {"name": catalog} if item and item.title == "Name" else {}
+        return _arm_counts("capital", "TL", sources, {("trip", poi_id)}, catalog,
+                           regional, global_, frozenset({"11", "26", "27", "50"}),
+                           self.policy, "E", provenance)
+
+    def test_arm_e_master_metadata_wins_when_visit_values_differ(self) -> None:
+        master = {"poi": {("Name", "11", "", "Road 1")}}
+        visits = {"poi": {("Other title", "26", "", "Other road")}}
+        sources, provenance = _arm_e_sources(master, visits, {"poi"})
+        self.assertEqual(sources["poi"], master["poi"])
+        self.assertEqual(provenance["poi"], "master")
+        item = CatalogPoi("canonical", title="Name", address="Road 1",
+                          content_type_id="12", region_codes=frozenset({"11"}))
+        result = _arm_counts("capital", "TL", sources, {("trip", "poi")}, [item],
+                             {("capital", "name"): [item]}, {"name": [item]},
+                             frozenset({"11", "26", "27", "50"}), self.policy, "E", provenance)
+        self.assertEqual(result["MATCHED"], 1)
+        self.assertEqual(result["identity_metadata_source_by_positive"], {"master": 1})
+
+    def test_arm_e_master_missing_uses_visit_fallback(self) -> None:
+        result = self._arm_e({}, {"poi": {("Name", "11", "", "Road 1")}},
+                             CatalogPoi("canonical", title="Name", address="Road 1",
+                                        content_type_id="12", region_codes=frozenset({"11"})))
+        self.assertEqual(result["MATCHED"], 1)
+        self.assertEqual(result["identity_metadata_source_by_positive"], {"visit_fallback": 1})
+        self.assertEqual(result["visit_fallback_subset"]["all_positives"], 1)
+
+    def test_arm_e_master_missing_visit_conflict_preserves_conflict_behavior(self) -> None:
+        result = self._arm_e({}, {"poi": {("Name", "11", "", "Road 1"),
+                                         ("Name", "11", "Lot 2", "Road 1")}}, None)
+        self.assertEqual((result["AMBIGUOUS"], result["MATCHED"]), (1, 0))
+        self.assertEqual(result["positive_match_methods"], {"source_signal_conflict": 1})
+
+    def test_arm_e_master_missing_visit_without_exact_title_is_unmatched(self) -> None:
+        item = CatalogPoi("canonical", title="Different", address="Road 1",
+                          content_type_id="12", region_codes=frozenset({"11"}))
+        result = self._arm_e({}, {"poi": {("Name", "11", "", "Road 1")}}, item)
+        self.assertEqual(result["UNMATCHED"], 1)
+        self.assertEqual(result["visit_fallback_subset"]["exact_title_candidate_count_0_1_2plus"], {"0": 1})
+
+    def test_arm_e_fallback_match_reports_unsupported_type(self) -> None:
+        item = CatalogPoi("canonical", title="Name", address="Road 1",
+                          content_type_id="39", region_codes=frozenset({"11"}))
+        result = self._arm_e({}, {"poi": {("Name", "11", "", "Road 1")}}, item)
+        self.assertEqual(result["MATCHED"], 1)
+        self.assertEqual(result["visit_fallback_subset"]["matched_eligibility_reasons"],
+                         {"unsupported_content_type": 1})
+
+    def test_arm_e_fallback_match_outside_request_region_is_not_eligible(self) -> None:
+        item = CatalogPoi("canonical", title="Name", address="Road 1",
+                          content_type_id="12", region_codes=frozenset({"26"}))
+        result = self._arm_e({}, {"poi": {("Name", "11", "", "Road 1")}}, item)
+        self.assertEqual(result["MATCHED"], 1)
+        self.assertEqual(result["visit_fallback_subset"]["matched_eligibility_reasons"],
+                         {"outside_request_region": 1})
 
     def test_cross_region_master_reports_one_other_master(self) -> None:
         masters = {"capital": {}, "west": {"poi": {("Name", "26", "Lot", "Road")} },
