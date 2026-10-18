@@ -120,6 +120,18 @@ The data-science agent may change analysis scripts, tests, notes, or experiment 
 
 Never run two writer agents concurrently in one worktree. If an Issue needs both roles, serialize ownership or use separate confirmed worktrees and an explicit integration step.
 
+## Human-readable evidence writing
+
+When writing an experiment note, Issue update, or PR description, follow `docs/documentation-style-guide.md` in addition to the technical contracts above.
+
+- Write the surrounding explanation in Korean by default. Keep exact code/data/API identifiers and official algorithm or metric names unchanged.
+- Define a specialized English term or abbreviation the first time it appears. Reuse the project's meaning from `docs/recommendation/glossary.md`.
+- Lead with the product/research question, current status, conclusion, unresolved point, and next decision. Put reproduction commands and detailed diagnostics later.
+- Explain what a table is intended to decide before presenting the table.
+- Separate **확인된 사실 / 해석 / 결정 / 미결정**. Do not turn an observed association, proxy, or unresolved identity result into a stronger claim through terminology.
+- Avoid copying a raw analysis log into a document. Preserve only the evidence needed to understand or reproduce the result.
+- If documentation cleanup exposes a contract or data-meaning problem outside the selected Issue, report it as a follow-up instead of silently changing the experiment meaning.
+
 ## Required handoff
 
 Return a compact, reviewable handoff containing:
