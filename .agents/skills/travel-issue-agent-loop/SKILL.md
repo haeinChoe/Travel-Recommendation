@@ -93,6 +93,28 @@ When the selected Issue requires any actual-data read or asks whether a recommen
 
 The permission contract, machine-local profile example, and validation boundary are documented in [`docs/data/data-science-agent.md`](../../../docs/data/data-science-agent.md).
 
+## Human-readable documentation review
+
+For documentation, Issue text, and PR descriptions, apply `docs/documentation-style-guide.md` as a review contract.
+
+Before delivery, verify that a reader who did not see the agent conversation can answer:
+
+1. Why does this change exist?
+2. What is the current status or result?
+3. What changed in meaning, if anything?
+4. What remains undecided?
+5. What should be reviewed or done next?
+
+Use Korean for ordinary explanation, while preserving exact identifiers and official technical names. Define specialized English terms at first use and align recommender terminology with `docs/recommendation/glossary.md`.
+
+Do not accept a document only because it is technically complete. Flag documentation that:
+
+- places long command/output logs before the conclusion,
+- uses unexplained project-internal English terminology,
+- mixes facts, interpretation, decisions, and unresolved questions,
+- presents a table without explaining what decision it supports,
+- changes a data/model/evaluation contract while claiming to be wording-only cleanup.
+
 ## Autonomous review loop
 
 Have the assigned writer (implementation or data-science) read the Issue, repository instructions, acceptance criteria, applicable role skill, and assigned scope before editing or reading actual data. It performs its authorized edits, tests/analysis, and review fixes in its assigned worktree. It may stage and commit only when the Issue or user authorization permits; it may push or create/update a PR only when explicitly authorized, and must never merge without separate authorization. The entry coordinator verifies the assigned writer's state, actual diff, and validation evidence read-only; it does not perform repository mutations.
