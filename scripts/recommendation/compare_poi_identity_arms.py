@@ -421,6 +421,47 @@ def _aggregate_name_recovery(aggregates):
     }
 
 
+def _normalize_address_a1(value: str) -> str:
+    """Conservative diagnostic-only normalization; preserves all address tokens."""
+    normalized = unicodedata.normalize("NFKC", value or "").casefold()
+    normalized = "".join(" " if unicodedata.category(char).startswith("P") else char
+                         for char in normalized)
+    return " ".join(normalized.split())
+
+
+def _address_relation_a2(source_address: str, catalog_address: str) -> str:
+    source = _normalize_address_a1(source_address)
+    catalog = _normalize_address_a1(catalog_address)
+    if not source:
+        return "source_address_missing"
+    if not catalog:
+        return "catalog_address_missing"
+    if source == catalog:
+        return "normalized_exact"
+    source_tokens, catalog_tokens = set(source.split()), set(catalog.split())
+    if source_tokens <= catalog_tokens:
+        return "source_tokens_subset_of_catalog"
+    if catalog_tokens <= source_tokens:
+        return "catalog_tokens_subset_of_source"
+    if source_tokens & catalog_tokens:
+        return "partial_overlap"
+    return "no_meaningful_overlap"
+
+
+def _strongest_address_relation_a2(source_addresses, catalog_addresses):
+    relations = [_address_relation_a2(source, catalog)
+                 for source in source_addresses for catalog in catalog_addresses]
+    if not source_addresses:
+        return "source_address_missing"
+    if not catalog_addresses or all(not _normalize_address_a1(address) for address in catalog_addresses):
+        return "catalog_address_missing"
+    priority = (
+        "normalized_exact", "source_tokens_subset_of_catalog", "catalog_tokens_subset_of_source",
+        "partial_overlap", "no_meaningful_overlap",
+    )
+    return next((relation for relation in priority if relation in relations), "catalog_address_missing")
+
+
 def _address_resolution_shadow(region, sources, positives, global_index, admin_codes):
     """Describe why Arm D ambiguous positives remain unresolved; never alters identity."""
     buckets = ("0", "1", "2+")
@@ -440,6 +481,8 @@ def _address_resolution_shadow(region, sources, positives, global_index, admin_c
         title_bucket = "0" if title_count == 0 else "1" if title_count == 1 else "2+"
         source_addresses = {normalize_text(value) for signal in signals for value in (signal[2], signal[3])
                             if normalize_text(value)}
+        source_address_values = [value for signal in signals for value in (signal[2], signal[3])
+                                 if _normalize_address_a1(value)]
         catalog_address_count = sum(bool(normalize_text(item.address)) for item in candidates)
         catalog_addresses = {normalize_text(item.address) for item in candidates if normalize_text(item.address)}
         exact_address_ids = {item.content_id for item in candidates
@@ -464,8 +507,37 @@ def _address_resolution_shadow(region, sources, positives, global_index, admin_c
                                 "lot_only" if has_lot else "none")
         catalog_address_presence = ("none" if not catalog_address_count else
                                     "all" if catalog_address_count == len(candidates) else "some")
+        a1_source_keys = {_normalize_address_a1(value) for value in source_address_values}
+        a1_catalog_by_id = {item.content_id: _normalize_address_a1(item.address) for item in candidates}
+        a1_selected_ids = {content_id for content_id, address in a1_catalog_by_id.items()
+                           if address and address in a1_source_keys}
+        if title_bucket == "1":
+            if not source_address_values:
+                a1_outcome = "source_missing"
+            elif not any(a1_catalog_by_id.values()):
+                a1_outcome = "catalog_address_missing"
+            elif a1_selected_ids:
+                a1_outcome = "normalized_exact"
+            else:
+                a1_outcome = "still_mismatch"
+            a1_source_missing = not source_address_values
+            a1_selected_bucket = "0" if not a1_selected_ids else "1"
+            a2_unresolved = a1_outcome != "normalized_exact"
+        else:
+            if len(a1_selected_ids) == 1:
+                a1_outcome = "exactly_one_candidate_selected"
+            elif len(a1_selected_ids) > 1:
+                a1_outcome = "multiple_candidates_selected"
+            else:
+                a1_outcome = "no_candidate_selected"
+            a1_source_missing = not source_address_values
+            a1_selected_bucket = ("0" if not a1_selected_ids else "1" if len(a1_selected_ids) == 1 else "2+")
+            a2_unresolved = a1_outcome != "exactly_one_candidate_selected"
+        a2_relation = (_strongest_address_relation_a2(
+            source_address_values, [item.address for item in candidates]) if a2_unresolved else None)
         ambiguous.append((title_bucket, result.method or "no_method", address_presence,
-                          catalog_address_presence, address_bucket, address_outcome))
+                          catalog_address_presence, address_bucket, address_outcome,
+                          a1_outcome, a1_source_missing, a1_selected_bucket, a2_relation))
 
     def summarize(rows):
         methods = Counter(row[1] for row in rows)
@@ -474,6 +546,11 @@ def _address_resolution_shadow(region, sources, positives, global_index, admin_c
         catalog_presence = Counter(row[3] for row in rows)
         address_buckets = Counter(row[4] for row in rows)
         outcomes = Counter(row[5] for row in rows)
+        a1_outcomes = Counter((row[0], row[6]) for row in rows)
+        a1_missing = Counter(row[0] for row in rows if row[7])
+        a1_selected = Counter((row[0], row[8]) for row in rows)
+        a2_relations = Counter(row[9] for row in rows if row[9])
+        a2_denominator = sum(a2_relations.values())
         denominator = len(rows)
         return {
             "ambiguous_positive_count": denominator,
@@ -485,6 +562,44 @@ def _address_resolution_shadow(region, sources, positives, global_index, admin_c
             "exact_address_candidate_counts_0_1_2plus": {key: address_buckets[key] for key in buckets},
             "address_resolution_outcome_counts": dict(outcomes),
             "address_resolution_outcome_rates": _rate_map(dict(outcomes), denominator),
+            "A1_outcome_counts_by_exact_title_candidate_count": {
+                bucket: {outcome: a1_outcomes[(bucket, outcome)] for outcome in (
+                    ("normalized_exact", "still_mismatch", "source_missing", "catalog_address_missing")
+                    if bucket == "1" else
+                    ("exactly_one_candidate_selected", "multiple_candidates_selected", "no_candidate_selected"))}
+                for bucket in ("1", "2+")
+            },
+            "A1_outcome_rates_by_exact_title_candidate_count": {
+                bucket: _rate_map(
+                    {outcome: a1_outcomes[(bucket, outcome)] for outcome in (
+                        ("normalized_exact", "still_mismatch", "source_missing", "catalog_address_missing")
+                        if bucket == "1" else
+                        ("exactly_one_candidate_selected", "multiple_candidates_selected", "no_candidate_selected"))},
+                    sum(1 for row in rows if row[0] == bucket))
+                for bucket in ("1", "2+")
+            },
+            "A1_selected_candidate_counts_by_exact_title_candidate_count": {
+                bucket: {selected: a1_selected[(bucket, selected)] for selected in ("0", "1", "2+")}
+                for bucket in ("1", "2+")
+            },
+            "A1_selected_candidate_rates_by_exact_title_candidate_count": {
+                bucket: _rate_map(
+                    {selected: a1_selected[(bucket, selected)] for selected in ("0", "1", "2+")},
+                    sum(1 for row in rows if row[0] == bucket))
+                for bucket in ("1", "2+")
+            },
+            "A1_source_address_missing_by_exact_title_candidate_count": {
+                bucket: a1_missing[bucket] for bucket in ("1", "2+")
+            },
+            "A2_denominator_unresolved_after_A1": a2_denominator,
+            "A2_address_relationship_counts": {key: a2_relations[key] for key in (
+                "normalized_exact", "source_tokens_subset_of_catalog", "catalog_tokens_subset_of_source",
+                "partial_overlap", "no_meaningful_overlap", "source_address_missing", "catalog_address_missing")},
+            "A2_address_relationship_rates": _rate_map(
+                {key: a2_relations[key] for key in (
+                    "normalized_exact", "source_tokens_subset_of_catalog", "catalog_tokens_subset_of_source",
+                    "partial_overlap", "no_meaningful_overlap", "source_address_missing", "catalog_address_missing")},
+                a2_denominator),
         }
 
     by_title_count = {}
@@ -503,13 +618,27 @@ def _aggregate_address_resolution_shadow(entries):
     def aggregate(rows):
         methods, source_address, catalog_address, address_buckets, outcomes = (
             Counter(), Counter(), Counter(), Counter(), Counter())
+        a1_outcomes = {bucket: Counter() for bucket in ("1", "2+")}
+        a1_selected = {bucket: Counter() for bucket in ("1", "2+")}
+        a1_missing = Counter()
+        a2_relations = Counter()
         for row in rows:
             methods.update(row["ambiguous_match_method_counts"])
             source_address.update(row["source_address_presence_counts"])
             catalog_address.update(row["catalog_candidate_address_presence_counts"])
             address_buckets.update(row["exact_address_candidate_counts_0_1_2plus"])
             outcomes.update(row["address_resolution_outcome_counts"])
+            for bucket in ("1", "2+"):
+                a1_outcomes[bucket].update(row["A1_outcome_counts_by_exact_title_candidate_count"][bucket])
+                a1_selected[bucket].update(row["A1_selected_candidate_counts_by_exact_title_candidate_count"][bucket])
+                a1_missing[bucket] += row["A1_source_address_missing_by_exact_title_candidate_count"][bucket]
+            a2_relations.update(row["A2_address_relationship_counts"])
         denominator = sum(row["ambiguous_positive_count"] for row in rows)
+        a2_denominator = sum(row["A2_denominator_unresolved_after_A1"] for row in rows)
+        a2_keys = (
+            "normalized_exact", "source_tokens_subset_of_catalog", "catalog_tokens_subset_of_source",
+            "partial_overlap", "no_meaningful_overlap", "source_address_missing", "catalog_address_missing",
+        )
         return {
             "ambiguous_positive_count": denominator,
             "ambiguous_match_method_counts": dict(methods),
@@ -518,6 +647,37 @@ def _aggregate_address_resolution_shadow(entries):
             "exact_address_candidate_counts_0_1_2plus": {key: address_buckets[key] for key in ("0", "1", "2+")},
             "address_resolution_outcome_counts": dict(outcomes),
             "address_resolution_outcome_rates": _rate_map(dict(outcomes), denominator),
+            "A1_outcome_counts_by_exact_title_candidate_count": {
+                bucket: {outcome: a1_outcomes[bucket][outcome] for outcome in (
+                    ("normalized_exact", "still_mismatch", "source_missing", "catalog_address_missing")
+                    if bucket == "1" else
+                    ("exactly_one_candidate_selected", "multiple_candidates_selected", "no_candidate_selected"))}
+                for bucket in ("1", "2+")
+            },
+            "A1_outcome_rates_by_exact_title_candidate_count": {
+                bucket: _rate_map(
+                    {outcome: a1_outcomes[bucket][outcome] for outcome in (
+                        ("normalized_exact", "still_mismatch", "source_missing", "catalog_address_missing")
+                        if bucket == "1" else
+                        ("exactly_one_candidate_selected", "multiple_candidates_selected", "no_candidate_selected"))},
+                    sum(row["exact_title_candidate_counts_0_1_2plus"][bucket] for row in rows))
+                for bucket in ("1", "2+")
+            },
+            "A1_selected_candidate_counts_by_exact_title_candidate_count": {
+                bucket: {selected: a1_selected[bucket][selected] for selected in ("0", "1", "2+")}
+                for bucket in ("1", "2+")
+            },
+            "A1_selected_candidate_rates_by_exact_title_candidate_count": {
+                bucket: _rate_map(
+                    {selected: a1_selected[bucket][selected] for selected in ("0", "1", "2+")},
+                    sum(row["exact_title_candidate_counts_0_1_2plus"][bucket] for row in rows))
+                for bucket in ("1", "2+")
+            },
+            "A1_source_address_missing_by_exact_title_candidate_count": dict(a1_missing),
+            "A2_denominator_unresolved_after_A1": a2_denominator,
+            "A2_address_relationship_counts": {key: a2_relations[key] for key in a2_keys},
+            "A2_address_relationship_rates": _rate_map(
+                {key: a2_relations[key] for key in a2_keys}, a2_denominator),
         }
 
     by_title = {key: aggregate(grouped[key]) for key in ("0", "1", "2+")}
@@ -849,6 +1009,7 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
            "name_candidate_recovery_by_region_split_positive": [],
            "name_candidate_recovery_by_region_unique_source_poi": [],
            "address_resolution_shadow_by_region_split": [],
+           "address_resolution_shadow_by_region_unique_source_poi": [],
            "weighted_TL_VL": {}, "methodology": "controlled_pipeline_comparison_not_causal_effect",
            "canonical_identity_arm": CANONICAL_IDENTITY_ARM,
            "manifest": {"dataset": "AI Hub Domestic Travel Log 2023", "splits": ["TL", "VL"],
@@ -917,6 +1078,13 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
             n1_index, n1_title_index, fuzzy_gram_index, recovery_cache)
         out["name_candidate_recovery_by_region_unique_source_poi"].append({
             "region": region, **unique_recovery["unique_source_poi"],
+        })
+        unique_address_shadow = _address_resolution_shadow(
+            region, masters_by_region[region],
+            [("", poi_id) for poi_id in sorted(region_positive_ids)], global_index,
+            {k: frozenset(v) for k, v in policy.product_region_to_ldong_regn_cd.items()})
+        out["address_resolution_shadow_by_region_unique_source_poi"].append({
+            "region": region, **unique_address_shadow,
         })
     for arm in "ABCDE":
         totals = Counter()
@@ -1032,6 +1200,11 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
         "arm": "D", "scope": "ambiguous_observed_positive_only",
         "canonical_matcher_unchanged": True,
         **_aggregate_address_resolution_shadow(out["address_resolution_shadow_by_region_split"]),
+    }
+    out["address_resolution_shadow_unique_source_poi"] = {
+        "arm": "D", "scope": "ambiguous_unique_(region,POI_ID)_among_observed_positive",
+        "canonical_matcher_unchanged": True,
+        **_aggregate_address_resolution_shadow(out["address_resolution_shadow_by_region_unique_source_poi"]),
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

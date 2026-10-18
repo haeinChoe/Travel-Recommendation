@@ -5,7 +5,8 @@ from collections import defaultdict
 
 from scripts.recommendation.compare_poi_identity_arms import (
     CANONICAL_IDENTITY_ARM, _arm_counts, _arm_e_sources, _compare_master_visit_identity,
-    _address_resolution_shadow, _cross_region_master_diagnostic,
+    _address_resolution_shadow, _address_relation_a2, _normalize_address_a1,
+    _cross_region_master_diagnostic,
     _diagnose_name_miss, _master_visit_diagnostics, _name_recovery_indexes,
     _name_recovery_for_units, _resolve_one, BRANCH_PATTERN,
 )
@@ -265,6 +266,95 @@ class IdentityArmComparisonTests(unittest.TestCase):
             "source_address_missing": 1,
         })
         self.assertEqual(result["source_address_presence_counts"]["none"], 1)
+
+    def test_address_a1_normalizes_punctuation_and_whitespace_only(self) -> None:
+        self.assertEqual(_normalize_address_a1(" 서울시  강남구, 테헤란로 12-3 "),
+                         _normalize_address_a1("서울시 강남구 테헤란로 12 3"))
+        self.assertEqual(_address_relation_a2("서울시 강남구, 테헤란로 12-3",
+                                              "서울시 강남구 테헤란로 12 3"), "normalized_exact")
+        self.assertEqual(_address_relation_a2("서울시 강남구 테헤란로",
+                                              "서울시 서초구 테헤란로"), "partial_overlap")
+
+    def test_address_a1_does_not_normalize_meaningful_text(self) -> None:
+        self.assertNotEqual(_normalize_address_a1("서울 강남구 테헤란로"),
+                            _normalize_address_a1("서울 서초구 테헤란로"))
+        self.assertEqual(_address_relation_a2("서울 강남구 테헤란로",
+                                              "서울 서초구 테헤란로"), "partial_overlap")
+
+    def test_address_a2_reports_token_relations_and_missing_values(self) -> None:
+        self.assertEqual(_address_relation_a2("서울 강남구", "서울 강남구 테헤란로"),
+                         "source_tokens_subset_of_catalog")
+        self.assertEqual(_address_relation_a2("서울 강남구 테헤란로", "서울 강남구"),
+                         "catalog_tokens_subset_of_source")
+        self.assertEqual(_address_relation_a2("서울 강남구", "서울 서초구"), "partial_overlap")
+        self.assertEqual(_address_relation_a2("서울 강남구", "부산 해운대구"), "no_meaningful_overlap")
+        self.assertEqual(_address_relation_a2("", "부산 해운대구"), "source_address_missing")
+        self.assertEqual(_address_relation_a2("서울 강남구", ""), "catalog_address_missing")
+
+    def test_address_shadow_a1_selects_unique_or_multiple_candidates(self) -> None:
+        def run(candidates, source_address):
+            sources = {"poi": {("Place", "", "", source_address)}}
+            result = _address_resolution_shadow(
+                "capital", sources, [("trip", "poi")],
+                {"place": candidates}, {"capital": frozenset({"11"})},
+            )["overall"]
+            return result
+
+        one = run([
+            CatalogPoi("a", title="Place", address="12-3 Main St.", content_type_id="12"),
+            CatalogPoi("b", title="Place", address="Other Road", content_type_id="12"),
+        ], "12 3 Main St")
+        self.assertEqual(one["exact_title_candidate_counts_0_1_2plus"]["2+"], 1)
+        self.assertEqual(one["A1_outcome_counts_by_exact_title_candidate_count"]["2+"]
+                         ["exactly_one_candidate_selected"], 1)
+        self.assertEqual(one["A1_selected_candidate_counts_by_exact_title_candidate_count"]["2+"]["1"], 1)
+
+        multiple = run([
+            CatalogPoi("a", title="Place", address="12-3 Main St", content_type_id="12"),
+            CatalogPoi("b", title="Place", address="12/3 Main St", content_type_id="12"),
+        ], "12 3 Main St")
+        self.assertEqual(multiple["A1_outcome_counts_by_exact_title_candidate_count"]["2+"]
+                         ["multiple_candidates_selected"], 1)
+
+    def test_address_shadow_keeps_a0_and_reports_a1_exact_and_unresolved(self) -> None:
+        exact = CatalogPoi("exact", title="Place", address="12-3 Main St.", content_type_id="12")
+        mismatch = CatalogPoi("mismatch", title="Other", address="Different Rd", content_type_id="12")
+        missing = CatalogPoi("missing", title="Missing", address="Catalog Rd", content_type_id="12")
+        sources = {
+            "exact": {("Place", "", "", "12 3 Main St")},
+            "mismatch": {("Other", "", "", "Source Rd")},
+            "missing": {("Missing", "", "", "")},
+        }
+        positives = [("t1", "exact"), ("t2", "mismatch"), ("t3", "missing"), ("t4", "exact")]
+        diagnostic = _address_resolution_shadow(
+            "capital", sources, positives,
+            {"place": [exact], "other": [mismatch], "missing": [missing]},
+            {"capital": frozenset({"11"})},
+        )["overall"]
+        self.assertEqual(diagnostic["ambiguous_positive_count"], 4)
+        self.assertEqual(diagnostic["A1_outcome_counts_by_exact_title_candidate_count"]["1"]["normalized_exact"], 2)
+        self.assertEqual(diagnostic["A1_outcome_counts_by_exact_title_candidate_count"]["1"]["still_mismatch"], 1)
+        self.assertEqual(diagnostic["A1_outcome_counts_by_exact_title_candidate_count"]["1"]["source_missing"], 1)
+        # A0 remains exact under the old normalizer, so the punctuation-only case
+        # also remains an A0 mismatch even though A1 diagnoses it as exact.
+        self.assertEqual(diagnostic["address_resolution_outcome_counts"]["address_mismatch"], 3)
+        self.assertEqual(diagnostic["address_resolution_outcome_counts"]["source_address_missing"], 1)
+
+    def test_address_shadow_has_distinct_unique_poi_and_repeated_positive_denominators(self) -> None:
+        candidates = [CatalogPoi("a", title="Place", address="Different", content_type_id="12")]
+        sources = {"poi": {("Place", "", "", "Source")}}
+        repeated = _address_resolution_shadow(
+            "capital", sources, [("t1", "poi"), ("t2", "poi")],
+            {"place": candidates}, {"capital": frozenset({"11"})},
+        )["overall"]
+        unique = _address_resolution_shadow(
+            "capital", sources, [("poi", "poi")],
+            {"place": candidates}, {"capital": frozenset({"11"})},
+        )["overall"]
+        self.assertEqual(repeated["ambiguous_positive_count"], 2)
+        self.assertEqual(unique["ambiguous_positive_count"], 1)
+        self.assertEqual(repeated["A1_outcome_counts_by_exact_title_candidate_count"]["1"]["still_mismatch"], 2)
+        self.assertEqual(unique["A1_outcome_counts_by_exact_title_candidate_count"]["1"]["still_mismatch"], 1)
 
     def test_name_recovery_multiple_relaxed_candidates_and_address_mismatch(self) -> None:
         items = [

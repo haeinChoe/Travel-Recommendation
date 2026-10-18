@@ -388,6 +388,52 @@ source address는 전체에서 road only 2,203 (14.56%), lot only 3,904 (25.81%)
 
 따라서 이 funnel에서는 exact-title 후보 1개인 모호성의 대부분이 source address mismatch 또는 source address missing으로 설명되고, 후보가 여러 개인 경우에는 66건에서 동일 exact address를 가진 복수 POI가 관찰됐다. 주소 mismatch의 원인이 표기 차이인지 실제 장소 차이인지는 판정하지 않는다. 기존 `MATCHED` 결과와 D의 4,696 MATCHED / 15,127 AMBIGUOUS / 50,933 UNMATCHED는 그대로다.
 
+#### A1 conservative address normalization / A2 token-relation shadow diagnostic
+
+같은 A0 15,127건과 같은 후보 집합에 두 개의 diagnostic-only 단계를 적용했다. **canonical matcher, A0 결과, MATCHED/AMBIGUOUS/UNMATCHED, 후보 포함 결과는 바꾸지 않았다.** A1은 NFKC, casefold, whitespace 정리 후 Unicode punctuation 문자를 separator로 정리한다. 행정구역 이름 변환, 도로명 alias, 숫자 변환, token 삭제는 없다. A1 exact도 identity 확정이나 `MATCHED`가 아니다.
+
+A1 결과는 observed-positive 단위에서 다음과 같다.
+
+| A0 exact-title 후보 수 | 분모 | A1 결과 | 정확 건수 (분모 대비 비율) |
+| --- | ---: | --- | ---: |
+| 1 | 14,698 | A1 normalized exact | 12 (0.08%) |
+| 1 | 14,698 | 여전히 mismatch | 14,226 (96.79%) |
+| 1 | 14,698 | source address 없음 | 460 (3.13%) |
+| 2+ | 429 | A1으로 후보 하나만 선택 | **0 (0.00%)** |
+| 2+ | 429 | A1으로 복수 후보 선택 | 66 (15.38%) |
+| 2+ | 429 | A1 후보 없음 | 363 (84.62%) |
+
+따라서 다수 title 후보 중 A1 주소 일치가 유일 후보로 좁혀진 경우는 0건이다. 단일 title 후보에서 A1 exact 12건이 추가 진단됐지만 canonical 상태는 계속 AMBIGUOUS다.
+
+A1 이후에도 해결되지 않은 observed positives는 **15,115/15,127 (99.92%)**다. A2는 이 분모에서 source `ROAD_NM_ADDR`와 `LOTNO_ADDR` 각각을 각 TourAPI candidate address와 비교한 token-set 관계를 진단한다. 한 positive에 비교 가능한 조합이 여러 개면 가장 강한 관계 하나를 보존하고, 우선순위는 `normalized_exact` > `source_tokens_subset_of_catalog` > `catalog_tokens_subset_of_source` > `partial_overlap` > `no_meaningful_overlap`이다. 모든 source address가 비었으면 `source_address_missing`, 모든 catalog candidate address가 비었으면 `catalog_address_missing`으로 분류한다. 이 우선순위는 분석 편의를 위한 것이며 token containment/overlap은 MATCHED 판정에 사용하지 않는다.
+
+| A2 관계 (A1 미해결 분모 15,115) | positives | rate |
+| --- | ---: | ---: |
+| `normalized_exact` | 66 | 0.44% |
+| `source_tokens_subset_of_catalog` | 2,448 | 16.20% |
+| `catalog_tokens_subset_of_source` | 966 | 6.39% |
+| `partial_overlap` | 8,491 | 56.18% |
+| `no_meaningful_overlap` | 2,684 | 17.76% |
+| `source_address_missing` | 460 | 3.04% |
+| `catalog_address_missing` | 0 | 0.00% |
+
+unique `(region, POI_ID)` 단위에서는 D AMBIGUOUS POI가 3,927개다. exact-title 후보 1개는 3,751/3,927 (95.52%), 2+는 176/3,927 (4.48%)다. 후보 1개에서 A1 normalized exact 5 (0.13%), mismatch 3,708 (98.85%), source address 없음 38 (1.01%)이다. 후보 2+에서 A1 유일 선택은 **0**, 복수 선택 5 (2.84%), 선택 없음 171 (97.16%)이다. A1 이후 unique unresolved 3,922개에서 A2는 `normalized_exact` 5 (0.13%), source token subset 645 (16.45%), catalog token subset 295 (7.52%), partial overlap 2,232 (56.91%), no overlap 707 (18.03%), source missing 38 (0.97%), catalog missing 0이다.
+
+권역 × TL/VL의 exact positive-weighted counts는 다음과 같다. A1 title-1 tuple의 순서는 `exact / mismatch / source-missing`, title-2+ tuple은 `unique / multiple / none`이다. A2 tuple은 A1 unresolved 분모에서 `normalized-exact / source-subset / catalog-subset / partial / no-overlap / source-missing` 순서다. 모든 행의 `catalog_address_missing`은 0이다. unique POI 상세는 동일 fixed artifact의 `address_resolution_shadow_by_region_unique_source_poi`에 있다.
+
+| Region / split | AMBIGUOUS | title 1 / 2+ | A1 title 1 exact / mismatch / source missing | A1 title 2+ unique / multiple / none | A2 exact / source-subset / catalog-subset / partial / no-overlap / source missing |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| capital / TL | 1,917 | 1,822 / 95 | 0 / 1,816 / 6 | 0 / 0 / 95 | 0 / 482 / 48 / 1,061 / 320 / 6 |
+| capital / VL | 255 | 239 / 16 | 0 / 238 / 1 | 0 / 0 / 16 | 0 / 62 / 10 / 137 / 45 / 1 |
+| west / TL | 3,090 | 2,983 / 107 | 6 / 2,957 / 20 | 0 / 10 / 97 | 10 / 322 / 90 / 2,110 / 532 / 20 |
+| west / VL | 381 | 370 / 11 | 0 / 367 / 3 | 0 / 2 / 9 | 2 / 28 / 11 / 264 / 73 / 3 |
+| east / TL | 3,319 | 3,239 / 80 | 0 / 3,210 / 29 | 0 / 2 / 78 | 2 / 505 / 134 / 2,168 / 481 / 29 |
+| east / VL | 387 | 375 / 12 | 0 / 375 / 0 | 0 / 3 / 9 | 3 / 65 / 10 / 259 / 50 / 0 |
+| jeju-islands / TL | 5,123 | 5,031 / 92 | 4 / 4,668 / 359 | 0 / 41 / 51 | 41 / 864 / 582 / 2,207 / 1,066 / 359 |
+| jeju-islands / VL | 655 | 639 / 16 | 2 / 595 / 42 | 0 / 8 / 8 | 8 / 120 / 81 / 285 / 117 / 42 |
+
+weighted 결과와 unique 결과의 차이는 반복 observed positives의 가중 때문이다. 예를 들어 A1 normalized exact는 weighted 12건이지만 unique POI는 5개다. A2의 최대 범주는 양쪽 단위에서 `partial_overlap`이며, 이는 문자열 token 일부가 겹친다는 진단일 뿐 같은 장소라는 확인이 아니다. A0 funnel, A/B/C/D/E, N0–N4는 이전 집계 artifact와 필드별 비교해 모든 기존 필드 값이 같음을 확인했다.
+
 #### Branch suffix tag boundary correction
 
 `branch_suffix_present`는 기존 bare `점`의 임의 위치 검색 대신 문자열 끝의 `지점`, `본점`, `DT점`, 또는 terminal `점`만 인식한다. 이를 통해 문자열 중간의 `점`이 branch suffix tag를 발생시키지 않는다. exact matcher에는 이 tag가 전달되지 않는다. D exact-title miss의 branch tag는 observed-positive 기준 5,958/50,933 (11.70%), 고유 POI 기준 2,343/20,856 (11.23%)으로 다시 집계했다. 이전보다 적어진 tag 수는 boundary correction에 따른 것이며 A/B/C/D/E의 status와 candidate coverage는 변경되지 않았다.
