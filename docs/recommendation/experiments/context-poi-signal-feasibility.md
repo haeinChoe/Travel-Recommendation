@@ -1,28 +1,78 @@
-# Context × POI 추천 신호 feasibility
+# 여행 문맥 × POI 추천 신호 타당성 검증
 
-**Issue:** [#45](https://github.com/haeinChoe/Travel-Recommendation/issues/45)  
-**상태:** **교정 프로토콜 4권역 재실행 완료 / Inconclusive**
+**관련 Issue:** [#45](https://github.com/haeinChoe/Travel-Recommendation/issues/45)  
+**현재 상태:** 교정 프로토콜 4개 권역 재실행 완료 / **판정 보류(Inconclusive)**
 
-> 이전 run `issue45-context-poi-pairs-20261012T141933Z-c6a1b9`은 preliminary evidence로만 보존합니다.
-> 아래 결론은 POI-only 비교를 바로잡은 run `issue45-context-poi-poionly-20261013T040619Z-9519be`의 결과에 근거합니다.
+## 한눈에 보기
 
-## 1. 이 실험이 답하려는 질문
+### 이 문서가 답하려는 질문
 
-2023 AI Hub 국내 여행로그에서 다음을 구분해서 확인합니다.
+2023 AI Hub 국내 여행로그에서 **여행 문맥(context)**이 어떤 POI를 방문하는지와 관련된 신호를 제공하는지, 그리고 그 신호가 단순한 권역·인기도·POI 분류 정보보다 추가적인 예측 가치를 갖는지 확인한다.
 
-1. 여행 context 자체에 POI 선택과 관련된 신호가 있는가?
-2. 어떤 context feature/group의 신호가 TL에서 관측되고 VL에서도 재현되는가?
-3. context와 POI를 함께 볼 때 각각의 main effect보다 추가 predictive value가 있는가?
-4. region, popularity, broad POI category 같은 단순 신호를 고려한 뒤에도 context가 추가 정보를 주는가?
-5. basic POI와 richer POI metadata가 context에 추가 정보를 주는가?
+이 실험은 문맥 신호의 **탐색적·예측적 타당성**을 보는 실험이다. Top-K 추천 순위 품질이나 인과 효과를 직접 평가하지 않는다.
 
-이 실험은 exploratory / predictive feasibility입니다. 인과 효과, 프로덕션 ranking 품질, 최종 serving contract를 확정하지 않습니다.
+### 결론
 
-- TL: discovery / training
-- VL: external replication / validation
+여행 스타일, 동기, 목적지, 동반자, 시기 정보와 POI 특성 사이의 연관성(association)은 TL과 VL에서 관측됐다. 그러나 aggregate 평가에서 핵심 문맥 그룹 어느 것도 다수 클래스 기준 모델보다 방문 후 피드백 예측을 개선하지 못했다.
+
+권역, 인기도, 넓은 POI 카테고리를 먼저 사용한 뒤 문맥을 추가해도 개선이 관측되지 않았고, 문맥과 POI를 결합한 joint feature의 중앙 증분도 모든 그룹·대상에서 음수였다. 더 풍부한 POI 메타데이터의 추가 가치는 VL의 complete-case 지원 수가 `<10`이라 개인정보 보호 기준상 판단할 수 없었다.
+
+따라서 **문맥과 POI 사이에 신호가 있다는 사실을 곧바로 추천 순위 성능 개선의 근거로 사용하지 않는다.**
+
+### 현재 결정된 것
+
+- 이 결과만으로 문맥 기반 순위 모델로 진행한다고 결정하지 않는다.
+- 방문 후 만족도·재방문 의향·추천 의향은 추천 시점 입력 특성으로 사용하지 않는다.
+- 미방문 POI를 자동으로 음성(negative)으로 만들지 않는다.
+- 기본 `poi_only` 비교와 richer POI 비교를 분리한다.
+- 연관성, 예측 가치, 인과 효과, 추천 순위 품질을 서로 다른 주장으로 취급한다.
+
+### 아직 결정되지 않은 것
+
+- 문맥이 실제 Top-K POI 순위를 개선하는지
+- 최종 후보 집합(candidate set)과 미방문 항목의 평가 의미
+- canonical POI identity
+- richer POI 메타데이터의 실제 추가 가치
+- 운영 시 사용할 특성과 UI에서 받을 여행 문맥
+- Two-Tower, LambdaMART 등을 포함한 최종 모델 선택
+
+### 다음 행동
+
+추천 순위 평가에 사용할 후보 집합과 평가 계약을 먼저 고정한 뒤, 충분한 VL 지원을 확보한 상태에서 단순 기준 모델과 문맥 기반 순위 모델을 같은 조건으로 비교한다. richer POI의 추가 가치는 개인정보 보호 기준을 만족하는 검증 코호트가 확보된 경우에만 다시 판단한다.
+
+> 이전 실행 `issue45-context-poi-pairs-20261012T141933Z-c6a1b9`은 예비 근거(preliminary evidence)로만 보존한다. 아래 상세 결과는 POI-only 비교를 바로잡은 `issue45-context-poi-poionly-20261013T040619Z-9519be`를 기준으로 한다.
+
+## 필요한 용어
+
+공통 추천 용어는 [추천 시스템 용어 사전](../glossary.md)을 따른다.
+
+- **여행 문맥(context)**: 한 번의 여행이나 추천 요청에 관련된 여행 스타일, 동기, 목적지, 동반자, 시기 등의 정보
+- **연관성(association)**: 두 변수가 함께 달라지는 통계적 관계. 인과관계나 추천 성능 개선을 뜻하지 않는다.
+- **추가 예측 가치(incremental predictive value)**: 이미 사용한 정보에 새 특성을 더했을 때 같은 평가 조건에서 예측 성능이 추가로 개선되는 정도
+- **특성 제거 비교(ablation)**: 특정 특성 또는 특성 그룹을 포함·제외한 모델을 비교해 그 정보의 기여를 확인하는 실험
+- **complete-case**: 비교에 필요한 모든 필드가 존재하는 관측치만 사용한 코호트
+- **main effects / joint feature**: 문맥과 POI를 각각 넣은 기준과 두 값을 결합한 범주형 특성을 추가한 비교
+- **richer POI**: 기본 권역·방문 유형·시군구보다 더 세부적인 POI master 분류 메타데이터를 사용한 표현
+- **privacy-limited**: 지원 수가 개인정보 보호 공개 기준보다 작아 지표를 공개하거나 결론에 사용할 수 없는 상태
+
+## 1. 이 실험이 답하려는 세부 질문
+
+2023 AI Hub 국내 여행로그에서 다음을 구분해서 확인한다.
+
+1. 여행 문맥 자체에 POI 선택과 관련된 신호가 있는가?
+2. 어떤 문맥 특성 또는 특성 그룹의 신호가 TL에서 관측되고 VL에서도 재현되는가?
+3. 문맥과 POI를 함께 볼 때 각각을 따로 사용한 경우보다 추가 예측 가치가 있는가?
+4. 권역(region), 인기도(popularity), 넓은 POI 카테고리 같은 단순 신호를 고려한 뒤에도 문맥이 추가 정보를 주는가?
+5. 기본 POI 정보보다 더 풍부한 POI 메타데이터가 추가 정보를 주는가?
+
+실험 경계:
+
+- TL: 탐색·학습(discovery / training)
+- VL: 외부 재현·검증(external replication / validation)
 - TL/VL 무작위 재분할 없음
-- unvisited POI를 negative로 만들지 않음
-- ranking metric은 이 실험 범위가 아님
+- 미방문 POI를 음성으로 만들지 않음
+- 추천 순위 지표는 이 실험 범위가 아님
+- 인과 효과, 운영 ranking 품질, 최종 serving contract를 확정하지 않음
 
 ## 2. 실제 Context Feature Contract
 
@@ -351,28 +401,39 @@ Context feature와 세 feedback target 간 association도 각각 계산했습니
 - 이전 corrected run의 `poi_only`는 richer metadata가 섞여 VL 지원 `<10`으로 privacy-limited였습니다. 새 basic-only `poi_only` 비교는 세 target 모두 VL 지원 `10+`이며 majority baseline보다 낮았습니다. `context_plus_richer_poi`와 `poi_vs_richer_poi` 오른쪽 비교는 여전히 `<10`으로 privacy-limited입니다.
 - Association과 joint-feature sensitivity는 새 run에서도 이전 corrected run과 동일한 집계 결과입니다. Preliminary run에는 joint-feature sensitivity가 없어 비교할 값이 없습니다.
 
-## 11. 결론 상태
+## 11. 판정 정리
 
-**Inconclusive — 현 결과만으로 context-aware ranking 진행 여부를 확정하지 않습니다.**
+### 확인된 사실
 
-근거:
+- 여행 스타일, 동기, 목적지, 동반자, 시기 문맥은 POI 특성과 TL 및 VL에서 연관성을 보였다.
+- aggregate 평가에서 핵심 문맥 그룹 어느 것도 다수 클래스 기준 모델보다 방문 후 피드백 예측을 개선하지 못했다.
+- 동일 코호트에서 권역, 인기도, 넓은 POI 카테고리에 문맥을 추가해도 개선되지 않았다.
+- 문맥 × POI joint feature의 중앙 증분은 모든 그룹과 대상에서 음수였다.
+- 기본 POI를 문맥에 추가한 변화는 작고 대상별 방향이 일관되지 않았다.
+- richer POI 증분 비교는 VL complete-case 지원이 `<10`이어서 `privacy-limited`였다.
+- 실제 Top-K ranking, 최종 후보 집합, 미방문 음성 정의는 이 실험에서 평가하지 않았다.
 
-- Style, motive, destination, companion, temporal context는 POI feature와 TL 및 VL에서 association을 보였습니다. 이는 non-causal association이며, 높은 V만으로 predictive contribution을 뜻하지 않습니다.
-- In the aggregate evaluation, no primary context group improved feedback prediction over the majority baseline. 동일 코호트 비교에서도 region, popularity, broad category에 context를 더한 결과가 개선되지 않았고, context×POI joint-feature의 중앙 increment도 모든 group/target에서 음수였습니다.
-- Basic POI를 context에 추가한 변화는 작고 target 간 일관되지 않았습니다. Richer POI 증분은 VL complete-case 지원이 `<10`이라 privacy-limited이며 결론을 낼 수 없습니다.
-- 실제 Top-K ranking, candidate universe와 unvisited negative는 평가하지 않았습니다. 따라서 association 신호를 ranking 성능의 증거로 확대하지 않습니다.
+### 해석
 
-이 결론은 `Reconsider`가 아닙니다. 여러 context–POI association이 TL/VL에서 관찰됐고, richer POI 비교는 privacy-limited였기 때문입니다. 다음 판단에는 ranking용 평가 계약과 충분한 richer-POI validation 지원이 필요합니다.
+문맥과 POI 사이에 통계적 연관성이 있다는 사실과, 그 문맥이 실제 추천 순위를 개선한다는 주장은 다르다. 이번 결과에서는 연관성은 관측됐지만 단순 신호를 넘어서는 일관된 추가 예측 가치는 확인되지 않았다.
 
-## 12. 여전히 이 실험이 답하지 않는 것
+또한 richer POI의 결과가 제한된 이유는 "효과가 없다"가 아니라 검증 지원 수가 개인정보 보호 기준보다 작아 판단할 수 없기 때문이다.
 
-- context가 Top-K POI ranking을 실제로 개선하는지
-- unvisited candidate의 negative 정의
-- 최종 candidate universe
+### 결정
+
+**판정 보류(Inconclusive).**
+
+현재 결과만으로 문맥 기반 ranking 진행 여부를 확정하지 않는다. 동시에 이 결과를 모델 방향의 폐기(Reconsider)로 해석하지도 않는다. 여러 문맥–POI 연관성이 TL/VL에서 관측됐고 richer POI 비교는 아직 충분한 검증 지원을 확보하지 못했기 때문이다.
+
+### 미결정 / 추가 검증 필요
+
+- 문맥이 Top-K POI ranking을 실제로 개선하는지
+- 미방문 후보의 음성 정의
+- 최종 후보 집합
 - canonical POI identity
-- production serving feature
-- UI에서 어떤 질문으로 context를 받을지
+- 운영 추천 시점 특성
+- UI에서 어떤 질문으로 여행 문맥을 받을지
 - Two-Tower / LambdaMART 등 최종 모델 선택
 - causal interaction
 
-이 항목들은 교정 run 결과를 바탕으로 후속 ranking/evaluation 및 #41에서 결정합니다.
+다음 판단에는 **추천 순위용 후보·평가 계약**과 충분한 richer-POI 검증 지원이 필요하다. 이 항목들은 교정 실행 결과를 바탕으로 후속 ranking/evaluation 작업과 #41에서 결정한다.
