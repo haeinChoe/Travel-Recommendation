@@ -362,7 +362,7 @@ python3 scripts/recommendation/analyze_poi_catalog_candidate_coverage.py --raw-r
 | C | visit row | 전체 snapshot |
 | D | `TN_POI_MASTER` | 전체 snapshot |
 
-`SourcePoi.region`은 dataset/historical provenance로 유지한다. Global arm에서는 이 값으로 identity 후보를 제한하지 않지만, `CandidateRequest.region`은 기존처럼 후보 eligibility hard filter로 적용한다. Master에 `POI_ID`가 없으면 `master_missing`으로 남기며 visit metadata로 fallback하지 않는다. `A→B`, `A→C`, `C→D`는 동일 입력을 바꾼 controlled pipeline comparison이며 엄밀한 인과효과로 해석하지 않는다. Global exact title은 진단만 수행하고 title 존재만으로 `MATCHED`를 만들지 않는다. `MATCHED` 이후 `unsupported_content_type`, `outside_request_region` 등을 별도로 센다.
+`SourcePoi.region`은 dataset/historical provenance로 유지한다. Global arm에서는 이 값으로 identity 후보를 제한하지 않지만, `CandidateRequest.region`은 기존처럼 후보 eligibility hard filter로 적용한다. Master에 `POI_ID`가 없으면 `identity_source_missing`으로만 기록하고 visit metadata로 fallback하지 않으며, title candidate funnel의 분모·0건·전역 title 부재 진단에서 제외한다. 따라서 B/D는 `identity_source_available`, `identity_source_missing`, 전체 positive 분모 identity rate와 Master metadata가 있는 positive 분모 identity rate를 각각 출력한다. Title 진단의 분모는 `positives_with_identity_source`로 명시한다. `A→B`, `A→C`, `C→D`는 동일 입력을 바꾼 controlled pipeline comparison이며 엄밀한 인과효과로 해석하지 않는다. Global exact title은 진단만 수행하고 title 존재만으로 `MATCHED`를 만들지 않는다. `MATCHED` 이후 `unsupported_content_type`, `outside_request_region` 등을 별도로 센다.
 
 고정 TourAPI snapshot은 `contentid, contenttypeid, title, addr1, lDongRegnCd, lDongSignguCd, lclsSystm1/2/3, modifiedtime` 필드로 되어 있어 `mapx/mapy`가 없다. 따라서 이번 고정 snapshot의 exact match로 거리분포를 계산할 수 없다. TourAPI v4.4 매뉴얼은 `mapX`를 WGS84 경도, `mapY`를 WGS84 위도로 정의하지만, AI Hub `TN_POI_MASTER.X_COORD/Y_COORD`의 CRS·축 의미를 설명하는 제공 문서는 확인되지 않았다. 그러므로 `coordinates_for_identity=false`를 유지하고 좌표 identity signal은 사용하지 않는다. 거리 검증을 수행하려면 좌표 필드가 포함된 승인된 TourAPI snapshot이 필요하다.
 
@@ -383,105 +383,124 @@ python3 scripts/recommendation/compare_poi_identity_arms.py \
 
 ### A/B/C/D 실제 데이터 비교 (2026-10-18)
 
-양성 관계는 모든 arm에서 동일한 distinct `(TRAVEL_ID, POI_ID)` 집합이다. A/B는 `SourcePoi.region`의 기존 제품 권역 제한을 identity 탐색에도 적용하고, C/D는 전체 snapshot에서 탐색한다. B/D는 `TN_POI_MASTER` metadata만 사용하며 master 미존재는 `master_missing`으로 두고 visit row 값으로 대체하지 않았다. 각 차이는 controlled pipeline comparison이고 인과 효과로 해석하지 않는다.
+양성 관계는 모든 arm에서 동일한 distinct `(TRAVEL_ID, POI_ID)` 집합이다. A/B는 `SourcePoi.region`의 기존 제품 권역 제한을 identity 탐색에도 적용하고, C/D는 전체 snapshot에서 탐색한다. B/D는 `TN_POI_MASTER` metadata만 사용하며 master 미존재는 `identity_source_missing`으로만 기록하고 visit row 값으로 대체하지 않았다. 각 차이는 controlled pipeline comparison이고 인과 효과로 해석하지 않는다.
 
-| Arm | all positives | MATCHED | AMBIGUOUS | UNMATCHED | identity rate | candidate-contained | end-to-end coverage | conditional coverage | outside candidate |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| A | 97,640 | 3,000 (3.07%) | 29,149 (29.85%) | 65,491 (67.07%) | 3.07% | 1,530 | 1.57% | 51.00% | 1,470 |
-| B | 97,640 | 4,289 (4.39%) | 12,924 (13.24%) | 80,427 (82.37%) | 4.39% | 2,097 | 2.15% | 48.89% | 2,192 |
-| C | 97,640 | 3,044 (3.12%) | 32,062 (32.84%) | 62,534 (64.05%) | 3.12% | 1,530 | 1.57% | 50.26% | 1,514 |
-| D | 97,640 | 4,696 (4.81%) | 15,127 (15.49%) | 77,817 (79.70%) | 4.81% | 2,097 | 2.15% | 44.66% | 2,599 |
+| Arm | all positives | MATCHED | AMBIGUOUS | UNMATCHED | identity_source_missing | identity rate all / source-available | candidate-contained | end-to-end coverage | conditional coverage | outside candidate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 97,640 | 3,000 (3.07%) | 29,149 (29.85%) | 65,491 (67.07%) | 0 | 3.07% / 3.07% | 1,530 | 1.57% | 51.00% | 1,470 |
+| B | 97,640 | 4,289 (4.39%) | 12,924 (13.24%) | 53,543 (54.84%) | 26,884 (27.53%) | 4.39% / 6.06% | 2,097 | 2.15% | 48.89% | 2,192 |
+| C | 97,640 | 3,044 (3.12%) | 32,062 (32.84%) | 62,534 (64.05%) | 0 | 3.12% / 3.12% | 1,530 | 1.57% | 50.26% | 1,514 |
+| D | 97,640 | 4,696 (4.81%) | 15,127 (15.49%) | 50,933 (52.16%) | 26,884 (27.53%) | 4.81% / 6.64% | 2,097 | 2.15% | 44.66% | 2,599 |
 
-A→B는 POI Master로 바꾼 경우 MATCHED **3,000→4,289 (+1,289; 3.07%→4.39%, +1.32%p)**, A→C는 source-region hard filter 제거만으로 **3,000→3,044 (+44; +0.05%p)**, C→D는 두 변경을 결합해 **3,044→4,696 (+1,652; +1.69%p)**다. D는 A 대비 MATCHED가 56.5% 늘었지만 전체 positives의 4.81%다. Candidate-contained는 A/C **1,530 (1.57%)**, B/D **2,097 (2.15%)**이고, D conditional coverage는 **44.66%**로 새 MATCHED의 상당수가 현재 후보 정책 밖이다. 따라서 identity 분석 canonical path는 D로 전환하되 전체 positive coverage가 2.15%이고 identity rate도 4.81%에 그쳐 결론은 **수정 후 재측정**이다. 제품 `CandidateRequest.region` hard eligibility와 `{12,14,28}` 정책은 그대로 유지한다.
+A→B는 POI Master로 바꾼 경우 MATCHED **3,000→4,289 (+1,289; 3.07%→4.39%, +1.32%p)**, A→C는 source-region hard filter 제거만으로 **3,000→3,044 (+44; 3.07%→3.12%, +0.05%p)**, C→D는 두 변경을 결합해 **3,044→4,696 (+1,652; 3.12%→4.81%, +1.69%p)**다. source-region hard filter 제거 효과는 작고, POI Master 사용 효과가 상대적으로 크다. 그러므로 region hard filter는 주요 failure source로 확인되지 않았으며, 현재 관찰된 더 큰 병목은 Master coverage와 title/address ontology다. D는 A 대비 MATCHED가 56.5% 늘었지만 전체 positives의 4.81%다. Candidate-contained는 A/C **1,530 (1.57%)**, B/D **2,097 (2.15%)**이고, D conditional coverage는 **44.66%**로 새 MATCHED의 상당수가 현재 후보 정책 밖이다. 따라서 identity 분석 canonical path는 D로 유지하되 전체 positive coverage가 2.15%이고 identity rate도 4.81%에 그쳐 결론은 **수정 후 재측정**이다. 제품 `CandidateRequest.region` hard eligibility와 `{12,14,28}` 정책은 그대로 유지한다.
 
 #### 권역/split별 arm 비교
 
-| 권역 / split | Arm | positives | MATCHED (rate) | AMBIGUOUS (rate) | UNMATCHED (rate) | candidate-contained (end-to-end) | conditional |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| capital / TL | A | 13,660 | 3 (0.02%) | 3,966 (29.03%) | 9,691 (70.94%) | 3 (0.02%) | 100.00% |
-| capital / TL | B | 13,660 | 487 (3.57%) | 1,858 (13.60%) | 11,315 (82.83%) | 220 (1.61%) | 45.17% |
-| capital / TL | C | 13,660 | 5 (0.04%) | 4,042 (29.59%) | 9,613 (70.37%) | 3 (0.02%) | 60.00% |
-| capital / TL | D | 13,660 | 489 (3.58%) | 1,917 (14.03%) | 11,254 (82.39%) | 220 (1.61%) | 44.99% |
-| capital / VL | A | 1,811 | 2 (0.11%) | 464 (25.62%) | 1,345 (74.27%) | 2 (0.11%) | 100.00% |
-| capital / VL | B | 1,811 | 60 (3.31%) | 248 (13.69%) | 1,503 (82.99%) | 32 (1.77%) | 53.33% |
-| capital / VL | C | 1,811 | 3 (0.17%) | 470 (25.95%) | 1,338 (73.88%) | 2 (0.11%) | 66.67% |
-| capital / VL | D | 1,811 | 60 (3.31%) | 255 (14.08%) | 1,496 (82.61%) | 32 (1.77%) | 53.33% |
-| west / TL | A | 19,584 | 28 (0.14%) | 6,414 (32.75%) | 13,142 (67.11%) | 16 (0.08%) | 57.14% |
-| west / TL | B | 19,584 | 633 (3.23%) | 2,964 (15.13%) | 15,987 (81.63%) | 370 (1.89%) | 58.45% |
-| west / TL | C | 19,584 | 30 (0.15%) | 6,591 (33.66%) | 12,963 (66.19%) | 16 (0.08%) | 53.33% |
-| west / TL | D | 19,584 | 644 (3.29%) | 3,090 (15.78%) | 15,850 (80.93%) | 370 (1.89%) | 57.45% |
-| west / VL | A | 2,357 | 4 (0.17%) | 652 (27.66%) | 1,701 (72.17%) | 2 (0.08%) | 50.00% |
-| west / VL | B | 2,357 | 65 (2.76%) | 364 (15.44%) | 1,928 (81.80%) | 40 (1.70%) | 61.54% |
-| west / VL | C | 2,357 | 4 (0.17%) | 670 (28.43%) | 1,683 (71.40%) | 2 (0.08%) | 50.00% |
-| west / VL | D | 2,357 | 65 (2.76%) | 381 (16.16%) | 1,911 (81.08%) | 40 (1.70%) | 61.54% |
-| east / TL | A | 20,456 | 198 (0.97%) | 8,616 (42.12%) | 11,642 (56.91%) | 72 (0.35%) | 36.36% |
-| east / TL | B | 20,456 | 841 (4.11%) | 3,219 (15.74%) | 16,396 (80.15%) | 397 (1.94%) | 47.21% |
-| east / TL | C | 20,456 | 199 (0.97%) | 8,755 (42.80%) | 11,502 (56.23%) | 72 (0.35%) | 36.18% |
-| east / TL | D | 20,456 | 853 (4.17%) | 3,319 (16.23%) | 16,284 (79.61%) | 397 (1.94%) | 46.54% |
-| east / VL | A | 2,468 | 29 (1.18%) | 756 (30.63%) | 1,683 (68.19%) | 8 (0.32%) | 27.59% |
-| east / VL | B | 2,468 | 100 (4.05%) | 374 (15.15%) | 1,994 (80.79%) | 56 (2.27%) | 56.00% |
-| east / VL | C | 2,468 | 29 (1.18%) | 776 (31.44%) | 1,663 (67.38%) | 8 (0.32%) | 27.59% |
-| east / VL | D | 2,468 | 104 (4.21%) | 387 (15.68%) | 1,977 (80.11%) | 56 (2.27%) | 53.85% |
-| jeju-islands / TL | A | 33,310 | 2,459 (7.38%) | 7,698 (23.11%) | 23,153 (69.51%) | 1,276 (3.83%) | 51.89% |
-| jeju-islands / TL | B | 33,310 | 1,891 (5.68%) | 3,482 (10.45%) | 27,937 (83.87%) | 884 (2.65%) | 46.75% |
-| jeju-islands / TL | C | 33,310 | 2,492 (7.48%) | 9,834 (29.52%) | 20,984 (63.00%) | 1,276 (3.83%) | 51.20% |
-| jeju-islands / TL | D | 33,310 | 2,222 (6.67%) | 5,123 (15.38%) | 25,965 (77.95%) | 884 (2.65%) | 39.78% |
-| jeju-islands / VL | A | 3,994 | 277 (6.94%) | 583 (14.60%) | 3,134 (78.47%) | 151 (3.78%) | 54.51% |
-| jeju-islands / VL | B | 3,994 | 212 (5.31%) | 415 (10.39%) | 3,367 (84.30%) | 98 (2.45%) | 46.23% |
-| jeju-islands / VL | C | 3,994 | 282 (7.06%) | 924 (23.13%) | 2,788 (69.80%) | 151 (3.78%) | 53.55% |
-| jeju-islands / VL | D | 3,994 | 259 (6.48%) | 655 (16.40%) | 3,080 (77.12%) | 98 (2.45%) | 37.84% |
-
+| 권역 / split | Arm | positives | MATCHED (rate/all positives) | AMBIGUOUS (rate/all positives) | UNMATCHED (count; rate/all positives) | identity_source_missing | candidate-contained (end-to-end) | conditional |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| capital / TL | A | 13,660 | 3 (0.02%) | 3,966 (29.03%) | 9,691 (70.94%) | 0 (0.00%) | 3 (0.02%) | 100.00% |
+| capital / TL | B | 13,660 | 487 (3.57%) | 1,858 (13.60%) | 6,292 (46.06%) | 5,023 (36.77%) | 220 (1.61%) | 45.17% |
+| capital / TL | C | 13,660 | 5 (0.04%) | 4,042 (29.59%) | 9,613 (70.37%) | 0 (0.00%) | 3 (0.02%) | 60.00% |
+| capital / TL | D | 13,660 | 489 (3.58%) | 1,917 (14.03%) | 6,231 (45.61%) | 5,023 (36.77%) | 220 (1.61%) | 44.99% |
+| capital / VL | A | 1,811 | 2 (0.11%) | 464 (25.62%) | 1,345 (74.27%) | 0 (0.00%) | 2 (0.11%) | 100.00% |
+| capital / VL | B | 1,811 | 60 (3.31%) | 248 (13.69%) | 871 (48.09%) | 632 (34.90%) | 32 (1.77%) | 53.33% |
+| capital / VL | C | 1,811 | 3 (0.17%) | 470 (25.95%) | 1,338 (73.88%) | 0 (0.00%) | 2 (0.11%) | 66.67% |
+| capital / VL | D | 1,811 | 60 (3.31%) | 255 (14.08%) | 864 (47.71%) | 632 (34.90%) | 32 (1.77%) | 53.33% |
+| west / TL | A | 19,584 | 28 (0.14%) | 6,414 (32.75%) | 13,142 (67.11%) | 0 (0.00%) | 16 (0.08%) | 57.14% |
+| west / TL | B | 19,584 | 633 (3.23%) | 2,964 (15.13%) | 10,779 (55.04%) | 5,208 (26.59%) | 370 (1.89%) | 58.45% |
+| west / TL | C | 19,584 | 30 (0.15%) | 6,591 (33.66%) | 12,963 (66.19%) | 0 (0.00%) | 16 (0.08%) | 53.33% |
+| west / TL | D | 19,584 | 644 (3.29%) | 3,090 (15.78%) | 10,642 (54.34%) | 5,208 (26.59%) | 370 (1.89%) | 57.45% |
+| west / VL | A | 2,357 | 4 (0.17%) | 652 (27.66%) | 1,701 (72.17%) | 0 (0.00%) | 2 (0.08%) | 50.00% |
+| west / VL | B | 2,357 | 65 (2.76%) | 364 (15.44%) | 1,250 (53.03%) | 678 (28.77%) | 40 (1.70%) | 61.54% |
+| west / VL | C | 2,357 | 4 (0.17%) | 670 (28.43%) | 1,683 (71.40%) | 0 (0.00%) | 2 (0.08%) | 50.00% |
+| west / VL | D | 2,357 | 65 (2.76%) | 381 (16.16%) | 1,233 (52.31%) | 678 (28.77%) | 40 (1.70%) | 61.54% |
+| east / TL | A | 20,456 | 198 (0.97%) | 8,616 (42.12%) | 11,642 (56.91%) | 0 (0.00%) | 72 (0.35%) | 36.36% |
+| east / TL | B | 20,456 | 841 (4.11%) | 3,219 (15.74%) | 10,223 (49.98%) | 6,173 (30.18%) | 397 (1.94%) | 47.21% |
+| east / TL | C | 20,456 | 199 (0.97%) | 8,755 (42.80%) | 11,502 (56.23%) | 0 (0.00%) | 72 (0.35%) | 36.18% |
+| east / TL | D | 20,456 | 853 (4.17%) | 3,319 (16.23%) | 10,111 (49.43%) | 6,173 (30.18%) | 397 (1.94%) | 46.54% |
+| east / VL | A | 2,468 | 29 (1.18%) | 756 (30.63%) | 1,683 (68.19%) | 0 (0.00%) | 8 (0.32%) | 27.59% |
+| east / VL | B | 2,468 | 100 (4.05%) | 374 (15.15%) | 1,208 (48.95%) | 786 (31.85%) | 56 (2.27%) | 56.00% |
+| east / VL | C | 2,468 | 29 (1.18%) | 776 (31.44%) | 1,663 (67.38%) | 0 (0.00%) | 8 (0.32%) | 27.59% |
+| east / VL | D | 2,468 | 104 (4.21%) | 387 (15.68%) | 1,191 (48.26%) | 786 (31.85%) | 56 (2.27%) | 53.85% |
+| jeju-islands / TL | A | 33,310 | 2,459 (7.38%) | 7,698 (23.11%) | 23,153 (69.51%) | 0 (0.00%) | 1,276 (3.83%) | 51.89% |
+| jeju-islands / TL | B | 33,310 | 1,891 (5.68%) | 3,482 (10.45%) | 20,448 (61.39%) | 7,489 (22.48%) | 884 (2.65%) | 46.75% |
+| jeju-islands / TL | C | 33,310 | 2,492 (7.48%) | 9,834 (29.52%) | 20,984 (63.00%) | 0 (0.00%) | 1,276 (3.83%) | 51.20% |
+| jeju-islands / TL | D | 33,310 | 2,222 (6.67%) | 5,123 (15.38%) | 18,476 (55.47%) | 7,489 (22.48%) | 884 (2.65%) | 39.78% |
+| jeju-islands / VL | A | 3,994 | 277 (6.94%) | 583 (14.60%) | 3,134 (78.47%) | 0 (0.00%) | 151 (3.78%) | 54.51% |
+| jeju-islands / VL | B | 3,994 | 212 (5.31%) | 415 (10.39%) | 2,472 (61.89%) | 895 (22.41%) | 98 (2.45%) | 46.23% |
+| jeju-islands / VL | C | 3,994 | 282 (7.06%) | 924 (23.13%) | 2,788 (69.80%) | 0 (0.00%) | 151 (3.78%) | 53.55% |
+| jeju-islands / VL | D | 3,994 | 259 (6.48%) | 655 (16.40%) | 2,185 (54.71%) | 895 (22.41%) | 98 (2.45%) | 37.84% |
 #### Exact-title 후보 funnel과 global title 진단
 
-| Arm | exact-title 후보 0 | 후보 1 | 후보 2+ |
-| --- | ---: | ---: | ---: |
-| A | 75,530 (77.36%) | 21,592 (22.11%) | 518 (0.53%) |
-| B | 80,427 (82.37%) | 16,909 (17.32%) | 304 (0.31%) |
-| C | 72,103 (73.85%) | 24,552 (25.15%) | 985 (1.01%) |
-| D | 77,817 (79.70%) | 19,227 (19.69%) | 596 (0.61%) |
+B/D의 `identity_source_missing` positives는 title funnel에서 제외한다. 분모는 A/C에서 전체 positives 97,640, B/D에서 `positives_with_identity_source` 70,756이다.
 
-아래 진단은 **same-region exact title 후보가 0인 positive만** 분모로 한다. global title 존재만으로 MATCHED를 만들지 않는다.
-
-| Arm | global exact title 없음 | 다른 권역 단일 후보 | 다른 권역 다중 후보 | 분모 (same-region no-hit) |
+| Arm | title 후보 0 (rate/source denominator) | 후보 1 | 후보 2+ | title denominator |
 | --- | ---: | ---: | ---: | ---: |
-| A | 72,103 (95.46%) | 3,265 (4.32%) | 162 (0.21%) | 75,530 |
-| B | 77,817 (96.75%) | 2,499 (3.11%) | 111 (0.14%) | 80,427 |
-| C | 72,103 (95.46%) | 3,265 (4.32%) | 162 (0.21%) | 75,530 |
-| D | 77,817 (96.75%) | 2,499 (3.11%) | 111 (0.14%) | 80,427 |
+| A | 75,530 (77.36%) | 21,592 (22.11%) | 518 (0.53%) | 97,640 |
+| B | 53,543 (75.67%) | 16,909 (23.90%) | 304 (0.43%) | 70,756 |
+| C | 72,103 (73.85%) | 24,552 (25.15%) | 985 (1.01%) | 97,640 |
+| D | 50,933 (71.98%) | 19,227 (27.17%) | 596 (0.84%) | 70,756 |
 
-visit metadata 기준(A/C)은 same-region no-hit **75,530** 중 global title 없음 **72,103**, 다른 권역 단일 **3,265**, 다중 **162**이다. Master 기준(B/D)은 no-hit **80,427** 중 없음 **77,817**, 단일 **2,499**, 다중 **111**이다. `UNMATCHED != catalog-outside`이며 catalog 부재는 여전히 **판정 불가**다.
+Global title 진단은 같은 권역 title 후보가 0인 경우만 해당 category count에 기록한다. category rate의 분모는 아래와 같이 모든 identity-source-available positives이며, category count 합은 same-region no-hit positives 수다.
 
-#### MATCHED method 및 eligibility
+| Arm | global exact title 없음 | 다른 권역 단일 후보 | 다른 권역 다중 후보 | positives_with_identity_source |
+| --- | ---: | ---: | ---: | ---: |
+| A | 72,103 (73.85%) | 3,265 (3.34%) | 162 (0.17%) | 97,640 |
+| B | 50,933 (71.98%) | 2,499 (3.53%) | 111 (0.16%) | 70,756 |
+| C | 72,103 (73.85%) | 3,265 (3.34%) | 162 (0.17%) | 97,640 |
+| D | 50,933 (71.98%) | 2,499 (3.53%) | 111 (0.16%) | 70,756 |
 
-| Arm | method / reason | count | rate 분모 | rate |
+B/D는 각각 26,884건을 `identity_source_missing`으로 별도 기록하고 title 후보 0이나 `global_exact_title_absent`에 넣지 않았다. `identity_resolution_rate_all`은 B 4,289/97,640 (4.39%), D 4,696/97,640 (4.81%)이고, source-available rate는 B 4,289/70,756 (6.06%), D 4,696/70,756 (6.64%)다. A/C의 source-available 분모는 전체 97,640이다. `UNMATCHED != catalog-outside`이며 catalog 부재는 여전히 **판정 불가**다.
+
+#### Cross-region TN_POI_MASTER lookup 진단
+
+same-region Master에 없는 ID만 네 권역 Master union에서 진단했다. metadata 동일성은 `POI_NM`, `SGG_CD`, `LOTNO_ADDR`, `ROAD_NM_ADDR`의 원문 tuple equality로 확인했다. 이 진단은 D identity resolution에 편입되지 않는다.
+
+| 권역 / split | source POI same-region missing → absent from all | observed positive same-region missing → absent from all |
+| --- | ---: | ---: |
+| capital / TL | 4,203: 4,203 (100.00%) | 5,023: 5,023 (100.00%) |
+| capital / VL | 592: 592 (100.00%) | 632: 632 (100.00%) |
+| west / TL | 4,042: 4,042 (100.00%) | 5,208: 5,208 (100.00%) |
+| west / VL | 620: 620 (100.00%) | 678: 678 (100.00%) |
+| east / TL | 4,513: 4,513 (100.00%) | 6,173: 6,173 (100.00%) |
+| east / VL | 720: 720 (100.00%) | 786: 786 (100.00%) |
+| jeju-islands / TL | 4,692: 4,692 (100.00%) | 7,489: 7,489 (100.00%) |
+| jeju-islands / VL | 726: 726 (100.00%) | 895: 895 (100.00%) |
+
+모든 split에서 `found_in_one_other_master`, `found_in_multiple_masters_same_metadata`, `found_in_multiple_masters_conflicting_metadata`는 source POI와 positive 단위 모두 0건 (각 same-region-missing 분모 대비 0.00%)이다. TL/VL positive 합계는 same-region missing 26,884/97,640이며 전부 네 권역 Master union에도 없었다. 교차 조회가 복구하는 positive가 0건이므로 지금은 D2를 추가하지 않고, canonical D를 유지한다.
+
+이번 follow-up 실행 환경에는 fixed snapshot CSV가 연결되지 않아 기존 검증 snapshot의 A/B/C/D aggregate를 유지하고, 저장된 exact aggregate에서 Master 누락 positive의 상태/title 분모만 재분류했다. Cross-region Master 분포는 승인된 네 권역 원본을 다시 읽어 계산했다. 전체 comparator CLI 재생성은 snapshot 연결 후 기존 재현 명령으로 수행할 수 있다.
+#### Match method 및 eligibility reason
+
+B/D match method 비율 분모는 `identity_source_available`이며 `identity_source_missing`은 match method 집계에서 제외한다. Eligibility reason 분모는 각 arm의 MATCHED다.
+
+| Arm | method / reason | count | rate denominator | rate |
 | --- | --- | ---: | ---: | ---: |
-| A | `name_address` | 3,000 | 97,640 | 3.07% |
-| A | `exact_name_only_candidate` | 14,455 | 97,640 | 14.80% |
-| A | `source_signal_conflict` | 14,631 | 97,640 | 14.98% |
 | A | `conflicting_source_address_signals` | 63 | 97,640 | 0.06% |
+| A | `exact_name_only_candidate` | 14,455 | 97,640 | 14.80% |
+| A | `name_address` | 3,000 | 97,640 | 3.07% |
 | A | `no_exact_signal` | 65,491 | 97,640 | 67.07% |
+| A | `source_signal_conflict` | 14,631 | 97,640 | 14.98% |
 | A | `eligible` | 1,530 | 3,000 | 51.00% |
 | A | `unsupported_content_type` | 1,470 | 3,000 | 49.00% |
-| B | `name_address` | 4,289 | 97,640 | 4.39% |
-| B | `exact_name_only_candidate` | 12,863 | 97,640 | 13.17% |
-| B | `master_missing` | 26,884 | 97,640 | 27.53% |
-| B | `conflicting_source_address_signals` | 61 | 97,640 | 0.06% |
-| B | `no_exact_signal` | 53,543 | 97,640 | 54.84% |
+| B | `conflicting_source_address_signals` | 61 | 70,756 | 0.09% |
+| B | `exact_name_only_candidate` | 12,863 | 70,756 | 18.18% |
+| B | `name_address` | 4,289 | 70,756 | 6.06% |
+| B | `no_exact_signal` | 53,543 | 70,756 | 75.67% |
 | B | `eligible` | 2,097 | 4,289 | 48.89% |
 | B | `unsupported_content_type` | 2,192 | 4,289 | 51.11% |
-| C | `name_address` | 3,044 | 97,640 | 3.12% |
-| C | `exact_name_only_candidate` | 17,368 | 97,640 | 17.79% |
-| C | `source_signal_conflict` | 14,631 | 97,640 | 14.98% |
 | C | `conflicting_source_address_signals` | 63 | 97,640 | 0.06% |
+| C | `exact_name_only_candidate` | 17,368 | 97,640 | 17.79% |
+| C | `name_address` | 3,044 | 97,640 | 3.12% |
 | C | `no_exact_signal` | 62,534 | 97,640 | 64.05% |
+| C | `source_signal_conflict` | 14,631 | 97,640 | 14.98% |
 | C | `eligible` | 1,530 | 3,044 | 50.26% |
 | C | `outside_request_region` | 4 | 3,044 | 0.13% |
 | C | `unsupported_content_type` | 1,510 | 3,044 | 49.61% |
-| D | `name_address` | 4,696 | 97,640 | 4.81% |
-| D | `exact_name_only_candidate` | 15,061 | 97,640 | 15.43% |
-| D | `master_missing` | 26,884 | 97,640 | 27.53% |
-| D | `conflicting_source_address_signals` | 66 | 97,640 | 0.07% |
-| D | `no_exact_signal` | 50,933 | 97,640 | 52.16% |
+| D | `conflicting_source_address_signals` | 66 | 70,756 | 0.09% |
+| D | `exact_name_only_candidate` | 15,061 | 70,756 | 21.29% |
+| D | `name_address` | 4,696 | 70,756 | 6.64% |
+| D | `no_exact_signal` | 50,933 | 70,756 | 71.98% |
 | D | `eligible` | 2,097 | 4,696 | 44.66% |
 | D | `outside_request_region` | 173 | 4,696 | 3.68% |
 | D | `unsupported_content_type` | 2,426 | 4,696 | 51.66% |
@@ -504,7 +523,7 @@ D의 global MATCHED **4,696** 중 eligible **2,097 (44.66%)**, `unsupported_cont
 | visit/master LOTNO_ADDR 차이 | 26,032 | 26,032 | 100.00% |
 | visit/master ROAD_NM_ADDR 차이 | 19,270 | 26,032 | 74.02% |
 
-Positive-weighted `master_missing`은 **26,884/97,640 (27.53%)**다. Visit row의 내부 signal 불일치는 고유 POI_ID **2,149/45,353 (4.74%)**에서 관찰됐고 이 중 master 단일 metadata로 안정된 ID는 **1,629/2,149 (75.80%)**다. exact 필드 차이 비율은 의미/ontology 차이와 표기 차이를 구분하지 않는다.
+Positive-weighted `identity_source_missing`은 **26,884/97,640 (27.53%)**다. Visit row의 내부 signal 불일치는 고유 POI_ID **2,149/45,353 (4.74%)**에서 관찰됐고 이 중 master 단일 metadata로 안정된 ID는 **1,629/2,149 (75.80%)**다. exact 필드 차이 비율은 의미/ontology 차이와 표기 차이를 구분하지 않는다.
 
 
 **Metadata 차이 권역별 breakdown (고유 POI_ID 단위)**

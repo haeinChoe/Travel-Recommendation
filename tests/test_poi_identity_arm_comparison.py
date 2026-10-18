@@ -4,7 +4,8 @@ import unittest
 from collections import defaultdict
 
 from scripts.recommendation.compare_poi_identity_arms import (
-    CANONICAL_IDENTITY_ARM, _arm_counts, _master_visit_diagnostics, _resolve_one,
+    CANONICAL_IDENTITY_ARM, _arm_counts, _cross_region_master_diagnostic,
+    _master_visit_diagnostics, _resolve_one,
 )
 from scripts.recommendation.poi_catalog_candidate_contract import (
     CatalogPoi, SourcePoi, match_source_item,
@@ -64,8 +65,51 @@ class IdentityArmComparisonTests(unittest.TestCase):
         globals_ = {"name": catalog}
         result = _arm_counts("capital", "TL", {}, {("trip", "missing")}, catalog,
                              regions, globals_, frozenset({"11"}), self.policy, "B")
-        self.assertEqual(result["UNMATCHED"], 1)
+        self.assertEqual(result["UNMATCHED"], 0)
         self.assertEqual(result["identity_source_missing"], 1)
+        self.assertEqual(result["identity_source_available"], 0)
+        self.assertEqual(result["positives_with_identity_source"], 0)
+        self.assertEqual(result["candidate_title_count_0_1_2plus_by_positive"], {})
+        self.assertEqual(result["global_exact_title_diagnostic_by_positive"], {})
+        self.assertNotIn("global_exact_title_absent",
+                         result["global_exact_title_diagnostic_by_positive"])
+
+    def test_master_title_diagnostic_denominator_contains_available_positives_only(self) -> None:
+        item = CatalogPoi("canonical", title="Name", address="Road 1",
+                          content_type_id="12", region_codes=frozenset({"11"}))
+        result = _arm_counts("capital", "TL", {"available": {("Name", "", "", "Road 1")}},
+                             {("trip-1", "available"), ("trip-2", "missing")}, [item],
+                             {("capital", "name"): [item]}, {"name": [item]},
+                             frozenset({"11", "26", "27", "50"}), self.policy, "B")
+        self.assertEqual((result["identity_source_available"], result["identity_source_missing"]), (1, 1))
+        self.assertEqual(result["positives_with_identity_source"], 1)
+        self.assertEqual(result["candidate_title_count_positive_denominator"], 1)
+        self.assertEqual(result["candidate_title_count_0_1_2plus_by_positive"], {"1": 1})
+        self.assertEqual(result["MATCHED"] + result["AMBIGUOUS"] + result["UNMATCHED"]
+                         + result["identity_source_missing"], result["all_positives"])
+
+    def test_cross_region_master_reports_one_other_master(self) -> None:
+        masters = {"capital": {}, "west": {"poi": {("Name", "26", "Lot", "Road")} },
+                   "east": {}, "jeju-islands": {}}
+        result = _cross_region_master_diagnostic({"poi"}, [("trip", "poi")], "capital", masters)
+        expected = {"absent_from_all_masters": 0, "found_in_one_other_master": 1,
+                    "found_in_multiple_masters_same_metadata": 0,
+                    "found_in_multiple_masters_conflicting_metadata": 0}
+        self.assertEqual(result["source_poi"]["categories"], expected)
+        self.assertEqual(result["observed_positive"]["categories"], expected)
+
+    def test_cross_region_master_identical_metadata_is_classified(self) -> None:
+        metadata = ("Name", "26", "Lot", "Road")
+        masters = {"capital": {}, "west": {"poi": {metadata}},
+                   "east": {"poi": {metadata}}, "jeju-islands": {}}
+        result = _cross_region_master_diagnostic({"poi"}, [("trip", "poi")], "capital", masters)
+        self.assertEqual(result["source_poi"]["categories"]["found_in_multiple_masters_same_metadata"], 1)
+
+    def test_cross_region_master_conflicting_metadata_is_classified(self) -> None:
+        masters = {"capital": {}, "west": {"poi": {("Name", "26", "Lot", "Road")}},
+                   "east": {"poi": {("Name", "26", "Lot 2", "Road")}}, "jeju-islands": {}}
+        result = _cross_region_master_diagnostic({"poi"}, [("trip", "poi")], "capital", masters)
+        self.assertEqual(result["observed_positive"]["categories"]["found_in_multiple_masters_conflicting_metadata"], 1)
 
     def test_global_title_diagnostic_finds_candidate_outside_source_region(self) -> None:
         item = CatalogPoi("canonical", title="Museum", address="Different road",

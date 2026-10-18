@@ -117,6 +117,41 @@ def _master_visit_diagnostics(visits, masters):
     return output
 
 
+def _cross_region_master_diagnostic(source_poi_ids, positives, region, masters_by_region):
+    """Classify same-region Master misses using other regional Masters, without resolving identity."""
+    local = masters_by_region[region]
+    def classify(poi_id):
+        if poi_id in local:
+            return None
+        other = [(other_region, masters_by_region[other_region][poi_id])
+                 for other_region in REGIONS if other_region != region
+                 and poi_id in masters_by_region[other_region]]
+        if not other:
+            return "absent_from_all_masters"
+        if len(other) == 1:
+            return "found_in_one_other_master"
+        metadata = {signal for _, signals in other for signal in signals}
+        return ("found_in_multiple_masters_same_metadata" if len(metadata) == 1
+                else "found_in_multiple_masters_conflicting_metadata")
+
+    categories = ("absent_from_all_masters", "found_in_one_other_master",
+                  "found_in_multiple_masters_same_metadata",
+                  "found_in_multiple_masters_conflicting_metadata")
+    source_missing = {poi_id for poi_id in source_poi_ids if poi_id not in local}
+    positive_missing = [poi_id for _, poi_id in positives if poi_id not in local]
+    source_counts = Counter(classify(poi_id) for poi_id in source_missing)
+    positive_counts = Counter(classify(poi_id) for poi_id in positive_missing)
+    return {
+        "same_region_master_present_source_poi_count": len(set(source_poi_ids) - source_missing),
+        "source_poi": {"missing_in_same_region_master": len(source_missing),
+                       "categories": {key: source_counts[key] for key in categories},
+                       "category_rates": _rate_map({key: source_counts[key] for key in categories}, len(source_missing))},
+        "observed_positive": {"missing_in_same_region_master": len(positive_missing),
+                              "categories": {key: positive_counts[key] for key in categories},
+                              "category_rates": _rate_map({key: positive_counts[key] for key in categories}, len(positive_missing))},
+    }
+
+
 def _arm_counts(region, role, sources, positives, catalog, regional_index, global_index,
                 all_codes, policy, arm):
     scope, metadata = ARM_SCOPE[arm], ARM_META[arm]
@@ -157,9 +192,20 @@ def _arm_counts(region, role, sources, positives, catalog, regional_index, globa
     ineligible = Counter()
     positive_title_buckets = Counter()
     positive_global_diagnostic = Counter()
+    identity_source_available = 0
+    identity_source_missing = 0
+    title_diagnostic_positive_denominator = 0
     for _trip, poi_id in positives:
+        source_available = metadata != "master" or bool(sources.get(poi_id))
+        if source_available:
+            identity_source_available += 1
+            title_diagnostic_positive_denominator += 1
+        else:
+            identity_source_missing += 1
         result = matches.get(poi_id, MatchResult(poi_id, "UNMATCHED", None, "master_missing", 0))
         signals = sources.get(poi_id, set())
+        if not source_available:
+            continue
         names = sorted({normalize_text(signal[0]) for signal in signals if normalize_text(signal[0])})
         global_count = len({item.content_id for name in names for item in global_index.get(name, [])})
         regional_count = len({item.content_id for name in names
@@ -189,14 +235,23 @@ def _arm_counts(region, role, sources, positives, catalog, regional_index, globa
         "all_positives": total, "MATCHED": positive_status["MATCHED"],
         "AMBIGUOUS": positive_status["AMBIGUOUS"], "UNMATCHED": positive_status["UNMATCHED"],
         "identity_resolution_rate": _rate(resolved, total),
+        "identity_source_available": identity_source_available,
+        "identity_source_missing": identity_source_missing,
+        "identity_resolution_rate_all": _rate(resolved, total),
+        "identity_resolution_rate_source_available": _rate(resolved, identity_source_available),
         "candidate_title_count_0_1_2plus_by_source_poi": dict(title_buckets),
+        "candidate_title_count_source_poi_denominator": sum(title_buckets.values()),
         "candidate_title_count_0_1_2plus_by_positive": dict(positive_title_buckets),
-        "candidate_title_count_positive_rates": _rate_map(dict(positive_title_buckets), len(positives)),
+        "candidate_title_count_positive_denominator": title_diagnostic_positive_denominator,
+        "positives_with_identity_source": title_diagnostic_positive_denominator,
+        "candidate_title_count_positive_rates": _rate_map(dict(positive_title_buckets), title_diagnostic_positive_denominator),
         "global_exact_title_diagnostic_by_positive": dict(positive_global_diagnostic),
+        "global_exact_title_diagnostic_positive_denominator": title_diagnostic_positive_denominator,
         "global_exact_title_diagnostic_positive_rates": _rate_map(
-            dict(positive_global_diagnostic), sum(positive_global_diagnostic.values())),
-        "positive_match_methods": dict(methods), "identity_source_missing": methods["master_missing"],
-        "positive_match_method_rates": _rate_map(dict(methods), len(positives)),
+            dict(positive_global_diagnostic), title_diagnostic_positive_denominator),
+        "positive_match_methods": dict(methods), "identity_source_missing": identity_source_missing,
+        "positive_match_method_rates": _rate_map(
+            dict(methods), identity_source_available if metadata == "master" else len(positives)),
         "candidate_contained": contained, "outside_candidate": resolved - contained,
         "end_to_end_coverage": _rate(contained, total),
         "conditional_coverage": _rate(contained, resolved),
@@ -249,6 +304,7 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
            "current_policy_sha256": policy.policy_sha256,
            "coordinate_diagnostic": "not_estimable_fixed_snapshot_has_no_mapx_mapy; coordinates_for_identity=false",
            "by_region_split_arm": [], "master_visit_metadata": {},
+           "cross_region_master_lookup": [],
            "weighted_TL_VL": {}, "methodology": "controlled_pipeline_comparison_not_causal_effect",
            "canonical_identity_arm": CANONICAL_IDENTITY_ARM,
            "manifest": {"dataset": "AI Hub Domestic Travel Log 2023", "splits": ["TL", "VL"],
@@ -267,6 +323,10 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
             spec = next(s for s in specs if s.region == region and s.role == role)
             visits, positives, _ = _source_rows(spec)
             master = masters_by_region[region]
+            out["cross_region_master_lookup"].append({
+                "region": region, "split": role,
+                **_cross_region_master_diagnostic(set(visits), positives, region, masters_by_region),
+            })
             visit_master = {poi_id: master[poi_id] for poi_id in visits.keys() & master.keys()}
             out["master_visit_metadata"][f"{region}:{role}"] = _master_visit_diagnostics(visits, visit_master)
             for poi_id, signals in visits.items():
@@ -288,9 +348,13 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
         totals = Counter()
         for row in out["by_region_split_arm"]:
             if row["arm"] == arm:
-                for key in ("all_positives", "MATCHED", "AMBIGUOUS", "UNMATCHED", "candidate_contained", "outside_candidate"):
+                for key in ("all_positives", "MATCHED", "AMBIGUOUS", "UNMATCHED", "candidate_contained", "outside_candidate",
+                            "identity_source_available", "identity_source_missing", "positives_with_identity_source"):
                     totals[key] += row[key]
         totals["identity_resolution_rate"] = _rate(totals["MATCHED"], totals["all_positives"])
+        totals["identity_resolution_rate_all"] = _rate(totals["MATCHED"], totals["all_positives"])
+        totals["identity_resolution_rate_source_available"] = _rate(
+            totals["MATCHED"], totals["identity_source_available"] or totals["all_positives"])
         totals["end_to_end_coverage"] = _rate(totals["candidate_contained"], totals["all_positives"])
         totals["conditional_coverage"] = _rate(totals["candidate_contained"], totals["MATCHED"])
         for metric in ("candidate_title_count_0_1_2plus_by_positive", "positive_match_methods",
@@ -300,10 +364,11 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
                 if row["arm"] == arm:
                     aggregate.update(row.get(metric, {}))
             totals[metric] = dict(aggregate)
-            denominator = (totals["all_positives"] if metric in {
-                "candidate_title_count_0_1_2plus_by_positive", "positive_match_methods",
-            } else totals["MATCHED"] if metric == "matched_eligibility_reasons" else
-                          sum(aggregate.values()))
+            denominator = (totals["positives_with_identity_source"] if metric in {
+                "candidate_title_count_0_1_2plus_by_positive", "global_exact_title_diagnostic_by_positive",
+            } else totals["identity_source_available"] if metric == "positive_match_methods" and ARM_META[arm] == "master" else
+                          totals["all_positives"] if metric == "positive_match_methods" else
+                          totals["MATCHED"] if metric == "matched_eligibility_reasons" else sum(aggregate.values()))
             rate_key = {
                 "candidate_title_count_0_1_2plus_by_positive": "candidate_title_count_positive_rates",
                 "positive_match_methods": "positive_match_method_rates",
@@ -311,7 +376,22 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
                 "global_exact_title_diagnostic_by_positive": "global_exact_title_diagnostic_positive_rates",
             }[metric]
             totals[rate_key] = _rate_map(dict(aggregate), denominator)
+        totals["global_exact_title_diagnostic_positive_denominator"] = totals["positives_with_identity_source"]
         out["weighted_TL_VL"][arm] = dict(totals)
+    cross_weighted = {}
+    for unit in ("source_poi", "observed_positive"):
+        missing_total = Counter()
+        categories_total = Counter()
+        for row in out["cross_region_master_lookup"]:
+            missing_total[unit] += row[unit]["missing_in_same_region_master"]
+            categories_total.update(row[unit]["categories"])
+        missing_count = missing_total[unit]
+        cross_weighted[unit] = {
+            "missing_in_same_region_master": missing_count,
+            "categories": dict(categories_total),
+            "category_rates": _rate_map(dict(categories_total), missing_count),
+        }
+    out["cross_region_master_lookup_weighted_TL_VL"] = cross_weighted
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return out
