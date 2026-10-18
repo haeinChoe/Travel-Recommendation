@@ -48,6 +48,127 @@ def _arm_e_sources(master_sources, visit_sources, poi_ids):
     return selected, provenance
 
 
+def _compare_master_visit_identity(region, positives, visit_sources, master_sources, global_index, policy):
+    """Shadow-compare both metadata sources against the same global exact-match catalog."""
+    admin = {key: frozenset(value) for key, value in policy.product_region_to_ldong_regn_cd.items()}
+    comparisons = []
+    for _trip, poi_id in positives:
+        if poi_id not in visit_sources or poi_id not in master_sources:
+            continue
+
+        def resolve(signals):
+            names = {normalize_text(signal[0]) for signal in signals if normalize_text(signal[0])}
+            by_id = {item.content_id: item for name in names for item in global_index.get(name, [])}
+            return _resolve_one(poi_id, signals, region, list(by_id.values()), admin, global_scope=True)
+
+        visit_result = resolve(visit_sources[poi_id])
+        master_result = resolve(master_sources[poi_id])
+        if visit_result.method == "source_signal_conflict":
+            signal_class = "source_signal_conflict"
+        elif len(visit_sources[poi_id]) == 1:
+            signal_class = "single_metadata"
+        else:
+            signal_class = "other_visit_signal_outcome"
+        comparisons.append((master_result, visit_result, signal_class))
+
+    def summarize(rows):
+        pair_counts = Counter()
+        master_status = Counter()
+        visit_status = Counter()
+        both_same_contentid = 0
+        both_different_contentid = 0
+        for master_result, visit_result, _signal_class in rows:
+            master_status[master_result.status] += 1
+            visit_status[visit_result.status] += 1
+            pair_counts[f"Master_{master_result.status}_visit_{visit_result.status}"] += 1
+            if master_result.status == visit_result.status == "MATCHED":
+                if master_result.canonical_item_id == visit_result.canonical_item_id:
+                    both_same_contentid += 1
+                else:
+                    both_different_contentid += 1
+        both_matched = both_same_contentid + both_different_contentid
+        pair_counts["both_MATCHED_same_contentid"] = both_same_contentid
+        pair_counts["both_MATCHED_different_contentid"] = both_different_contentid
+        required_pairs = (
+            "Master_MATCHED_visit_MATCHED",
+            "Master_MATCHED_visit_AMBIGUOUS", "Master_MATCHED_visit_UNMATCHED",
+            "Master_AMBIGUOUS_visit_MATCHED", "Master_UNMATCHED_visit_MATCHED",
+            "Master_AMBIGUOUS_visit_AMBIGUOUS", "Master_UNMATCHED_visit_UNMATCHED",
+            "Master_AMBIGUOUS_visit_UNMATCHED", "Master_UNMATCHED_visit_AMBIGUOUS",
+        )
+        return {
+            "positive_count": len(rows),
+            "master_status_counts": {key: master_status[key] for key in ("MATCHED", "AMBIGUOUS", "UNMATCHED")},
+            "visit_status_counts": {key: visit_status[key] for key in ("MATCHED", "AMBIGUOUS", "UNMATCHED")},
+            "status_pair_counts": {key: pair_counts[key] for key in required_pairs},
+            "both_MATCHED": both_matched,
+            "both_MATCHED_same_contentid": both_same_contentid,
+            "both_MATCHED_different_contentid": both_different_contentid,
+            "canonical_contentid_agreement_rate_among_both_MATCHED": _rate(both_same_contentid, both_matched),
+            "status_pair_rates": _rate_map(
+                {key: pair_counts[key] for key in required_pairs}, len(rows)),
+            "master_status_rates": _rate_map(
+                {key: master_status[key] for key in ("MATCHED", "AMBIGUOUS", "UNMATCHED")}, len(rows)),
+            "visit_status_rates": _rate_map(
+                {key: visit_status[key] for key in ("MATCHED", "AMBIGUOUS", "UNMATCHED")}, len(rows)),
+        }
+
+    by_signal_class = {}
+    for signal_class in ("single_metadata", "source_signal_conflict", "other_visit_signal_outcome"):
+        by_signal_class[signal_class] = summarize([
+            row for row in comparisons if row[2] == signal_class
+        ])
+    return {
+        "scope": "positives_with_same_region_visit_and_master_metadata",
+        "matching": "global_snapshot_same_exact_rule_as_D",
+        "canonical_promotion": False,
+        "overall": summarize(comparisons),
+        "by_visit_signal_class": by_signal_class,
+    }
+
+
+def _aggregate_shadow_validations(entries):
+    def aggregate(rows):
+        positive_count = sum(row["positive_count"] for row in rows)
+        master_status = Counter()
+        visit_status = Counter()
+        pair_counts = Counter()
+        same = 0
+        different = 0
+        for row in rows:
+            master_status.update(row["master_status_counts"])
+            visit_status.update(row["visit_status_counts"])
+            pair_counts.update(row["status_pair_counts"])
+            same += row["both_MATCHED_same_contentid"]
+            different += row["both_MATCHED_different_contentid"]
+        both = same + different
+        return {
+            "positive_count": positive_count,
+            "master_status_counts": dict(master_status),
+            "visit_status_counts": dict(visit_status),
+            "status_pair_counts": dict(pair_counts),
+            "both_MATCHED": both,
+            "both_MATCHED_same_contentid": same,
+            "both_MATCHED_different_contentid": different,
+            "canonical_contentid_agreement_rate_among_both_MATCHED": _rate(same, both),
+            "status_pair_rates": _rate_map(dict(pair_counts), positive_count),
+            "master_status_rates": _rate_map(dict(master_status), positive_count),
+            "visit_status_rates": _rate_map(dict(visit_status), positive_count),
+        }
+
+    classes = ("single_metadata", "source_signal_conflict", "other_visit_signal_outcome")
+    return {
+        "scope": "positives_with_same_region_visit_and_master_metadata",
+        "matching": "global_snapshot_same_exact_rule_as_D",
+        "canonical_promotion": False,
+        "overall": aggregate([entry["overall"] for entry in entries]),
+        "by_visit_signal_class": {
+            key: aggregate([entry["by_visit_signal_class"][key] for entry in entries])
+            for key in classes
+        },
+    }
+
+
 def _master_rows(root: Path) -> dict[str, set[tuple[str, str, str, str]]]:
     files = [p for p in shared.csv_files(root) if "POI_MASTER" in p.name.upper()]
     if len(files) != 1:
@@ -359,6 +480,7 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
            "coordinate_diagnostic": "not_estimable_fixed_snapshot_has_no_mapx_mapy; coordinates_for_identity=false",
            "by_region_split_arm": [], "master_visit_metadata": {},
            "cross_region_master_lookup": [],
+           "master_visit_identity_shadow_validation": [],
            "weighted_TL_VL": {}, "methodology": "controlled_pipeline_comparison_not_causal_effect",
            "canonical_identity_arm": CANONICAL_IDENTITY_ARM,
            "manifest": {"dataset": "AI Hub Domestic Travel Log 2023", "splits": ["TL", "VL"],
@@ -383,6 +505,11 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
             })
             visit_master = {poi_id: master[poi_id] for poi_id in visits.keys() & master.keys()}
             out["master_visit_metadata"][f"{region}:{role}"] = _master_visit_diagnostics(visits, visit_master)
+            shadow_validation = _compare_master_visit_identity(
+                region, positives, visits, master, global_index, policy)
+            out["master_visit_identity_shadow_validation"].append({
+                "region": region, "split": role, **shadow_validation,
+            })
             for poi_id, signals in visits.items():
                 visit_all[poi_id].update(signals)
             for poi_id, signals in visit_master.items():
@@ -502,6 +629,8 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
             "category_rates": _rate_map(dict(categories_total), missing_count),
         }
     out["cross_region_master_lookup_weighted_TL_VL"] = cross_weighted
+    out["master_visit_identity_shadow_validation_weighted_TL_VL"] = _aggregate_shadow_validations(
+        out["master_visit_identity_shadow_validation"])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return out

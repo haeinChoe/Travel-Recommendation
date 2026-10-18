@@ -123,4 +123,10 @@ Arm E uses same-region Master metadata when present and explicitly falls back to
 
 Within the 26,884-positive visit-fallback subset, 499 are MATCHED (1.86%), 5,170 AMBIGUOUS (19.23%), and 21,215 UNMATCHED (78.91%). Global exact-title candidate counts are 0 for 22,777 (84.72%), 1 for 3,894 (14.48%), and 2+ for 213 (0.79%). The 499 fallback matches include 326 `eligible` (65.33%) and 173 `unsupported_content_type` (34.67%); 326 positives are candidate-contained. This is a measurable but low-rate recovery with a meaningful ambiguity burden. **Keep E as a diagnostic arm; retain canonical D pending review of visit-fallback signal quality.** The exact aggregate and provenance counts are in the ignored artifact described by the POI catalog contract.
 
+### Master / visit shadow validation (2026-10-18)
+
+For the 70,756 observed positives with both same-region metadata sources, Master and visit metadata were independently matched against the same fixed global TourAPI snapshot with D's existing exact rule. Both sources MATCHED for 1,927 positives; all 1,927 selected the same `contentid` (100.00% agreement within the both-MATCHED subset; 0 different IDs). Of 2,545 visit MATCHED positives, 1,927 (75.72%) were also Master MATCHED, 583 were Master AMBIGUOUS, and 35 were Master UNMATCHED.
+
+Visit signal class is reported separately: 58,092 positives had a single visit metadata signal, while 12,664 had `source_signal_conflict`. All 12,664 conflict cases were visit AMBIGUOUS under the unchanged rule; they were not relaxed or promoted. The full 3×3 status matrix, exact count/rate, and agreement metric are recorded in the POI catalog contract and ignored aggregate. This is a conditional consistency proxy, not independent ground truth or a canonical-ID promotion decision.
+
 The existing fixed snapshot omits `mapx/mapy`, so the coordinate-distance compatibility diagnostic could not be computed. Coordinates remain disabled as identity evidence. `UNMATCHED` and `AMBIGUOUS` remain distinct from catalog absence.

@@ -502,6 +502,31 @@ Fallback subset의 exact 진단은 다음과 같다.
 Fallback MATCHED 499건의 eligibility는 `eligible` 326 (65.33%), `unsupported_content_type` 173 (34.67%)다. Fallback의 identity resolution은 1.86%로 낮고, 5,170건은 source signal conflict 또는 exact matching ambiguity로 남았다. E가 D 대비 identity MATCHED를 499건, candidate-contained를 326건 늘렸지만, 이 fallback 결과만으로 source metadata의 품질이나 serving suitability를 확정할 수 없으므로 **E는 연구 arm으로 유지하고 canonical identity arm은 D로 유지한다.** `UNMATCHED`/`AMBIGUOUS`는 TourAPI catalog absence를 뜻하지 않으며 `catalog-outside = 판정 불가`를 유지한다.
 
 전체 비교와 fallback subset의 exact aggregate는 Git-ignored `results/experiments/poi-catalog-v1/identity-arms-20261018.json`에 기록했다. A/B/C/D 재계산 값은 이번에도 앞선 실행과 동일했다.
+
+#### Master / visit shadow validation
+
+동일 positive에 대해 same-region Master와 visit metadata를 각각 같은 global TourAPI snapshot 및 D와 동일한 exact matching rule로 평가했다. 분모는 두 metadata source가 모두 있는 70,756 positives다. 이 결과는 visit-row matching의 precision proxy이며 Arm E 499건을 canonical MATCHED로 승격하거나 독립 정답으로 취급하지 않는다.
+
+| Master 결과 / visit 결과 | 정확 건수 | overlap 분모 대비 |
+| --- | ---: | ---: |
+| MATCHED / MATCHED | 1,927 | 2.72% |
+| MATCHED / AMBIGUOUS | 2,712 | 3.83% |
+| MATCHED / UNMATCHED | 57 | 0.08% |
+| AMBIGUOUS / MATCHED | 583 | 0.82% |
+| UNMATCHED / MATCHED | 35 | 0.05% |
+| AMBIGUOUS / AMBIGUOUS | 14,400 | 20.35% |
+| UNMATCHED / UNMATCHED | 41,118 | 58.11% |
+| AMBIGUOUS / UNMATCHED | 144 | 0.20% |
+| UNMATCHED / AMBIGUOUS | 9,780 | 13.82% |
+
+두 source가 모두 MATCHED인 1,927건은 같은 `contentid` 1,927, 다른 `contentid` 0이었다. 따라서 요청한 canonical `contentid` agreement는 **1,927 / 1,927 (100.00%)**다. visit MATCHED 전체 2,545건 중 Master도 MATCHED인 비율은 1,927/2,545 (75.72%)이며, 나머지는 Master AMBIGUOUS 583건 및 Master UNMATCHED 35건이다. 이 agreement는 양쪽이 모두 exact rule로 resolve된 subset에 조건부인 proxy이지 전체 visit MATCHED의 독립 precision 추정치는 아니다.
+
+| visit signal 구분 | overlap positives | visit MATCHED | Master·visit 모두 MATCHED | 같은 / 다른 `contentid` | agreement |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 단일 metadata | 58,092 | 2,545 | 1,927 | 1,927 / 0 | 1,927/1,927 (100.00%) |
+| `source_signal_conflict` | 12,664 | 0 | 0 | 0 / 0 | 분모 0 (해당 없음) |
+
+단일 metadata subset의 Master MATCHED / visit AMBIGUOUS는 2,218건, MATCHED / UNMATCHED는 57건이다. `source_signal_conflict` subset은 visit AMBIGUOUS 12,664/12,664 (100.00%)였으며, 그중 Master MATCHED 494, AMBIGUOUS 3,245, UNMATCHED 8,925건이다. conflict signal을 해결하거나 완화하지 않았다. 결과는 `master_visit_identity_shadow_validation_weighted_TL_VL` 및 권역/TL/VL breakdown으로 ignored aggregate에 저장했다.
 #### Match method 및 eligibility reason
 
 B/D match method 비율 분모는 `identity_source_available`이며 `identity_source_missing`은 match method 집계에서 제외한다. Eligibility reason 분모는 각 arm의 MATCHED다.

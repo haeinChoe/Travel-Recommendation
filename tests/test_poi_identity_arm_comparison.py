@@ -4,7 +4,8 @@ import unittest
 from collections import defaultdict
 
 from scripts.recommendation.compare_poi_identity_arms import (
-    CANONICAL_IDENTITY_ARM, _arm_counts, _arm_e_sources, _cross_region_master_diagnostic,
+    CANONICAL_IDENTITY_ARM, _arm_counts, _arm_e_sources, _compare_master_visit_identity,
+    _cross_region_master_diagnostic,
     _master_visit_diagnostics, _resolve_one,
 )
 from scripts.recommendation.poi_catalog_candidate_contract import (
@@ -147,6 +148,40 @@ class IdentityArmComparisonTests(unittest.TestCase):
         self.assertEqual(result["MATCHED"], 1)
         self.assertEqual(result["visit_fallback_subset"]["matched_eligibility_reasons"],
                          {"outside_request_region": 1})
+
+    def test_master_visit_shadow_validation_agreement_and_visit_conflicts(self) -> None:
+        item_a = CatalogPoi("provider-a", title="Place", address="Road A",
+                            content_type_id="12", region_codes=frozenset({"11"}))
+        item_b = CatalogPoi("provider-b", title="Place", address="Road B",
+                            content_type_id="12", region_codes=frozenset({"11"}))
+        visits = {
+            "same": {("Place", "", "", "Road A")},
+            "different": {("Place", "", "", "Road B")},
+            "conflict": {("Place", "", "", "Road A"), ("Place", "", "Lot A", "Road A")},
+            "master_unmatched": {("Place", "", "", "Road A")},
+        }
+        masters = {
+            "same": {("Place", "", "", "Road A")},
+            "different": {("Place", "", "", "Road A")},
+            "conflict": {("Place", "", "", "Road A")},
+            "master_unmatched": {("Absent", "", "", "Road A")},
+        }
+        result = _compare_master_visit_identity(
+            "capital", [(f"trip-{poi_id}", poi_id) for poi_id in visits],
+            visits, masters, {"place": [item_a, item_b]}, self.policy)
+        overall = result["overall"]
+        self.assertEqual(overall["positive_count"], 4)
+        self.assertEqual(overall["both_MATCHED"], 2)
+        self.assertEqual(overall["both_MATCHED_same_contentid"], 1)
+        self.assertEqual(overall["both_MATCHED_different_contentid"], 1)
+        self.assertEqual(overall["canonical_contentid_agreement_rate_among_both_MATCHED"], {
+            "count": 1, "denominator": 2, "percent": 50.0,
+        })
+        self.assertEqual(overall["status_pair_counts"]["Master_MATCHED_visit_AMBIGUOUS"], 1)
+        self.assertEqual(overall["status_pair_counts"]["Master_UNMATCHED_visit_MATCHED"], 1)
+        self.assertEqual(result["by_visit_signal_class"]["source_signal_conflict"]["positive_count"], 1)
+        self.assertEqual(result["by_visit_signal_class"]["single_metadata"]["positive_count"], 3)
+        self.assertEqual(result["canonical_promotion"], False)
 
     def test_cross_region_master_reports_one_other_master(self) -> None:
         masters = {"capital": {}, "west": {"poi": {("Name", "26", "Lot", "Road")} },
