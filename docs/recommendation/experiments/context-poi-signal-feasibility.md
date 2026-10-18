@@ -74,9 +74,9 @@
 - 추천 순위 지표는 이 실험 범위가 아님
 - 인과 효과, 운영 ranking 품질, 최종 serving contract를 확정하지 않음
 
-## 2. 실제 Context Feature Contract
+## 2. 실제 여행 문맥 특성 계약
 
-### 2.1 Primary context
+### 2.1 핵심 여행 문맥
 
 `context_only`과 context-group predictive ablation에 들어가는 핵심 context는 아래와 같습니다.
 
@@ -93,7 +93,7 @@
 
 원시 코드의 세부 의미가 문서로 확정되지 않은 경우 값은 opaque category로 취급합니다.
 
-### 2.2 Companion relation은 recorded-only sensitivity
+### 2.2 동반자 관계: 기록된 경우만 보는 민감도 분석
 
 `TN_COMPANION_INFO.REL_CD`에서 만든 `companion_relation_codes`는 별도 분석합니다.
 
@@ -109,7 +109,7 @@ companion row가 없다는 것이 혼자 여행했다는 뜻인지, 단순 미�
 - `context_companion_relation_recorded`: recorded-only predictive sensitivity
 - primary `context_only`: 제외
 
-### 2.3 제외 feature
+### 2.3 제외 특성
 
 | Feature | 이유 |
 | --- | --- |
@@ -120,15 +120,15 @@ companion row가 없다는 것이 혼자 여행했다는 뜻인지, 단순 미�
 | `TRAVELER_ID`, `TRAVEL_ID`, `POI_ID` | join/group key이며 predictor가 아님 |
 | post-event feedback | leakage 방지를 위해 input 금지 |
 
-## 3. POI Representation
+## 3. POI 표현
 
-### Basic POI
+### 기본 POI
 
 - `region`
 - `VISIT_AREA_TYPE_CD`
 - 방문 `SGG_CD`
 
-### Richer POI
+### 확장 POI
 
 유일한 region-scoped candidate join이 가능한 경우에 한해:
 
@@ -141,7 +141,7 @@ companion row가 없다는 것이 혼자 여행했다는 뜻인지, 단순 미�
 
 ## 4. 실험 설계
 
-### Phase 0 — Availability / Join Audit
+### 단계 0 — 특성 가용성과 연결 상태 점검
 
 `availability_audit.csv`에서 각 context/POI feature의 권역 × TL/VL별 다음 항목을 기록합니다.
 
@@ -153,7 +153,7 @@ companion row가 없다는 것이 혼자 여행했다는 뜻인지, 단순 미�
 
 최종 보고서에는 대체로 충분하다는 문장만 쓰지 않고 **feature group별 availability**를 표로 요약합니다.
 
-### Phase 1 — 개별 Context ↔ POI Association
+### 단계 1 — 개별 여행 문맥 ↔ POI 연관성
 
 `associations.csv`의 `analysis=context_to_poi`는 context feature만 대상으로 생성합니다.
 
@@ -169,7 +169,7 @@ companion row가 없다는 것이 혼자 여행했다는 뜻인지, 단순 미�
 
 `region`은 primary context에 포함하지만 단일 권역에서는 상수이므로 `insufficient-support`가 정상이며 aggregate scope에서 직접 봅니다.
 
-### Phase 2 — Main Effects와 Joint-feature Increment
+### 단계 2 — 개별 효과와 결합 특성의 추가 예측 가치
 
 기존 `joint_context_poi_to_feedback` Cramér's V는 결합 범주의 association이지 통계적 interaction effect가 아닙니다.
 
@@ -190,7 +190,7 @@ companion row가 없다는 것이 혼자 여행했다는 뜻인지, 단순 미�
 
 이 값은 **joint feature의 추가 predictive value**이지 causal interaction 또는 회귀 interaction coefficient가 아닙니다.
 
-### Phase 3 — Context Group Predictive Ablation
+### 단계 3 — 여행 문맥 그룹별 특성 제거 비교
 
 `predictive_ablation.csv`에서 기존 전체 context뿐 아니라 다음 그룹을 각각 평가합니다.
 
@@ -211,7 +211,7 @@ companion row가 없다는 것이 혼자 여행했다는 뜻인지, 단순 미�
 
 각 ablation은 자체 complete-case cohort를 사용하므로 서로 다른 ablation의 raw Δ를 직접 feature contribution으로 해석하지 않습니다.
 
-### Phase 4 — Dominant Signal을 고려한 공통 코호트 비교
+### 단계 4 — 지배적 신호를 고려한 공통 코호트 비교
 
 `common_cohort_sensitivity.csv`의 각 pair는 동일한 TL 학습 행과 동일한 VL 평가 행을 사용합니다.
 
@@ -225,7 +225,7 @@ companion row가 없다는 것이 혼자 여행했다는 뜻인지, 단순 미�
 
 Phase 1 association은 권역별로 따로 계산되므로 같은 region 내부에서도 context ↔ POI association이 남는지 확인할 수 있습니다.
 
-## 5. Feedback Targets
+## 5. 방문 후 피드백 목표값
 
 서로 합치지 않고 별도 target으로 유지합니다.
 
@@ -246,7 +246,7 @@ Phase 1 association은 권역별로 따로 계산되므로 같은 region 내부�
 | region/popularity/category를 각각 나열 | 동일 cohort incremental comparison 추가 |
 | joint-category Cramér's V를 interaction처럼 읽을 위험 | main-effects vs explicit joint-feature sensitivity 추가 |
 
-## 7. Privacy / Statistical Reporting
+## 7. 개인정보 보호와 통계 보고
 
 - raw row, raw identifier, exact date, coordinates, free text 공유 금지
 - raw category value를 artifact에 기록하지 않음
@@ -305,7 +305,7 @@ python3 scripts/recommendation/analyze_context_poi.py \
   --confirm-approved --confirm-terms --confirm-poi-candidate
 ```
 
-## 10. POI-only 비교 교정 run 결과
+## 10. POI-only 비교 교정 실행 결과
 
 - Run ID: `issue45-context-poi-poionly-20261013T040619Z-9519be`
 - Code revision: base commit `205eafa3c71a5aa3d121ae0901c1b609f4180ec3`; the analysis ran with the POI-only correction in a dirty worktree. The run metadata records the matching analysis-script SHA-256 `b212e86fd812a383a204d5a9a1bb90b2e527255d1836e8e815a64d05982c9943`.
@@ -315,7 +315,7 @@ python3 scripts/recommendation/analyze_context_poi.py \
 - 이 rerun은 `poi_only`를 basic POI(`region`, `visit_area_type`, `visit_sgg`)만 포함하도록 바로잡습니다. 이전 corrected run은 richer POI metadata까지 `poi_only`에 포함해 그 비교의 validation support를 privacy-limited로 만들었습니다. 다른 feature-set 계약은 바꾸지 않았습니다.
 - Association 및 joint-feature artifact는 이전 corrected run과 동일하게 재생성됐습니다. 아래 association 및 joint-feature 결과는 새 run의 artifact에서 확인했으며, byte-for-byte 동일한 집계 결과입니다.
 
-### A. Context availability 및 POI join
+### A. 여행 문맥 가용성과 POI 연결
 
 | Context group | 점검 결과 |
 | --- | --- |
@@ -328,7 +328,7 @@ python3 scripts/recommendation/analyze_context_poi.py \
 
 POI master candidate join coverage는 capital, west, east에서 TL과 VL 모두 `50-<75%`, jeju-islands에서 두 split 모두 `75-<90%`였습니다. 네 권역 모든 split에서 master의 duplicate candidate key와 서로 다른 행정구역 값을 가진 key는 각각 `0` bucket이었습니다. Join은 region-scoped `POI_ID` 후보 관계이며 canonical identity가 아닙니다.
 
-### B. Context–POI association 및 TL→VL 재현
+### B. 여행 문맥–POI 연관성과 TL→VL 재현
 
 아래 값은 지원이 공개 가능한 association에서 context-feature × POI-feature Cramér's V의 중앙값입니다. TL/VL 각 split 안에서 feature 조합을 합치지 않고, visit-row와 distinct-trip-pair를 따로 계산했습니다.
 
@@ -344,7 +344,7 @@ POI master candidate join coverage는 capital, west, east에서 TL과 VL 모두 
 
 Context feature와 세 feedback target 간 association도 각각 계산했습니다. Aggregate에서 field별 Cramér's V 중앙값 범위는 style이 TL `0.046–0.051`, VL `0.049–0.052`; motive는 TL `0.019–0.021`, VL `0.040–0.045`; destination은 TL `0.023–0.027`, VL `0.044–0.047`; companion은 TL `0.025–0.026`, VL `0.050–0.053`; temporal은 TL `0.018–0.021`, VL `0.034–0.037`였습니다. 이 세 target은 합치지 않았습니다. Recorded-only relation은 TL `0.060–0.063`, VL `0.123–0.125`였지만, 기록된 동행 정보가 있는 사례로 제한된 sensitivity라 primary context와 같은 근거로 보지 않습니다.
 
-### C. Feedback predictive ablation
+### C. 피드백 예측 특성 제거 비교
 
 값은 aggregate TL 학습 및 VL 평가에서 majority baseline 대비 accuracy 차이입니다. 각 칸은 `DGSTFN / REVISIT_INTENTION / RCMDTN_INTENTION` 순서입니다.
 
@@ -361,7 +361,7 @@ Context feature와 세 feedback target 간 association도 각각 계산했습니
 
 위에서 수치가 공개된 aggregate ablation은 TL/VL 지원 `10+ / 10+`로 `observed`였습니다. `context_plus_richer_poi`는 VL complete-case 지원이 `<10`이라 metric이 `privacy-limited`로 억제됐습니다. 이는 데이터 지원이 0이라는 뜻이 아니며, 그 결과로 richer POI의 기여를 판단하지 않았습니다. `poi_only`가 이제 basic POI만 포함하므로 해당 비교는 privacy-limited가 아닙니다.
 
-### D. Dominant-signal 통제 및 richer POI
+### D. 지배적 신호 통제와 확장 POI
 
 아래 값은 새 POI-only correction run에서 같은 TL 학습 코호트와 같은 VL 평가 코호트로 다시 확인했습니다. 각 비교는 오른쪽 feature set의 accuracy에서 왼쪽을 뺀 값입니다. 양수는 오른쪽의 정확도 개선, 음수는 하락입니다.
 
@@ -375,7 +375,7 @@ Context feature와 세 feedback target 간 association도 각각 계산했습니
 
 첫 네 비교의 지원은 각각 `10+ / 10+`였고 다섯 비교 모두 각 target에서 left/right 지원 bucket이 일치했습니다. Richer POI 비교는 `10+ / <10` 지원으로 억제됐으므로 `insufficient-support`와 혼동하지 않았습니다.
 
-### E. Context×POI joint-feature sensitivity
+### E. 여행 문맥 × POI 결합 특성 민감도
 
 값은 aggregate에서 같은 complete-case TL/VL 코호트의 `(context, POI)` joint categorical feature를 main-effects model에 추가했을 때의 accuracy 차이 중앙값입니다. 열은 `DGSTFN / REVISIT_INTENTION / RCMDTN_INTENTION` 순서입니다.
 
@@ -390,7 +390,7 @@ Context feature와 세 feedback target 간 association도 각각 계산했습니
 
 필수 context group의 aggregate 조합은 모두 `observed`였습니다. Feature별 범위 일부에 양수 값이 있어도 각 group/target의 중앙값은 음수였습니다. Joint feature는 예측 민감도 분석이며 causal interaction이 아닙니다.
 
-### F. Preliminary run과의 비교
+### F. 예비 실행과의 비교
 
 `issue45-context-poi-pairs-20261012T141933Z-c6a1b9`는 프로토콜 불일치가 있어 최종 판단 근거가 아닙니다. 이전 corrected run `issue45-context-poi-corrected-20261013T021312Z-acf6c4`도 basic `poi_only` 비교에 richer metadata를 포함했으므로 그 한 비교는 새 run으로 대체했습니다.
 
