@@ -469,7 +469,7 @@ same-region Master에 없는 ID만 네 권역 Master union에서 진단했다. m
 
 모든 split에서 `found_in_one_other_master`, `found_in_multiple_masters_same_metadata`, `found_in_multiple_masters_conflicting_metadata`는 source POI와 positive 단위 모두 0건 (각 same-region-missing 분모 대비 0.00%)이다. TL/VL positive 합계는 same-region missing 26,884/97,640이며 전부 네 권역 Master union에도 없었다. 교차 조회가 복구하는 positive가 0건이므로 지금은 D2를 추가하지 않고, canonical D를 유지한다.
 
-이번 follow-up 실행 환경에는 fixed snapshot CSV가 연결되지 않아 기존 검증 snapshot의 A/B/C/D aggregate를 유지하고, 저장된 exact aggregate에서 Master 누락 positive의 상태/title 분모만 재분류했다. Cross-region Master 분포는 승인된 네 권역 원본을 다시 읽어 계산했다. 전체 comparator CLI 재생성은 snapshot 연결 후 기존 재현 명령으로 수행할 수 있다.
+이번 follow-up에서는 기존 v4.4 fixed snapshot을 찾아 provider/manual/version/content hash metadata를 검증한 뒤 전체 comparator CLI를 다시 실행했다. API는 재호출하지 않았으며 승인된 TL/VL·Master 원본은 read-only로 사용했다. Git-ignored aggregate artifact를 full run 결과로 갱신했다.
 #### Match method 및 eligibility reason
 
 B/D match method 비율 분모는 `identity_source_available`이며 `identity_source_missing`은 match method 집계에서 제외한다. Eligibility reason 분모는 각 arm의 MATCHED다.
