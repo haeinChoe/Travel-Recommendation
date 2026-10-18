@@ -5,14 +5,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        목적과 완료 조건을 구체적으로 적어주세요. 실제 AI Hub 데이터 접근과 저장소 변경 권한은 아래 항목에서 각각 선택합니다. 데이터 원본·행·자격 증명은 Issue에 붙이지 마세요.
+        이전 대화 없이도 이해할 수 있도록 문제와 기대 결과를 먼저 적어주세요. 전문 용어는 처음 등장할 때 설명합니다. 목적과 완료 조건을 구체적으로 적고, 실제 AI Hub 데이터 접근과 저장소 변경 권한은 아래 항목에서 각각 선택합니다. 데이터 원본·행·자격 증명은 Issue에 붙이지 마세요.
 
   - type: textarea
     id: purpose
     attributes:
       label: 목적 또는 질문
-      description: 해결하려는 문제나 분석으로 답하려는 질문을 적어주세요.
-      placeholder: 어떤 근거를 확인하거나 어떤 결과를 얻고 싶은가요?
+      description: 해결 방법이나 알고리즘 이름보다 먼저 배경, 해결하려는 문제, 답하려는 질문을 적어주세요.
+      placeholder: 왜 이 작업이 필요하며, 완료되면 어떤 질문에 답할 수 있어야 하나요?
     validations:
       required: true
 
@@ -47,6 +47,17 @@ body:
         - 관련 저장소 문서와 근거:
     validations:
       required: true
+
+  - type: textarea
+    id: terminology
+    attributes:
+      label: 필요한 용어와 사전 설명
+      description: 이 Issue를 이해하는 데 필요한 전문 용어·약어가 있으면 쉬운 설명과 원어를 적으세요. 공통 추천 용어는 docs/recommendation/glossary.md를 따릅니다. 없으면 "없음"으로 적어도 됩니다.
+      placeholder: |
+        - 후보 집합(candidate set): 특정 요청에서 추천 대상으로 고려할 수 있는 아이템 목록
+        - 없음
+    validations:
+      required: false
 
   - type: textarea
     id: scope
