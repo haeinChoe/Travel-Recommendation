@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        이 Issue는 조사와 결정 기록을 위한 것입니다. Decision Issue 자체는 구현 권한을 부여하지 않습니다. 실제 데이터 접근이 필요하면 데이터 접근 범위와 근거를 명시하고 사용자 지시를 받으세요.
+        이 Issue는 조사와 결정 기록을 위한 것입니다. 결론을 이해하는 데 필요한 배경과 용어를 먼저 설명하고, 확인된 사실과 해석을 구분해 주세요. Decision Issue 자체는 구현 권한을 부여하지 않습니다. 실제 데이터 접근이 필요하면 데이터 접근 범위와 근거를 명시하고 사용자 지시를 받으세요.
 
   - type: textarea
     id: question
@@ -19,9 +19,20 @@ body:
     id: context
     attributes:
       label: 배경과 근거
-      description: 실제 코드·데이터·문서에서 확인한 사실을 출처와 함께 적고, 가정과 미결정 사항을 구분해 주세요.
+      description: 이전 대화를 모르는 사람도 이해할 수 있게 배경을 설명한 뒤, 실제 코드·데이터·문서에서 확인한 사실을 출처와 함께 적고 가정·해석·미결정 사항을 구분해 주세요.
     validations:
       required: true
+
+  - type: textarea
+    id: terminology
+    attributes:
+      label: 필요한 용어와 사전 설명
+      description: 판단에 필요한 전문 용어·약어가 있으면 쉬운 한국어 설명과 원어를 적으세요. 공통 추천 용어는 docs/recommendation/glossary.md를 따릅니다.
+      placeholder: |
+        - 노출(exposure): 사용자가 실제로 볼 수 있었거나 선택할 기회가 있었던 아이템
+        - 없음
+    validations:
+      required: false
 
   - type: textarea
     id: options
