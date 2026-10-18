@@ -324,6 +324,48 @@ ROAD_NM_ADDR / LOTNO_ADDR 존재는 해당 POI의 여러 source row 중 공백�
 - 이 진단으로 미해결의 대부분은 같은 권역 exact-title 후보가 없고, 후보 하나가 있어도 exact-address 검증에서 막힌다는 단계까지 수치화했다. 그러나 title miss가 catalog 부재인지 표기 차이인지 판별할 수 없고, address mismatch도 주소체계/상세주소/실제 장소 차이를 분리하지 못한다. 진단 지표들은 서로 겹치므로 더해 unresolved를 분해하지 않는다. 따라서 97% unresolved의 원인을 전부 설명하지 못하며 나머지는 판정 불가다.
 - 다음 신호 후보는 공식 source-to-provider ID crosswalk 검증 또는 주소 명칭/지번-도로명 변환의 권위 있는 참조표를 이용한 별도 shadow diagnostic이다. 검증 전에 MATCHED 기준을 바꾸지 않는다. 이번 실행은 fuzzy/좌표 matching을 사용하지 않았다.
 
+#### Name candidate recovery shadow diagnostic
+
+Arm D에서 `global_exact_title_absent`인 **50,933 observed positives**를 대상으로 문자열 진단을 추가했다. canonical matcher와 A/B/C/D/E 결과는 변경하지 않았다. baseline N0는 기존 `normalize_text()`(NFKC + casefold + whitespace)이며, N1은 구두점을 공백으로 치환한 뒤 공백을 정리한 후보 키다. N2는 기존 제목과 괄호 내용을 제거한 제목을 각각 조회한다. N3는 suffix/토큰의 존재만 태그하며 문자열을 제거하지 않는다. N4는 exact miss에 한해 character-bigram overlap 상위 250개 title을 사전 후보로 고른 뒤 `SequenceMatcher` 상위 5개 normalized title을 진단 후보로 조회한다. N4의 contentid 후보 수는 여러 POI가 같은 title을 공유할 수 있어 5보다 클 수 있다. 모든 N1/N2/N4 후보는 shadow 결과이며 MATCHED 판정에 전달되지 않는다.
+
+| 분모 | 단계 | candidate 0 | candidate 1 | candidate 2+ |
+| --- | --- | ---: | ---: | ---: |
+| observed positives 50,933 | N0 exact miss | 50,933 (100.00%) | 0 (0.00%) | 0 (0.00%) |
+| observed positives 50,933 | N1 구두점 | 50,922 (99.98%) | 11 (0.02%) | 0 (0.00%) |
+| observed positives 50,933 | N2 괄호 포함 | 50,864 (99.86%) | 68 (0.13%) | 1 (0.00%) |
+| observed positives 50,933 | N4 fuzzy retrieval | 627 (1.23%) | 414 (0.81%) | 49,892 (97.96%) |
+| 고유 `(region, POI_ID)` 20,856 | N0 exact miss | 20,856 (100.00%) | 0 (0.00%) | 0 (0.00%) |
+| 고유 `(region, POI_ID)` 20,856 | N1 구두점 | 20,851 (99.98%) | 5 (0.02%) | 0 (0.00%) |
+| 고유 `(region, POI_ID)` 20,856 | N2 괄호 포함 | 20,814 (99.80%) | 41 (0.20%) | 1 (0.00%) |
+| 고유 `(region, POI_ID)` 20,856 | N4 fuzzy retrieval | 354 (1.70%) | 200 (0.96%) | 20,302 (97.34%) |
+
+N1에서 새로 나온 observed-positive 후보 11건 중 source 주소 exact match는 1/11 (9.09%), 주소 mismatch 10/11 (90.91%), source 주소 부재 0/11이다. N2에서 추가로 생긴 58건은 exact match 9/58 (15.52%), mismatch 49/58 (84.48%), source 주소 부재 0/58이다. 고유 POI 기준으로 N1 후보 5건 중 exact match 1, mismatch 4건이고, N2 추가 37건 중 exact match 8, mismatch 29건이다. TourAPI 후보 주소 부재는 두 분모에서 모두 0건이다. 주소 exact match도 여기서는 shadow corroboration일 뿐이며 identity 승격 기준으로 사용하지 않았다.
+
+| 겹치는 문자열 특성 tag | observed positives 50,933 | 고유 POI 20,856 |
+| --- | ---: | ---: |
+| `punctuation_difference_candidate` | 11 (0.02%) | 5 (0.02%) |
+| `parenthetical_candidate` | 58 (0.11%) | 37 (0.18%) |
+| `branch_suffix_present` | 6,145 (12.06%) | 2,446 (11.73%) |
+| `facility_subpoi_suffix_present` | 838 (1.65%) | 517 (2.48%) |
+| `numeric_token_present` | 2,653 (5.21%) | 1,573 (7.54%) |
+| `latin_token_present` | 2,167 (4.25%) | 1,171 (5.61%) |
+| `other` | 40,616 (79.74%) | 16,036 (76.89%) |
+
+`other`는 위 문자열 특성이나 N1/N2 recovery tag가 없는 경우이며, 나머지 tag는 서로 겹칠 수 있으므로 합계를 100%로 해석하지 않는다. 권역/TL/VL 상세 count는 ignored aggregate의 `name_candidate_recovery_by_region_split_positive`와 `name_candidate_recovery_by_region_unique_source_poi`에 저장했다. 50,933건의 약 0.14%만 N2까지 exact normalized-title 후보가 생겼고, 그 중 대부분은 source 주소와 exact하게 확인되지 않았다. 따라서 punctuation/parenthetical normalization을 canonical 기준으로 바로 승격할 근거는 부족하다. 지점·시설 suffix tag도 존재 여부 진단일 뿐, 제거 후 identity를 확정하지 않는다. N4는 넓은 fuzzy 후보가 대부분에서 만들어졌다는 사실만 보이며 catalog 부재나 identity를 설명하지 않는다. 나머지 원인은 여전히 판정 불가이며, `UNMATCHED != catalog-outside`를 유지한다.
+
+| 권역 / split | N0 exact miss | N1 recovered | N2 candidate 있는 positive | N1 address exact | N2 추가 address exact |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| capital / TL | 6,231 | 0 (0.00%) | 3 (0.05%) | 0/0 (해당 없음) | 1/3 (33.33%) |
+| capital / VL | 864 | 0 (0.00%) | 1 (0.12%) | 0/0 (해당 없음) | 0/1 (0.00%) |
+| west / TL | 10,642 | 1 (0.01%) | 27 (0.25%) | 0/1 (0.00%) | 4/26 (15.38%) |
+| west / VL | 1,233 | 0 (0.00%) | 4 (0.32%) | 0/0 (해당 없음) | 0/4 (0.00%) |
+| east / TL | 10,111 | 2 (0.02%) | 11 (0.11%) | 0/2 (0.00%) | 3/9 (33.33%) |
+| east / VL | 1,191 | 0 (0.00%) | 2 (0.17%) | 0/0 (해당 없음) | 0/2 (0.00%) |
+| jeju-islands / TL | 18,476 | 8 (0.04%) | 17 (0.09%) | 1/8 (12.50%) | 1/9 (11.11%) |
+| jeju-islands / VL | 2,185 | 0 (0.00%) | 4 (0.18%) | 0/0 (해당 없음) | 0/4 (0.00%) |
+
+주소 열은 해당 단계에서 새로 후보가 생긴 positive 중 exact address match 수다. N2 candidate 있는 positive는 N1 candidate도 포함하는 누적 값이며, 전역 요약의 N2 incremental 주소 분모는 N2에서 새로 추가된 58건이다.
+
 가중 합계로 보면 TL은 **2,688 / 87,010 (3.09%)**가 MATCHED, **84,322 / 87,010 (96.91%)**가 unresolved다. VL은 **312 / 10,630 (2.94%)**가 MATCHED, **10,318 / 10,630 (97.06%)**가 unresolved다. End-to-end candidate coverage는 TL **1,367 / 87,010 (1.57%)**, VL **163 / 10,630 (1.53%)**다. Conditional coverage는 TL **1,367 / 2,688 (50.86%)**, VL **163 / 312 (52.24%)**다. MATCHED positives 중 outside-candidate는 TL **1,321 / 2,688 (49.14%)**, VL **149 / 312 (47.76%)**다. Conditional coverage만 보면 후보 포함률은 절반가량이지만, identity resolution이 약 3%여서 전체 계약 성능이 충분하다는 근거는 아니다.
 
 ### #60 TL-observed proxy와 비교

@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import difflib
 import hashlib
 import json
 import os
+import re
 import sys
+import unicodedata
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -30,6 +33,16 @@ ARM_META = {"A": "visit", "B": "master", "C": "visit", "D": "master",
 ARM_SCOPE = {"A": "source_region", "B": "source_region", "C": "global", "D": "global",
              "E": "global"}
 CANONICAL_IDENTITY_ARM = "D"
+FUZZY_TOP_N = 5
+FUZZY_PREFILTER_LIMIT = 250
+PARENTHETICAL_PATTERN = re.compile(
+    r"\([^()]*\)|\[[^\[\]]*\]|\{[^{}]*\}|【[^【】]*】|〔[^〔〕]*〕|"
+    r"〈[^〈〉]*〉|《[^《》]*》|「[^「」]*」|『[^『』]*』"
+)
+BRANCH_PATTERN = re.compile(r"(?:지점|본점|DT\s*점|점)", re.IGNORECASE)
+FACILITY_SUBPOI_PATTERN = re.compile(r"(?:주차장|입구|관리소)")
+NUMBER_TOKEN_PATTERN = re.compile(r"\d+")
+LATIN_TOKEN_PATTERN = re.compile(r"[A-Za-z]+")
 
 
 def _arm_e_sources(master_sources, visit_sources, poi_ids):
@@ -166,6 +179,245 @@ def _aggregate_shadow_validations(entries):
             key: aggregate([entry["by_visit_signal_class"][key] for entry in entries])
             for key in classes
         },
+    }
+
+
+def _normalize_name_n1(value: str) -> str:
+    """Diagnostic-only punctuation-insensitive key; never used by the matcher."""
+    normalized = unicodedata.normalize("NFKC", value or "").casefold()
+    normalized = "".join(" " if unicodedata.category(char).startswith("P") else char
+                         for char in normalized)
+    return " ".join(normalized.split())
+
+
+def _parenthetical_variants(value: str) -> set[str]:
+    normalized = unicodedata.normalize("NFKC", value or "")
+    stripped = PARENTHETICAL_PATTERN.sub(" ", normalized)
+    variants = {normalize_text(normalized)}
+    stripped_key = normalize_text(stripped)
+    if stripped_key:
+        variants.add(stripped_key)
+    return {variant for variant in variants if variant}
+
+
+def _char_bigrams(value: str) -> set[str]:
+    text = normalize_text(value)
+    if len(text) < 2:
+        return {text} if text else set()
+    return {text[index:index + 2] for index in range(len(text) - 1)}
+
+
+def _name_recovery_indexes(catalog: list[CatalogPoi]):
+    n1_index: dict[str, list[CatalogPoi]] = defaultdict(list)
+    titles: dict[str, list[CatalogPoi]] = defaultdict(list)
+    grams: dict[str, set[str]] = defaultdict(set)
+    for item in catalog:
+        if not item.title:
+            continue
+        n1_key = _normalize_name_n1(item.title)
+        if n1_key:
+            n1_index[n1_key].append(item)
+        n0_key = normalize_text(item.title)
+        if n0_key:
+            titles[n0_key].append(item)
+            for gram in _char_bigrams(n0_key):
+                grams[gram].add(n0_key)
+    return n1_index, titles, grams
+
+
+def _candidate_ids(items):
+    return {item.content_id for item in items if item.content_id}
+
+
+def _exact_address_category(signals, candidate_items):
+    addresses = {normalize_text(value) for signal in signals for value in (signal[2], signal[3]) if value}
+    if not addresses:
+        return "source_address_missing"
+    if any(normalize_text(item.address) in addresses for item in candidate_items if item.address):
+        return "exact_address_match"
+    if candidate_items and all(not item.address for item in candidate_items):
+        return "candidate_address_missing"
+    return "address_mismatch"
+
+
+def _diagnose_name_miss(signals, global_index, n1_index, title_index, gram_index):
+    names = {signal[0] for signal in signals if signal[0] and normalize_text(signal[0])}
+    if any(global_index.get(normalize_text(name), []) for name in names):
+        return None
+
+    n1_items = {}
+    for name in names:
+        key = _normalize_name_n1(name)
+        for item in n1_index.get(key, []):
+            if item.content_id:
+                n1_items[item.content_id] = item
+
+    n2_items = dict(n1_items)
+    for name in names:
+        for variant in _parenthetical_variants(name):
+            for item in n1_index.get(_normalize_name_n1(variant), []):
+                if item.content_id:
+                    n2_items[item.content_id] = item
+    n2_incremental = {key: item for key, item in n2_items.items() if key not in n1_items}
+
+    fuzzy_items = {}
+    for name in names:
+        query = normalize_text(name)
+        overlap = Counter()
+        for gram in _char_bigrams(query):
+            overlap.update(gram_index.get(gram, ()))
+        candidate_titles = [title for title, _count in sorted(
+            overlap.items(), key=lambda pair: (-pair[1], pair[0])
+        )[:FUZZY_PREFILTER_LIMIT]]
+        ranked = sorted(
+            ((difflib.SequenceMatcher(None, query, title, autojunk=False).ratio(), title)
+             for title in candidate_titles if title != query),
+            key=lambda pair: (-pair[0], pair[1]),
+        )[:FUZZY_TOP_N]
+        for _score, title in ranked:
+            for item in title_index.get(title, []):
+                if item.content_id:
+                    fuzzy_items[item.content_id] = item
+
+    source_text = " ".join(names)
+    tags = set()
+    if n1_items:
+        tags.add("punctuation_difference_candidate")
+    if n2_incremental:
+        tags.add("parenthetical_candidate")
+    if BRANCH_PATTERN.search(source_text):
+        tags.add("branch_suffix_present")
+    if FACILITY_SUBPOI_PATTERN.search(source_text):
+        tags.add("facility_subpoi_suffix_present")
+    if NUMBER_TOKEN_PATTERN.search(source_text):
+        tags.add("numeric_token_present")
+    if LATIN_TOKEN_PATTERN.search(source_text):
+        tags.add("latin_token_present")
+    if not tags:
+        tags.add("other")
+
+    return {
+        "n1_ids": set(n1_items),
+        "n2_ids": set(n2_items),
+        "n2_incremental_ids": set(n2_incremental),
+        "n4_ids": set(fuzzy_items),
+        "n1_address_category": _exact_address_category(signals, list(n1_items.values())) if n1_items else None,
+        "n2_address_category": _exact_address_category(signals, list(n2_incremental.values())) if n2_incremental else None,
+        "tags": tags,
+    }
+
+
+def _name_recovery_for_units(region, sources, poi_ids, global_index, n1_index, title_index, gram_index,
+                             diagnostic_cache=None):
+    diagnostic_cache = diagnostic_cache if diagnostic_cache is not None else {}
+    per_poi = {}
+    for poi_id in set(poi_ids):
+        signals = sources.get(poi_id)
+        if signals is None:
+            continue
+        if poi_id not in diagnostic_cache:
+            diagnostic_cache[poi_id] = _diagnose_name_miss(
+                signals, global_index, n1_index, title_index, gram_index)
+        diagnosed = diagnostic_cache[poi_id]
+        if diagnosed is not None:
+            per_poi[poi_id] = diagnosed
+
+    def summarize(ids):
+        n0_miss = len(ids)
+        candidate_counts = {stage: Counter() for stage in ("N0", "N1", "N2", "N4")}
+        n1_address = Counter()
+        n2_address = Counter()
+        tags = Counter()
+        for poi_id in ids:
+            result = per_poi.get(poi_id)
+            if result is None:
+                continue
+            candidate_counts["N0"]["0"] += 1
+            for stage, key in (("N1", "n1_ids"), ("N2", "n2_ids"), ("N4", "n4_ids")):
+                count = len(result[key])
+                candidate_counts[stage]["0" if count == 0 else "1" if count == 1 else "2+"] += 1
+            if result["n1_ids"]:
+                n1_address[result["n1_address_category"]] += 1
+            if result["n2_incremental_ids"]:
+                n2_address[result["n2_address_category"]] += 1
+            tags.update(result["tags"])
+        expected_tags = ("punctuation_difference_candidate", "parenthetical_candidate",
+                         "branch_suffix_present", "facility_subpoi_suffix_present",
+                         "numeric_token_present", "latin_token_present", "other")
+        for bucket in ("1", "2+"):
+            candidate_counts["N0"][bucket] = 0
+        return {
+            "global_exact_title_absent_N0": n0_miss,
+            "candidate_buckets_by_stage": {
+                stage: {key: counts[key] for key in ("0", "1", "2+")}
+                for stage, counts in candidate_counts.items()
+            },
+            "candidate_bucket_rates_by_stage": {
+                stage: _rate_map({key: counts[key] for key in ("0", "1", "2+")}, n0_miss)
+                for stage, counts in candidate_counts.items()
+            },
+            "N1_recovered_candidate_address": {
+                "counts": {key: n1_address[key] for key in (
+                    "exact_address_match", "address_mismatch", "source_address_missing", "candidate_address_missing")},
+                "rates_among_N1_recovered": _rate_map(dict(n1_address), sum(n1_address.values())),
+                "denominator": sum(n1_address.values()),
+            },
+            "N2_incremental_candidate_address": {
+                "counts": {key: n2_address[key] for key in (
+                    "exact_address_match", "address_mismatch", "source_address_missing", "candidate_address_missing")},
+                "rates_among_N2_incremental": _rate_map(dict(n2_address), sum(n2_address.values())),
+                "denominator": sum(n2_address.values()),
+            },
+            "diagnostic_tags_overlapping": {key: tags[key] for key in expected_tags},
+            "diagnostic_tag_rates_overlapping": _rate_map(
+                {key: tags[key] for key in expected_tags}, n0_miss),
+        }
+
+    unique_ids = sorted(per_poi)
+    positive_ids = [poi_id for poi_id in poi_ids if poi_id in per_poi]
+    return {
+        "region": region,
+        "unique_source_poi": summarize(unique_ids),
+        "observed_positive": summarize(positive_ids),
+    }
+
+
+def _aggregate_name_recovery(aggregates):
+    n0_total = sum(row["global_exact_title_absent_N0"] for row in aggregates)
+    buckets = {stage: Counter() for stage in ("N0", "N1", "N2", "N4")}
+    n1_address, n2_address, tags = Counter(), Counter(), Counter()
+    for row in aggregates:
+        for stage in buckets:
+            buckets[stage].update(row["candidate_buckets_by_stage"][stage])
+        n1_address.update(row["N1_recovered_candidate_address"]["counts"])
+        n2_address.update(row["N2_incremental_candidate_address"]["counts"])
+        tags.update(row["diagnostic_tags_overlapping"])
+    expected_tags = ("punctuation_difference_candidate", "parenthetical_candidate",
+                     "branch_suffix_present", "facility_subpoi_suffix_present",
+                     "numeric_token_present", "latin_token_present", "other")
+
+    def address_summary(counts):
+        denominator = sum(counts.values())
+        return {
+            "counts": dict(counts), "denominator": denominator,
+            "rates_among_recovered": _rate_map(dict(counts), denominator),
+        }
+
+    return {
+        "global_exact_title_absent_N0": n0_total,
+        "candidate_buckets_by_stage": {
+            stage: {key: buckets[stage][key] for key in ("0", "1", "2+")}
+            for stage in buckets
+        },
+        "candidate_bucket_rates_by_stage": {
+            stage: _rate_map({key: buckets[stage][key] for key in ("0", "1", "2+")}, n0_total)
+            for stage in buckets
+        },
+        "N1_recovered_candidate_address": address_summary(n1_address),
+        "N2_incremental_candidate_address": address_summary(n2_address),
+        "diagnostic_tags_overlapping": {key: tags[key] for key in expected_tags},
+        "diagnostic_tag_rates_overlapping": _rate_map(
+            {key: tags[key] for key in expected_tags}, n0_total),
     }
 
 
@@ -472,6 +724,7 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
     if snapshot_fingerprint != metadata.get("snapshot_sha256"):
         raise ValueError("fixed snapshot canonical content fingerprint mismatch")
     regional_index, global_index, all_codes = _catalog_index(catalog, policy)
+    n1_index, n1_title_index, fuzzy_gram_index = _name_recovery_indexes(catalog)
     out = {"snapshot_item_count": len(catalog), "snapshot_coordinate_fields": [],
            "snapshot_policy_fingerprint_matches_current_config": metadata.get("policy_config_sha256") == policy.policy_sha256,
            "snapshot_policy_sha256": metadata.get("policy_config_sha256"),
@@ -481,6 +734,8 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
            "by_region_split_arm": [], "master_visit_metadata": {},
            "cross_region_master_lookup": [],
            "master_visit_identity_shadow_validation": [],
+           "name_candidate_recovery_by_region_split_positive": [],
+           "name_candidate_recovery_by_region_unique_source_poi": [],
            "weighted_TL_VL": {}, "methodology": "controlled_pipeline_comparison_not_causal_effect",
            "canonical_identity_arm": CANONICAL_IDENTITY_ARM,
            "manifest": {"dataset": "AI Hub Domestic Travel Log 2023", "splits": ["TL", "VL"],
@@ -495,10 +750,13 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
     for region in REGIONS:
         visit_all: dict[str, set[tuple[str, str, str, str]]] = defaultdict(set)
         master_all: dict[str, set[tuple[str, str, str, str]]] = defaultdict(set)
+        region_positive_ids = set()
+        recovery_cache = {}
         for role in ROLES:
             spec = next(s for s in specs if s.region == region and s.role == role)
             visits, positives, _ = _source_rows(spec)
             master = masters_by_region[region]
+            region_positive_ids.update(poi_id for _, poi_id in positives)
             out["cross_region_master_lookup"].append({
                 "region": region, "split": role,
                 **_cross_region_master_diagnostic(set(visits), positives, region, masters_by_region),
@@ -509,6 +767,12 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
                 region, positives, visits, master, global_index, policy)
             out["master_visit_identity_shadow_validation"].append({
                 "region": region, "split": role, **shadow_validation,
+            })
+            recovery = _name_recovery_for_units(
+                region, master, [poi_id for _, poi_id in positives], global_index,
+                n1_index, n1_title_index, fuzzy_gram_index, recovery_cache)
+            out["name_candidate_recovery_by_region_split_positive"].append({
+                "region": region, "split": role, **recovery["observed_positive"],
             })
             for poi_id, signals in visits.items():
                 visit_all[poi_id].update(signals)
@@ -529,6 +793,12 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
                 row["region"], row["split"] = region, role
                 out["by_region_split_arm"].append(row)
         out["master_visit_metadata"][region + ":unique_poi_id"] = _master_visit_diagnostics(visit_all, master_all)
+        unique_recovery = _name_recovery_for_units(
+            region, masters_by_region[region], region_positive_ids, global_index,
+            n1_index, n1_title_index, fuzzy_gram_index, recovery_cache)
+        out["name_candidate_recovery_by_region_unique_source_poi"].append({
+            "region": region, **unique_recovery["unique_source_poi"],
+        })
     for arm in "ABCDE":
         totals = Counter()
         for row in out["by_region_split_arm"]:
@@ -631,6 +901,14 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
     out["cross_region_master_lookup_weighted_TL_VL"] = cross_weighted
     out["master_visit_identity_shadow_validation_weighted_TL_VL"] = _aggregate_shadow_validations(
         out["master_visit_identity_shadow_validation"])
+    out["name_candidate_recovery_weighted_TL_VL"] = {
+        "unit": "observed_positive", **_aggregate_name_recovery(
+            out["name_candidate_recovery_by_region_split_positive"]),
+    }
+    out["name_candidate_recovery_unique_source_poi"] = {
+        "unit": "unique_(region,POI_ID)_among_observed_positive", **_aggregate_name_recovery(
+            out["name_candidate_recovery_by_region_unique_source_poi"]),
+    }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return out

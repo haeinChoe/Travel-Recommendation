@@ -6,7 +6,8 @@ from collections import defaultdict
 from scripts.recommendation.compare_poi_identity_arms import (
     CANONICAL_IDENTITY_ARM, _arm_counts, _arm_e_sources, _compare_master_visit_identity,
     _cross_region_master_diagnostic,
-    _master_visit_diagnostics, _resolve_one,
+    _diagnose_name_miss, _master_visit_diagnostics, _name_recovery_indexes,
+    _name_recovery_for_units, _resolve_one,
 )
 from scripts.recommendation.poi_catalog_candidate_contract import (
     CatalogPoi, SourcePoi, match_source_item,
@@ -182,6 +183,87 @@ class IdentityArmComparisonTests(unittest.TestCase):
         self.assertEqual(result["by_visit_signal_class"]["source_signal_conflict"]["positive_count"], 1)
         self.assertEqual(result["by_visit_signal_class"]["single_metadata"]["positive_count"], 3)
         self.assertEqual(result["canonical_promotion"], False)
+
+    def _recovery(self, source_name, catalog, road="Road 1"):
+        global_index = {}
+        for item in catalog:
+            if item.title:
+                global_index.setdefault(item.title.casefold(), []).append(item)
+        n1, titles, grams = _name_recovery_indexes(catalog)
+        signals = {(source_name, "", "", road)}
+        return _diagnose_name_miss(signals, global_index, n1, titles, grams)
+
+    def test_name_recovery_punctuation_only_difference_and_exact_address(self) -> None:
+        item = CatalogPoi("poi-1", title="Cafe River", address="Road 1",
+                          content_type_id="12", region_codes=frozenset({"11"}))
+        result = self._recovery("Cafe-River", [item])
+        self.assertEqual(result["n1_ids"], {"poi-1"})
+        self.assertEqual(result["n1_address_category"], "exact_address_match")
+
+    def test_name_recovery_no_exact_title_candidate_is_retained_as_miss(self) -> None:
+        result = self._recovery("Unrelated Place", [])
+        self.assertIsNotNone(result)
+        self.assertEqual(result["n1_ids"], set())
+        self.assertEqual(result["n2_ids"], set())
+
+    def test_name_recovery_parenthetical_variant_is_diagnostic(self) -> None:
+        item = CatalogPoi("poi-1", title="Museum", address="Road 1",
+                          content_type_id="12", region_codes=frozenset({"11"}))
+        result = self._recovery("Museum (North)", [item])
+        self.assertEqual(result["n1_ids"], set())
+        self.assertEqual(result["n2_incremental_ids"], {"poi-1"})
+
+    def test_name_suffixes_are_tags_and_never_removed_for_recovery(self) -> None:
+        branch = CatalogPoi("branch", title="Cafe Gangnam", address="Road 1",
+                            content_type_id="12", region_codes=frozenset({"11"}))
+        facility = CatalogPoi("facility", title="Hall", address="Road 1",
+                              content_type_id="12", region_codes=frozenset({"11"}))
+        branch_result = self._recovery("Cafe Gangnam점", [branch])
+        facility_result = self._recovery("Hall 주차장", [facility])
+        self.assertEqual(branch_result["n1_ids"], set())
+        self.assertIn("branch_suffix_present", branch_result["tags"])
+        self.assertEqual(facility_result["n1_ids"], set())
+        self.assertIn("facility_subpoi_suffix_present", facility_result["tags"])
+
+    def test_name_recovery_multiple_relaxed_candidates_and_address_mismatch(self) -> None:
+        items = [
+            CatalogPoi("poi-1", title="Cafe River", address="Other Road",
+                       content_type_id="12", region_codes=frozenset({"11"})),
+            CatalogPoi("poi-2", title="Cafe River", address="Another Road",
+                       content_type_id="12", region_codes=frozenset({"11"})),
+        ]
+        result = self._recovery("Cafe-River", items)
+        self.assertEqual(result["n1_ids"], {"poi-1", "poi-2"})
+        self.assertEqual(result["n1_address_category"], "address_mismatch")
+
+    def test_name_recovery_reports_source_address_missing(self) -> None:
+        item = CatalogPoi("poi-1", title="Cafe River", address="Road 1",
+                          content_type_id="12", region_codes=frozenset({"11"}))
+        result = self._recovery("Cafe-River", [item], road="")
+        self.assertEqual(result["n1_address_category"], "source_address_missing")
+
+    def test_fuzzy_retrieval_is_diagnostic_and_does_not_match(self) -> None:
+        item = CatalogPoi("poi-1", title="Museum Gallery", address="Road 1",
+                          content_type_id="12", region_codes=frozenset({"11"}))
+        result = self._recovery("Museum Gallerie", [item])
+        self.assertIn("poi-1", result["n4_ids"])
+        canonical = match_source_item(
+            SourcePoi("source", "capital", name="Museum Gallerie", address="Road 1"),
+            [item], source_region_to_admin_codes={"capital": frozenset({"11"})},
+        )
+        self.assertNotEqual(canonical.status, "MATCHED")
+
+    def test_name_recovery_counts_unique_and_positive_denominators_separately(self) -> None:
+        catalog = [CatalogPoi("poi-1", title="Cafe River", address="Road 1",
+                             content_type_id="12", region_codes=frozenset({"11"}))]
+        global_index = {"cafe river": catalog}
+        n1, titles, grams = _name_recovery_indexes(catalog)
+        result = _name_recovery_for_units(
+            "capital", {"source": {("Cafe-River", "", "", "Road 1")}},
+            ["source", "source"], global_index, n1, titles, grams,
+        )
+        self.assertEqual(result["unique_source_poi"]["global_exact_title_absent_N0"], 1)
+        self.assertEqual(result["observed_positive"]["global_exact_title_absent_N0"], 2)
 
     def test_cross_region_master_reports_one_other_master(self) -> None:
         masters = {"capital": {}, "west": {"poi": {("Name", "26", "Lot", "Road")} },
