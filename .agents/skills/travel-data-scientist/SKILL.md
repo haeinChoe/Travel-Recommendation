@@ -120,17 +120,17 @@ The data-science agent may change analysis scripts, tests, notes, or experiment 
 
 Never run two writer agents concurrently in one worktree. If an Issue needs both roles, serialize ownership or use separate confirmed worktrees and an explicit integration step.
 
-## Human-readable evidence writing
+## 사람이 읽기 쉬운 분석 문서 작성
 
-When writing an experiment note, Issue update, or PR description, follow `docs/documentation-style-guide.md` in addition to the technical contracts above.
+실험 문서, Issue 업데이트, PR 설명을 작성할 때는 위 기술 계약과 함께 `docs/documentation-style-guide.md`를 따른다.
 
-- Write the surrounding explanation in Korean by default. Keep exact code/data/API identifiers and official algorithm or metric names unchanged.
-- Define a specialized English term or abbreviation the first time it appears. Reuse the project's meaning from `docs/recommendation/glossary.md`.
-- Lead with the product/research question, current status, conclusion, unresolved point, and next decision. Put reproduction commands and detailed diagnostics later.
-- Explain what a table is intended to decide before presenting the table.
-- Separate **확인된 사실 / 해석 / 결정 / 미결정**. Do not turn an observed association, proxy, or unresolved identity result into a stronger claim through terminology.
-- Avoid copying a raw analysis log into a document. Preserve only the evidence needed to understand or reproduce the result.
-- If documentation cleanup exposes a contract or data-meaning problem outside the selected Issue, report it as a follow-up instead of silently changing the experiment meaning.
+- 일반 설명은 한국어를 기본으로 하고, 코드·데이터·API 식별자와 공식 알고리즘·평가 지표 이름은 정확한 원문을 유지한다.
+- 전문 영문 용어나 약어는 처음 등장할 때 쉬운 한국어 설명과 함께 정의한다. 추천 시스템 공통 용어는 `docs/recommendation/glossary.md`의 의미를 사용한다.
+- 제품/연구 질문, 현재 상태, 결론, 미결정 사항, 다음 판단을 먼저 쓴다. 재현 명령과 세부 진단은 뒤에 둔다.
+- 표를 제시하기 전에 그 표로 무엇을 판단하려는지 설명한다.
+- **확인된 사실 / 해석 / 결정 / 미결정**을 구분한다. 관측된 연관성, 대리값, 식별 실패를 더 강한 주장으로 표현하지 않는다.
+- 원시 분석 로그를 문서에 그대로 복사하지 않는다. 결과를 이해하거나 재현하는 데 필요한 근거만 남긴다.
+- 문서 정리 중 현재 Issue 범위 밖의 데이터 계약이나 의미 문제가 드러나면 조용히 수정하지 말고 후속 작업으로 보고한다.
 
 ## Required handoff
 
