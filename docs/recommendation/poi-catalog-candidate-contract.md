@@ -2,7 +2,22 @@
 
 ## Status
 
-**상태: 구현 및 privacy-safe 실제 데이터 실험 완료. 결론: 수정 후 재측정.** Issue #66 승인 계약 v1을 구현했다. 기준 카탈로그는 TourAPI KorService2 v4.4, provider identity는 `(tourapi-korservice2, contentid)`, 추천 지원 type은 `{12,14,28}`이다. 버전 정책은 [`config/recommendation/poi-catalog-policy-v1.json`](../../config/recommendation/poi-catalog-policy-v1.json)에 고정했다. 상세 산출물은 Git-ignored `results/`에 두고, 공유 문서에는 privacy-safe 집계만 기록한다.
+**최종 판정: 수정.** 이 실험은 TourAPI product catalog 자체가 부적합함을 입증하지 않았다. 다만 현재 AI Hub → TourAPI identity bridge로는 offline observed-positive coverage를 신뢰성 있게 측정할 수 없다. 그러므로 offline 학습·평가는 AI Hub native POI identity로 수행하고, TourAPI `contentid` 기반 product catalog와의 연결은 별도 identity/crosswalk 문제로 분리한다.
+
+| canonical D 최종 집계 | count |
+| --- | ---: |
+| all positives | 97,640 |
+| source available | 70,756 |
+| `identity_source_missing` | 26,884 |
+| MATCHED | 4,696 |
+| AMBIGUOUS | 15,127 |
+| UNMATCHED (source available) | 50,933 |
+| candidate-contained | 2,097 |
+| end-to-end coverage | 2.15% |
+
+문자열 진단은 종료했다. Name N1/N2는 69/50,933 positives에 diagnostic candidate를 추가했으며, address A1은 단일 title 후보에서 12/14,698 normalized exact, 복수 title 후보에서 유일 선택 0/429였다. 이 값은 identity가 확인된 수가 아니다. **simple string normalization exhausted → 추가 heuristic 중단 → new identity signal 필요**로 결론 내린다. 공식 source-provider crosswalk, 검증된 좌표 호환성, 신뢰 가능한 외부 주소/장소 identifier가 확보되기 전까지 추가 fuzzy threshold, title regex, address heuristic 및 token overlap 기반 MATCHED 승격을 하지 않는다.
+
+Issue #66 승인 계약 v1을 구현했다. 기준 카탈로그는 TourAPI KorService2 v4.4, provider identity는 `(tourapi-korservice2, contentid)`, 추천 지원 type은 `{12,14,28}`이다. 버전 정책은 [`config/recommendation/poi-catalog-policy-v1.json`](../../config/recommendation/poi-catalog-policy-v1.json)에 고정했다. 상세 산출물은 Git-ignored `results/`에 두고, 공유 문서에는 privacy-safe 집계만 기록한다.
 
 AI Hub 네 권역의 공식 metadata는 각 권역을 구성하는 시도 목록을 제공하지 않는다. 사용자가 승인한 공식 광역권 분류를 적용해 deterministic crosswalk를 만들었다. 수도권=서울·인천·경기, 서부=충청권+호남권, 동부=동남권+대경권+강원권, 제주및도서권=제주권이다. 2026년 현행 법정동 상위 시도 코드 16개를 전부 고정 매핑했다. 2026년 전남광주 통합특별시는 `12`, 강원특별자치도는 `51`, 전북특별자치도는 `52`이며, TourAPI가 반환한 세종 코드 `36110`은 공식 법정동 자료와 행정안전부 공지에 따라 충청권에 명시적으로 배정했다. 일괄 prefix 변환은 하지 않는다. AI Hub metadata가 비제주 도서의 소속을 열거하지 않으므로 `jeju-islands`는 공식 제주권 코드 `50`에 매핑하며 다른 도서까지 포함한다고 주장하지 않는다.
 
@@ -91,7 +106,7 @@ The approved TL/VL proxy reproduction ran on 2026-10-16 using all four regions, 
 - Current TourAPI membership does not establish historical 2023 availability, open/bookable status, exposure, or user consideration.
 - The legal meaning of long-term bulk payload retention is not expanded beyond the official listing; retain the collected snapshot only in the approved ignored local results area.
 - Identity match rates depend on the v1 exact-field rule and are not proof of a provider-declared foreign key. Coordinate matching remains disabled.
-- exact aggregate 재실행에서 모든 권역·TL/VL의 후보 요청은 100% non-empty였지만, observed-positive identity resolution은 TL 2,688/87,010 (3.09%), VL 312/10,630 (2.94%)였다. End-to-end coverage는 각각 1,367/87,010 (1.57%), 163/10,630 (1.53%)다. unresolved는 catalog-outside와 다르므로 카탈로그 부재는 판정하지 않았고, 수정 후 재측정한다. 세 분모와 권역별 값은 아래 exact run 표를 참조한다.
+- exact aggregate 재실행에서 후보 요청은 모든 권역·TL/VL에서 100% non-empty였지만, 이 결과는 identity bridge를 통한 positive coverage 추정치를 신뢰 가능하게 만들지 않는다. unresolved는 catalog-outside와 다르므로 TourAPI catalog 부재나 부적합을 입증하지 않는다. 위 canonical 요약이 최종 판정이며, identity heuristic은 종료했다.
 
 ## Issue #4 실제 데이터 실험: 정확 집계 재실행 (2026-10-18)
 
@@ -322,7 +337,7 @@ ROAD_NM_ADDR / LOTNO_ADDR 존재는 해당 POI의 여러 source row 중 공백�
 - exact-title 후보가 2개 이상인 positives는 TL 453/87,010 (0.52%), VL 65/10,630 (0.61%)다.
 - source signal variation은 TL positive 13,936/87,010 (16.02%), VL 695/10,630 (6.54%)에서 관찰됐다. 위 표의 field별 분류는 기존 source_signal_conflict method와 완전히 같지 않다. 기존 판정은 원본 tuple의 distinctness를 사용하고 진단은 필드별 normalization으로 설명한다. whitespace-only도 분리했다.
 - 이 진단으로 미해결의 대부분은 같은 권역 exact-title 후보가 없고, 후보 하나가 있어도 exact-address 검증에서 막힌다는 단계까지 수치화했다. 그러나 title miss가 catalog 부재인지 표기 차이인지 판별할 수 없고, address mismatch도 주소체계/상세주소/실제 장소 차이를 분리하지 못한다. 진단 지표들은 서로 겹치므로 더해 unresolved를 분해하지 않는다. 따라서 97% unresolved의 원인을 전부 설명하지 못하며 나머지는 판정 불가다.
-- 다음 신호 후보는 공식 source-to-provider ID crosswalk 검증 또는 주소 명칭/지번-도로명 변환의 권위 있는 참조표를 이용한 별도 shadow diagnostic이다. 검증 전에 MATCHED 기준을 바꾸지 않는다. 이번 실행은 fuzzy/좌표 matching을 사용하지 않았다.
+- 이후 수행한 N1/N2 및 A1/A2 진단을 반영한 종료 판정은 아래에 기록했다. 문자열 heuristic 실험은 종료했으며 다음 identity 작업은 공식 source-provider crosswalk, 검증된 좌표 호환성 또는 신뢰 가능한 외부 address/place identifier가 확보될 때만 진행한다.
 
 #### Name candidate recovery shadow diagnostic
 
@@ -434,6 +449,8 @@ unique `(region, POI_ID)` 단위에서는 D AMBIGUOUS POI가 3,927개다. exact-
 
 weighted 결과와 unique 결과의 차이는 반복 observed positives의 가중 때문이다. 예를 들어 A1 normalized exact는 weighted 12건이지만 unique POI는 5개다. A2의 최대 범주는 양쪽 단위에서 `partial_overlap`이며, 이는 문자열 token 일부가 겹친다는 진단일 뿐 같은 장소라는 확인이 아니다. A0 funnel, A/B/C/D/E, N0–N4는 이전 집계 artifact와 필드별 비교해 모든 기존 필드 값이 같음을 확인했다.
 
+**Identity heuristic 결론:** name N1/N2 candidate generation은 69/50,933에 그쳤고, address A1은 후보가 하나인 경우 12/14,698 normalized exact, 후보가 2+인 경우 유일 선택 0/429였다. 이 결과로 simple string normalization 실험을 종료한다. 추가 fuzzy threshold, title regex, address heuristic, token overlap 기반 MATCHED 승격은 구현하지 않는다. 다음 단계는 공식 source-provider crosswalk, 검증된 좌표 호환성 또는 신뢰 가능한 외부 address/place identifier가 확보될 때만 별도 검토한다.
+
 #### Branch suffix tag boundary correction
 
 `branch_suffix_present`는 기존 bare `점`의 임의 위치 검색 대신 문자열 끝의 `지점`, `본점`, `DT점`, 또는 terminal `점`만 인식한다. 이를 통해 문자열 중간의 `점`이 branch suffix tag를 발생시키지 않는다. exact matcher에는 이 tag가 전달되지 않는다. D exact-title miss의 branch tag는 observed-positive 기준 5,958/50,933 (11.70%), 고유 POI 기준 2,343/20,856 (11.23%)으로 다시 집계했다. 이전보다 적어진 tag 수는 boundary correction에 따른 것이며 A/B/C/D/E의 status와 candidate coverage는 변경되지 않았다.
@@ -506,7 +523,7 @@ python3 scripts/recommendation/compare_poi_identity_arms.py \
 | C | 97,640 | 3,044 (3.12%) | 32,062 (32.84%) | 62,534 (64.05%) | 0 | 3.12% / 3.12% | 1,530 | 1.57% | 50.26% | 1,514 |
 | D | 97,640 | 4,696 (4.81%) | 15,127 (15.49%) | 50,933 (52.16%) | 26,884 (27.53%) | 4.81% / 6.64% | 2,097 | 2.15% | 44.66% | 2,599 |
 
-A→B는 POI Master로 바꾼 경우 MATCHED **3,000→4,289 (+1,289; 3.07%→4.39%, +1.32%p)**, A→C는 source-region hard filter 제거만으로 **3,000→3,044 (+44; 3.07%→3.12%, +0.05%p)**, C→D는 두 변경을 결합해 **3,044→4,696 (+1,652; 3.12%→4.81%, +1.69%p)**다. source-region hard filter 제거 효과는 작고, POI Master 사용 효과가 상대적으로 크다. 그러므로 region hard filter는 주요 failure source로 확인되지 않았으며, 현재 관찰된 더 큰 병목은 Master coverage와 title/address ontology다. D는 A 대비 MATCHED가 56.5% 늘었지만 전체 positives의 4.81%다. Candidate-contained는 A/C **1,530 (1.57%)**, B/D **2,097 (2.15%)**이고, D conditional coverage는 **44.66%**로 새 MATCHED의 상당수가 현재 후보 정책 밖이다. 따라서 identity 분석 canonical path는 D로 유지하되 전체 positive coverage가 2.15%이고 identity rate도 4.81%에 그쳐 결론은 **수정 후 재측정**이다. 제품 `CandidateRequest.region` hard eligibility와 `{12,14,28}` 정책은 그대로 유지한다.
+A→B는 POI Master로 바꾼 경우 MATCHED **3,000→4,289 (+1,289; 3.07%→4.39%, +1.32%p)**, A→C는 source-region hard filter 제거만으로 **3,000→3,044 (+44; 3.07%→3.12%, +0.05%p)**, C→D는 두 변경을 결합해 **3,044→4,696 (+1,652; 3.12%→4.81%, +1.69%p)**다. source-region hard filter 제거 효과는 작고, POI Master 사용 효과가 상대적으로 컸다. 이 controlled comparison은 TourAPI catalog 적합성을 평가하지 않는다. 현재 AI Hub→TourAPI bridge가 offline coverage 측정에 충분하지 않다는 위 최종 결론을 따른다. 제품 `CandidateRequest.region` hard eligibility와 `{12,14,28}` 정책은 그대로 유지한다.
 
 #### 권역/split별 arm 비교
 
@@ -712,7 +729,7 @@ Positive-weighted `identity_source_missing`은 **26,884/97,640 (27.53%)**다. Vi
 
 #### 좌표 검증 및 적용 한계
 
-고정 TourAPI snapshot에 `mapx/mapy`가 없어 exact MATCHED와 좌표의 거리 분포는 **산출 불가**다. AI Hub master에서 X/Y 열을 찾았지만 제공 문서에서 CRS와 축 의미를 확인하지 못했다. TourAPI v4.4 매뉴얼은 `mapX/mapY`를 WGS84 경도/위도로 정의한다. 따라서 `coordinates_for_identity=false`를 유지하며 좌표는 어떤 arm에서도 사용하지 않았다. Identity 개선의 대부분은 master metadata 사용에서 나왔고 global search 자체의 A→C 증분은 0.05%p로 작다. D에서 아직 설명하지 못한 remainder는 95.19% unresolved이며 master missing, exact title absent, address mismatch, ambiguity가 서로 겹치므로 단순 합산으로 귀인을 나누지 않는다. 다음 단계는 AI Hub와 TourAPI 사이 공식 ID crosswalk의 존재 여부를 확인하고, 주소 normalization 후보는 separate shadow diagnostic으로 검증하는 것이다.
+고정 TourAPI snapshot에 `mapx/mapy`가 없어 좌표 호환성은 **산출 불가**다. AI Hub master에서 X/Y 열을 찾았지만 제공 문서에서 CRS와 축 의미를 확인하지 못했다. TourAPI v4.4 매뉴얼은 `mapX/mapY`를 WGS84 경도/위도로 정의한다. 따라서 `coordinates_for_identity=false`를 유지했다. A1/A2와 N1/N2 진단으로 추가 단순 string heuristic은 소진된 것으로 보고 identity heuristic 실험을 종료한다. 다음 identity signal은 공식 source-provider crosswalk, 검증된 좌표 호환성 또는 신뢰 가능한 외부 주소/장소 identifier로 한정한다. 그 전까지 fuzzy threshold, title regex, address heuristic, token overlap 기반 MATCHED 승격은 중단한다.
 
 ## Synthetic validation and use
 
