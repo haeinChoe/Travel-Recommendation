@@ -39,7 +39,7 @@ PARENTHETICAL_PATTERN = re.compile(
     r"\([^()]*\)|\[[^\[\]]*\]|\{[^{}]*\}|【[^【】]*】|〔[^〔〕]*〕|"
     r"〈[^〈〉]*〉|《[^《》]*》|「[^「」]*」|『[^『』]*』"
 )
-BRANCH_PATTERN = re.compile(r"(?:지점|본점|DT\s*점|점)", re.IGNORECASE)
+BRANCH_PATTERN = re.compile(r"(?:지점|본점|DT\s*점|점)\s*$", re.IGNORECASE)
 FACILITY_SUBPOI_PATTERN = re.compile(r"(?:주차장|입구|관리소)")
 NUMBER_TOKEN_PATTERN = re.compile(r"\d+")
 LATIN_TOKEN_PATTERN = re.compile(r"[A-Za-z]+")
@@ -421,6 +421,118 @@ def _aggregate_name_recovery(aggregates):
     }
 
 
+def _address_resolution_shadow(region, sources, positives, global_index, admin_codes):
+    """Describe why Arm D ambiguous positives remain unresolved; never alters identity."""
+    buckets = ("0", "1", "2+")
+    ambiguous = []
+    for _trip_id, poi_id in positives:
+        signals = sources.get(poi_id)
+        if not signals:
+            continue
+        names = {normalize_text(signal[0]) for signal in signals if normalize_text(signal[0])}
+        candidates_by_id = {item.content_id: item for name in names
+                            for item in global_index.get(name, [])}
+        candidates = list(candidates_by_id.values())
+        result = _resolve_one(poi_id, signals, region, candidates, admin_codes, global_scope=True)
+        if result.status != "AMBIGUOUS":
+            continue
+        title_count = len(candidates)
+        title_bucket = "0" if title_count == 0 else "1" if title_count == 1 else "2+"
+        source_addresses = {normalize_text(value) for signal in signals for value in (signal[2], signal[3])
+                            if normalize_text(value)}
+        catalog_address_count = sum(bool(normalize_text(item.address)) for item in candidates)
+        catalog_addresses = {normalize_text(item.address) for item in candidates if normalize_text(item.address)}
+        exact_address_ids = {item.content_id for item in candidates
+                             if normalize_text(item.address) and normalize_text(item.address) in source_addresses}
+        address_bucket = ("0" if not exact_address_ids else "1" if len(exact_address_ids) == 1 else "2+")
+        if not source_addresses:
+            address_outcome = "source_address_missing"
+        elif not catalog_addresses:
+            address_outcome = "catalog_address_missing"
+        elif not exact_address_ids:
+            address_outcome = "address_mismatch"
+        elif len(exact_address_ids) == 1:
+            address_outcome = "one_exact_address_candidate"
+        else:
+            address_outcome = "multiple_exact_address_candidates"
+        if len(signals) > 1:
+            address_presence = "multiple_source_signals"
+        else:
+            _name, _sgg, lot, road = next(iter(signals))
+            has_road, has_lot = bool(normalize_text(road)), bool(normalize_text(lot))
+            address_presence = ("road_and_lot" if has_road and has_lot else "road_only" if has_road else
+                                "lot_only" if has_lot else "none")
+        catalog_address_presence = ("none" if not catalog_address_count else
+                                    "all" if catalog_address_count == len(candidates) else "some")
+        ambiguous.append((title_bucket, result.method or "no_method", address_presence,
+                          catalog_address_presence, address_bucket, address_outcome))
+
+    def summarize(rows):
+        methods = Counter(row[1] for row in rows)
+        title_counts = Counter(row[0] for row in rows)
+        address_presence = Counter(row[2] for row in rows)
+        catalog_presence = Counter(row[3] for row in rows)
+        address_buckets = Counter(row[4] for row in rows)
+        outcomes = Counter(row[5] for row in rows)
+        denominator = len(rows)
+        return {
+            "ambiguous_positive_count": denominator,
+            "exact_title_candidate_counts_0_1_2plus": {key: title_counts[key] for key in buckets},
+            "exact_title_candidate_rates": _rate_map({key: title_counts[key] for key in buckets}, denominator),
+            "ambiguous_match_method_counts": dict(methods),
+            "source_address_presence_counts": dict(address_presence),
+            "catalog_candidate_address_presence_counts": dict(catalog_presence),
+            "exact_address_candidate_counts_0_1_2plus": {key: address_buckets[key] for key in buckets},
+            "address_resolution_outcome_counts": dict(outcomes),
+            "address_resolution_outcome_rates": _rate_map(dict(outcomes), denominator),
+        }
+
+    by_title_count = {}
+    for bucket in buckets:
+        by_title_count[bucket] = summarize([row for row in ambiguous if row[0] == bucket])
+    return {"region": region, "overall": summarize(ambiguous), "by_exact_title_candidate_count": by_title_count}
+
+
+def _aggregate_address_resolution_shadow(entries):
+    grouped = defaultdict(list)
+    for entry in entries:
+        grouped["overall"].append(entry["overall"])
+        for bucket, row in entry["by_exact_title_candidate_count"].items():
+            grouped[bucket].append(row)
+
+    def aggregate(rows):
+        methods, source_address, catalog_address, address_buckets, outcomes = (
+            Counter(), Counter(), Counter(), Counter(), Counter())
+        for row in rows:
+            methods.update(row["ambiguous_match_method_counts"])
+            source_address.update(row["source_address_presence_counts"])
+            catalog_address.update(row["catalog_candidate_address_presence_counts"])
+            address_buckets.update(row["exact_address_candidate_counts_0_1_2plus"])
+            outcomes.update(row["address_resolution_outcome_counts"])
+        denominator = sum(row["ambiguous_positive_count"] for row in rows)
+        return {
+            "ambiguous_positive_count": denominator,
+            "ambiguous_match_method_counts": dict(methods),
+            "source_address_presence_counts": dict(source_address),
+            "catalog_candidate_address_presence_counts": dict(catalog_address),
+            "exact_address_candidate_counts_0_1_2plus": {key: address_buckets[key] for key in ("0", "1", "2+")},
+            "address_resolution_outcome_counts": dict(outcomes),
+            "address_resolution_outcome_rates": _rate_map(dict(outcomes), denominator),
+        }
+
+    by_title = {key: aggregate(grouped[key]) for key in ("0", "1", "2+")}
+    total = sum(by_title[key]["ambiguous_positive_count"] for key in ("0", "1", "2+"))
+    return {
+        "overall": aggregate(grouped["overall"]),
+        "exact_title_candidate_counts_0_1_2plus": {
+            key: by_title[key]["ambiguous_positive_count"] for key in ("0", "1", "2+")
+        },
+        "exact_title_candidate_rates": _rate_map(
+            {key: by_title[key]["ambiguous_positive_count"] for key in ("0", "1", "2+")}, total),
+        "by_exact_title_candidate_count": by_title,
+    }
+
+
 def _master_rows(root: Path) -> dict[str, set[tuple[str, str, str, str]]]:
     files = [p for p in shared.csv_files(root) if "POI_MASTER" in p.name.upper()]
     if len(files) != 1:
@@ -736,6 +848,7 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
            "master_visit_identity_shadow_validation": [],
            "name_candidate_recovery_by_region_split_positive": [],
            "name_candidate_recovery_by_region_unique_source_poi": [],
+           "address_resolution_shadow_by_region_split": [],
            "weighted_TL_VL": {}, "methodology": "controlled_pipeline_comparison_not_causal_effect",
            "canonical_identity_arm": CANONICAL_IDENTITY_ARM,
            "manifest": {"dataset": "AI Hub Domestic Travel Log 2023", "splits": ["TL", "VL"],
@@ -773,6 +886,12 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
                 n1_index, n1_title_index, fuzzy_gram_index, recovery_cache)
             out["name_candidate_recovery_by_region_split_positive"].append({
                 "region": region, "split": role, **recovery["observed_positive"],
+            })
+            address_shadow = _address_resolution_shadow(
+                region, master, positives, global_index,
+                {k: frozenset(v) for k, v in policy.product_region_to_ldong_regn_cd.items()})
+            out["address_resolution_shadow_by_region_split"].append({
+                "region": region, "split": role, **address_shadow,
             })
             for poi_id, signals in visits.items():
                 visit_all[poi_id].update(signals)
@@ -908,6 +1027,11 @@ def run(specs, masters_by_region, snapshot_path, policy_path, output_path):
     out["name_candidate_recovery_unique_source_poi"] = {
         "unit": "unique_(region,POI_ID)_among_observed_positive", **_aggregate_name_recovery(
             out["name_candidate_recovery_by_region_unique_source_poi"]),
+    }
+    out["address_resolution_shadow_weighted_TL_VL"] = {
+        "arm": "D", "scope": "ambiguous_observed_positive_only",
+        "canonical_matcher_unchanged": True,
+        **_aggregate_address_resolution_shadow(out["address_resolution_shadow_by_region_split"]),
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

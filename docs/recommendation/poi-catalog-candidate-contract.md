@@ -345,11 +345,11 @@ N1에서 새로 나온 observed-positive 후보 11건 중 source 주소 exact ma
 | --- | ---: | ---: |
 | `punctuation_difference_candidate` | 11 (0.02%) | 5 (0.02%) |
 | `parenthetical_candidate` | 58 (0.11%) | 37 (0.18%) |
-| `branch_suffix_present` | 6,145 (12.06%) | 2,446 (11.73%) |
+| `branch_suffix_present` | 5,958 (11.70%) | 2,343 (11.23%) |
 | `facility_subpoi_suffix_present` | 838 (1.65%) | 517 (2.48%) |
 | `numeric_token_present` | 2,653 (5.21%) | 1,573 (7.54%) |
 | `latin_token_present` | 2,167 (4.25%) | 1,171 (5.61%) |
-| `other` | 40,616 (79.74%) | 16,036 (76.89%) |
+| `other` | 40,731 (79.97%) | 16,109 (77.24%) |
 
 `other`는 위 문자열 특성이나 N1/N2 recovery tag가 없는 경우이며, 나머지 tag는 서로 겹칠 수 있으므로 합계를 100%로 해석하지 않는다. 권역/TL/VL 상세 count는 ignored aggregate의 `name_candidate_recovery_by_region_split_positive`와 `name_candidate_recovery_by_region_unique_source_poi`에 저장했다. 50,933건의 약 0.14%만 N2까지 exact normalized-title 후보가 생겼고, 그 중 대부분은 source 주소와 exact하게 확인되지 않았다. 따라서 punctuation/parenthetical normalization을 canonical 기준으로 바로 승격할 근거는 부족하다. 지점·시설 suffix tag도 존재 여부 진단일 뿐, 제거 후 identity를 확정하지 않는다. N4는 넓은 fuzzy 후보가 대부분에서 만들어졌다는 사실만 보이며 catalog 부재나 identity를 설명하지 않는다. 나머지 원인은 여전히 판정 불가이며, `UNMATCHED != catalog-outside`를 유지한다.
 
@@ -365,6 +365,32 @@ N1에서 새로 나온 observed-positive 후보 11건 중 source 주소 exact ma
 | jeju-islands / VL | 2,185 | 0 (0.00%) | 4 (0.18%) | 0/0 (해당 없음) | 0/4 (0.00%) |
 
 주소 열은 해당 단계에서 새로 후보가 생긴 positive 중 exact address match 수다. N2 candidate 있는 positive는 N1 candidate도 포함하는 누적 값이며, 전역 요약의 N2 incremental 주소 분모는 N2에서 새로 추가된 58건이다.
+
+#### Arm D ambiguous address-resolution shadow diagnostic
+
+같은 재실행에서 D의 **15,127 AMBIGUOUS observed positives**를 대상으로 exact-title 후보와 주소 resolution을 교차 집계했다. 이는 canonical matcher 내부 결과를 설명하는 shadow 집계이며 status나 exact match 기준을 수정하지 않는다.
+
+```text
+D AMBIGUOUS = 15,127
+├─ exact-title candidate = 1: 14,698 (97.16%)
+└─ exact-title candidate = 2+: 429 (2.84%)
+```
+
+분해 결과는 다음과 같다.
+
+| exact-title 후보 수 | positives | 기존 ambiguous method | source address 없음 | 주소 mismatch | exact address가 여러 후보와 일치 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 14,698 | `exact_name_only_candidate` 14,698 | 460 (3.13%) | 14,238 (96.87%) | 0 |
+| 2+ | 429 | `exact_name_only_candidate` 363, `conflicting_source_address_signals` 66 | 0 | 363 (84.62%) | 66 (15.38%) |
+| 전체 | 15,127 | `exact_name_only_candidate` 15,061, `conflicting_source_address_signals` 66 | 460 (3.04%) | 14,601 (96.52%) | 66 (0.44%) |
+
+source address는 전체에서 road only 2,203 (14.56%), lot only 3,904 (25.81%), road+lot 8,560 (56.61%), 둘 다 없음 460 (3.04%)이다. exact-title 후보의 TourAPI address는 전체 후보군에서 모두 존재했다 (15,127/15,127). 하지만 source의 road/lot 어느 값도 candidate address와 exact normalized match하지 않은 positive가 14,601 (96.52%)였다. 66건은 source address와 exact하게 일치하는 TourAPI 후보가 복수여서 기존 `conflicting_source_address_signals`로 남았다. unique exact-address candidate는 0건이다.
+
+따라서 이 funnel에서는 exact-title 후보 1개인 모호성의 대부분이 source address mismatch 또는 source address missing으로 설명되고, 후보가 여러 개인 경우에는 66건에서 동일 exact address를 가진 복수 POI가 관찰됐다. 주소 mismatch의 원인이 표기 차이인지 실제 장소 차이인지는 판정하지 않는다. 기존 `MATCHED` 결과와 D의 4,696 MATCHED / 15,127 AMBIGUOUS / 50,933 UNMATCHED는 그대로다.
+
+#### Branch suffix tag boundary correction
+
+`branch_suffix_present`는 기존 bare `점`의 임의 위치 검색 대신 문자열 끝의 `지점`, `본점`, `DT점`, 또는 terminal `점`만 인식한다. 이를 통해 문자열 중간의 `점`이 branch suffix tag를 발생시키지 않는다. exact matcher에는 이 tag가 전달되지 않는다. D exact-title miss의 branch tag는 observed-positive 기준 5,958/50,933 (11.70%), 고유 POI 기준 2,343/20,856 (11.23%)으로 다시 집계했다. 이전보다 적어진 tag 수는 boundary correction에 따른 것이며 A/B/C/D/E의 status와 candidate coverage는 변경되지 않았다.
 
 가중 합계로 보면 TL은 **2,688 / 87,010 (3.09%)**가 MATCHED, **84,322 / 87,010 (96.91%)**가 unresolved다. VL은 **312 / 10,630 (2.94%)**가 MATCHED, **10,318 / 10,630 (97.06%)**가 unresolved다. End-to-end candidate coverage는 TL **1,367 / 87,010 (1.57%)**, VL **163 / 10,630 (1.53%)**다. Conditional coverage는 TL **1,367 / 2,688 (50.86%)**, VL **163 / 312 (52.24%)**다. MATCHED positives 중 outside-candidate는 TL **1,321 / 2,688 (49.14%)**, VL **149 / 312 (47.76%)**다. Conditional coverage만 보면 후보 포함률은 절반가량이지만, identity resolution이 약 3%여서 전체 계약 성능이 충분하다는 근거는 아니다.
 

@@ -5,9 +5,9 @@ from collections import defaultdict
 
 from scripts.recommendation.compare_poi_identity_arms import (
     CANONICAL_IDENTITY_ARM, _arm_counts, _arm_e_sources, _compare_master_visit_identity,
-    _cross_region_master_diagnostic,
+    _address_resolution_shadow, _cross_region_master_diagnostic,
     _diagnose_name_miss, _master_visit_diagnostics, _name_recovery_indexes,
-    _name_recovery_for_units, _resolve_one,
+    _name_recovery_for_units, _resolve_one, BRANCH_PATTERN,
 )
 from scripts.recommendation.poi_catalog_candidate_contract import (
     CatalogPoi, SourcePoi, match_source_item,
@@ -222,8 +222,49 @@ class IdentityArmComparisonTests(unittest.TestCase):
         facility_result = self._recovery("Hall 주차장", [facility])
         self.assertEqual(branch_result["n1_ids"], set())
         self.assertIn("branch_suffix_present", branch_result["tags"])
+        canonical = match_source_item(
+            SourcePoi("source", "capital", name="Cafe Gangnam점", address="Road 1"),
+            [branch], source_region_to_admin_codes={"capital": frozenset({"11"})},
+        )
+        self.assertEqual(canonical.status, "UNMATCHED")
         self.assertEqual(facility_result["n1_ids"], set())
         self.assertIn("facility_subpoi_suffix_present", facility_result["tags"])
+
+    def test_branch_suffix_requires_terminal_branch_token(self) -> None:
+        self.assertIsNotNone(BRANCH_PATTERN.search("서울점"))
+        self.assertIsNotNone(BRANCH_PATTERN.search("Cafe 강남지점"))
+        self.assertIsNone(BRANCH_PATTERN.search("점심 먹으러 갈 장소"))
+        self.assertIsNone(BRANCH_PATTERN.search("관광지점검 안내"))
+        result = self._recovery("관광지점검 안내", [])
+        self.assertNotIn("branch_suffix_present", result["tags"])
+
+    def test_address_shadow_splits_ambiguous_title_candidate_buckets(self) -> None:
+        one = CatalogPoi("single", title="Place", address="Different Road",
+                         content_type_id="12", region_codes=frozenset({"11"}))
+        two_a = CatalogPoi("two-a", title="Branch", address="Same Road",
+                           content_type_id="12", region_codes=frozenset({"11"}))
+        two_b = CatalogPoi("two-b", title="Branch", address="Same Road",
+                           content_type_id="12", region_codes=frozenset({"11"}))
+        missing = CatalogPoi("missing", title="Missing", address="Catalog Road",
+                             content_type_id="12", region_codes=frozenset({"11"}))
+        sources = {
+            "one": {("Place", "", "", "Source Road")},
+            "two": {("Branch", "", "", "Same Road")},
+            "missing": {("Missing", "", "", "   ")},
+        }
+        diagnostic = _address_resolution_shadow(
+            "capital", sources, [("trip-1", "one"), ("trip-2", "two"), ("trip-3", "missing")],
+            {"place": [one], "branch": [two_a, two_b], "missing": [missing]},
+            {"capital": frozenset({"11"})},
+        )
+        result = diagnostic["overall"]
+        self.assertEqual(result["ambiguous_positive_count"], 3)
+        self.assertEqual(result["exact_title_candidate_counts_0_1_2plus"], {"0": 0, "1": 2, "2+": 1})
+        self.assertEqual(result["address_resolution_outcome_counts"], {
+            "address_mismatch": 1, "multiple_exact_address_candidates": 1,
+            "source_address_missing": 1,
+        })
+        self.assertEqual(result["source_address_presence_counts"]["none"], 1)
 
     def test_name_recovery_multiple_relaxed_candidates_and_address_mismatch(self) -> None:
         items = [
