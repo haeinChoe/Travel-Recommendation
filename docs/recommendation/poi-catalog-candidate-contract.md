@@ -339,9 +339,9 @@ ROAD_NM_ADDR / LOTNO_ADDR 존재는 해당 POI의 여러 source row 중 공백�
 
 권역별 proxy 후보 수는 capital 8,655, west 9,429, east 10,381, jeju-islands 13,152다. 각 권역 320개 VL trip request가 모두 non-empty이며 TL/VL trip ID overlap과 traveler overlap은 각각 0이다. region-level proxy candidate set을 모든 요청에 사용했으므로 요청당 후보 수도 해당 후보 수와 같다.
 
-### 결론: 수정
+### 이전 baseline 결론의 범위
 
-정확 집계에서는 catalog snapshot과 지역 eligibility가 실제 non-empty 요청을 100% 만들지만, AI Hub observed positives와 TourAPI canonical identity 연결은 TL 3.09%, VL 2.94%에 그쳤다. End-to-end positive coverage도 TL 1.57%, VL 1.53%이며, MATCHED positives 중에서도 절반가량만 eligible 후보에 포함됐다. 진단 결과 `no_exact_signal`은 동일 권역 exact-title 후보 부재를 뜻하고 catalog 부재를 입증하지 않는다. `exact_name_only_candidate`는 제목만 일치하고 identity 확정 신호가 부족한 ambiguous 상태다. 후보 0/1/2+와 주소 검증, source signal variation의 상세 수치는 위 진단 표에 기록했다. unresolved 중 상당 부분은 exact-title 후보 부재 및 exact-address 불일치 단계에서 관측되지만, 이름 표기 차이와 실제 catalog 부재를 완전히 구분할 수 없어 원인 전체가 설명되지는 않았다. 따라서 현재 identity/coverage 계약으로 ranker 평가를 진행하기에는 근거가 부족하다. 다만 unresolved는 TourAPI catalog 부재를 뜻하지 않으며, 수치만으로 TourAPI source 자체를 폐기할 수는 없다. **공식 ID crosswalk 또는 검증된 추가 identity 신호를 확보하고 outside-candidate 원인을 구분한 뒤 재측정**하는 결론으로 유지한다. 그때까지 `catalog-outside`는 판정 불가, unvisited는 unknown/unlabeled로 둔다.
+이전 단일-arm 수치는 Arm A (visit row metadata + source-region identity scope)에 대한 결과다. 아래 A/B/C/D 재실험은 같은 positives와 snapshot으로 비교했으며, 최신 identity path 결정과 결론은 새 A/B/C/D 섹션을 따른다.
 
 재현 명령은 승인된 환경에서 `RAW_ROOT`, 권역별 `*_TL`/`*_VL`, 고정 snapshot의 `TOURAPI_SNAPSHOT`을 환경 변수로 설정한 뒤 실행한다. API key는 설정하지 않고 읽지 않는다. 입력 경로나 비밀값은 로그·문서·PR에 출력하지 않는다.
 
@@ -350,6 +350,179 @@ python3 scripts/recommendation/analyze_poi_catalog_candidate_coverage.py --raw-r
 ```
 
 상세 `metrics.csv`와 `run_metadata.json`은 Git-ignored 결과 경로에 남아 있다. manifest에는 run/config/code fingerprints, snapshot version/hash, retrieval time, role labels, field allowlist 및 privacy flags가 있고 raw path/ID/row/coordinate/text/secret은 없다.
+
+### POI identity source와 region scope A/B/C/D 후속 비교
+
+2026-10-18 후속 실험은 같은 AI Hub 2023 TL/VL positive, 같은 고정 TourAPI snapshot, 같은 exact-name/address 판정 규칙으로 네 경로를 비교한다.
+
+| Arm | Identity metadata | TourAPI identity 검색 범위 |
+| --- | --- | --- |
+| A | visit row | 기존 source region 제한 |
+| B | `TN_POI_MASTER` | 기존 source region 제한 |
+| C | visit row | 전체 snapshot |
+| D | `TN_POI_MASTER` | 전체 snapshot |
+
+`SourcePoi.region`은 dataset/historical provenance로 유지한다. Global arm에서는 이 값으로 identity 후보를 제한하지 않지만, `CandidateRequest.region`은 기존처럼 후보 eligibility hard filter로 적용한다. Master에 `POI_ID`가 없으면 `master_missing`으로 남기며 visit metadata로 fallback하지 않는다. `A→B`, `A→C`, `C→D`는 동일 입력을 바꾼 controlled pipeline comparison이며 엄밀한 인과효과로 해석하지 않는다. Global exact title은 진단만 수행하고 title 존재만으로 `MATCHED`를 만들지 않는다. `MATCHED` 이후 `unsupported_content_type`, `outside_request_region` 등을 별도로 센다.
+
+고정 TourAPI snapshot은 `contentid, contenttypeid, title, addr1, lDongRegnCd, lDongSignguCd, lclsSystm1/2/3, modifiedtime` 필드로 되어 있어 `mapx/mapy`가 없다. 따라서 이번 고정 snapshot의 exact match로 거리분포를 계산할 수 없다. TourAPI v4.4 매뉴얼은 `mapX`를 WGS84 경도, `mapY`를 WGS84 위도로 정의하지만, AI Hub `TN_POI_MASTER.X_COORD/Y_COORD`의 CRS·축 의미를 설명하는 제공 문서는 확인되지 않았다. 그러므로 `coordinates_for_identity=false`를 유지하고 좌표 identity signal은 사용하지 않는다. 거리 검증을 수행하려면 좌표 필드가 포함된 승인된 TourAPI snapshot이 필요하다.
+
+실험 artifact는 Git-ignored `results/experiments/poi-catalog-v1/identity-arms-20261018.json`에 저장한다. 재현 스크립트는 `scripts/recommendation/compare_poi_identity_arms.py`이며 raw rows와 identifier를 출력하지 않는다. Snapshot metadata의 policy JSON SHA-256은 현재 versioned policy와 달라 manifest에 불일치를 표시한다. 실행 시 canonical snapshot SHA-256, TourAPI provider/manual, legal-code universe, supported type set을 검증하고 현재 저장소의 versioned policy를 명시적으로 적용한다. Arm A weighted status와 candidate coverage는 기존 exact baseline과 동일함을 재현했다.
+
+재현 명령은 기존 승인 입력의 환경 변수를 연결한다. 변수 값이나 원본 경로는 stdout/manifest에 기록하지 않는다.
+
+```bash
+python3 scripts/recommendation/compare_poi_identity_arms.py \
+  --raw-root "$RAW_ROOT" \
+  --snapshot "$TOURAPI_SNAPSHOT" \
+  --master capital="$CAPITAL_OTHER" \
+  --master west="$WEST_OTHER" \
+  --master east="$EAST_OTHER" \
+  --master jeju-islands="$JEJU_OTHER" \
+  --output "$PWD/results/experiments/poi-catalog-v1/identity-arms-20261018.json"
+```
+
+### A/B/C/D 실제 데이터 비교 (2026-10-18)
+
+양성 관계는 모든 arm에서 동일한 distinct `(TRAVEL_ID, POI_ID)` 집합이다. A/B는 `SourcePoi.region`의 기존 제품 권역 제한을 identity 탐색에도 적용하고, C/D는 전체 snapshot에서 탐색한다. B/D는 `TN_POI_MASTER` metadata만 사용하며 master 미존재는 `master_missing`으로 두고 visit row 값으로 대체하지 않았다. 각 차이는 controlled pipeline comparison이고 인과 효과로 해석하지 않는다.
+
+| Arm | all positives | MATCHED | AMBIGUOUS | UNMATCHED | identity rate | candidate-contained | end-to-end coverage | conditional coverage | outside candidate |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | 97,640 | 3,000 (3.07%) | 29,149 (29.85%) | 65,491 (67.07%) | 3.07% | 1,530 | 1.57% | 51.00% | 1,470 |
+| B | 97,640 | 4,289 (4.39%) | 12,924 (13.24%) | 80,427 (82.37%) | 4.39% | 2,097 | 2.15% | 48.89% | 2,192 |
+| C | 97,640 | 3,044 (3.12%) | 32,062 (32.84%) | 62,534 (64.05%) | 3.12% | 1,530 | 1.57% | 50.26% | 1,514 |
+| D | 97,640 | 4,696 (4.81%) | 15,127 (15.49%) | 77,817 (79.70%) | 4.81% | 2,097 | 2.15% | 44.66% | 2,599 |
+
+A→B는 POI Master로 바꾼 경우 MATCHED **3,000→4,289 (+1,289; 3.07%→4.39%, +1.32%p)**, A→C는 source-region hard filter 제거만으로 **3,000→3,044 (+44; +0.05%p)**, C→D는 두 변경을 결합해 **3,044→4,696 (+1,652; +1.69%p)**다. D는 A 대비 MATCHED가 56.5% 늘었지만 전체 positives의 4.81%다. Candidate-contained는 A/C **1,530 (1.57%)**, B/D **2,097 (2.15%)**이고, D conditional coverage는 **44.66%**로 새 MATCHED의 상당수가 현재 후보 정책 밖이다. 따라서 identity 분석 canonical path는 D로 전환하되 전체 positive coverage가 2.15%이고 identity rate도 4.81%에 그쳐 결론은 **수정 후 재측정**이다. 제품 `CandidateRequest.region` hard eligibility와 `{12,14,28}` 정책은 그대로 유지한다.
+
+#### 권역/split별 arm 비교
+
+| 권역 / split | Arm | positives | MATCHED (rate) | AMBIGUOUS (rate) | UNMATCHED (rate) | candidate-contained (end-to-end) | conditional |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| capital / TL | A | 13,660 | 3 (0.02%) | 3,966 (29.03%) | 9,691 (70.94%) | 3 (0.02%) | 100.00% |
+| capital / TL | B | 13,660 | 487 (3.57%) | 1,858 (13.60%) | 11,315 (82.83%) | 220 (1.61%) | 45.17% |
+| capital / TL | C | 13,660 | 5 (0.04%) | 4,042 (29.59%) | 9,613 (70.37%) | 3 (0.02%) | 60.00% |
+| capital / TL | D | 13,660 | 489 (3.58%) | 1,917 (14.03%) | 11,254 (82.39%) | 220 (1.61%) | 44.99% |
+| capital / VL | A | 1,811 | 2 (0.11%) | 464 (25.62%) | 1,345 (74.27%) | 2 (0.11%) | 100.00% |
+| capital / VL | B | 1,811 | 60 (3.31%) | 248 (13.69%) | 1,503 (82.99%) | 32 (1.77%) | 53.33% |
+| capital / VL | C | 1,811 | 3 (0.17%) | 470 (25.95%) | 1,338 (73.88%) | 2 (0.11%) | 66.67% |
+| capital / VL | D | 1,811 | 60 (3.31%) | 255 (14.08%) | 1,496 (82.61%) | 32 (1.77%) | 53.33% |
+| west / TL | A | 19,584 | 28 (0.14%) | 6,414 (32.75%) | 13,142 (67.11%) | 16 (0.08%) | 57.14% |
+| west / TL | B | 19,584 | 633 (3.23%) | 2,964 (15.13%) | 15,987 (81.63%) | 370 (1.89%) | 58.45% |
+| west / TL | C | 19,584 | 30 (0.15%) | 6,591 (33.66%) | 12,963 (66.19%) | 16 (0.08%) | 53.33% |
+| west / TL | D | 19,584 | 644 (3.29%) | 3,090 (15.78%) | 15,850 (80.93%) | 370 (1.89%) | 57.45% |
+| west / VL | A | 2,357 | 4 (0.17%) | 652 (27.66%) | 1,701 (72.17%) | 2 (0.08%) | 50.00% |
+| west / VL | B | 2,357 | 65 (2.76%) | 364 (15.44%) | 1,928 (81.80%) | 40 (1.70%) | 61.54% |
+| west / VL | C | 2,357 | 4 (0.17%) | 670 (28.43%) | 1,683 (71.40%) | 2 (0.08%) | 50.00% |
+| west / VL | D | 2,357 | 65 (2.76%) | 381 (16.16%) | 1,911 (81.08%) | 40 (1.70%) | 61.54% |
+| east / TL | A | 20,456 | 198 (0.97%) | 8,616 (42.12%) | 11,642 (56.91%) | 72 (0.35%) | 36.36% |
+| east / TL | B | 20,456 | 841 (4.11%) | 3,219 (15.74%) | 16,396 (80.15%) | 397 (1.94%) | 47.21% |
+| east / TL | C | 20,456 | 199 (0.97%) | 8,755 (42.80%) | 11,502 (56.23%) | 72 (0.35%) | 36.18% |
+| east / TL | D | 20,456 | 853 (4.17%) | 3,319 (16.23%) | 16,284 (79.61%) | 397 (1.94%) | 46.54% |
+| east / VL | A | 2,468 | 29 (1.18%) | 756 (30.63%) | 1,683 (68.19%) | 8 (0.32%) | 27.59% |
+| east / VL | B | 2,468 | 100 (4.05%) | 374 (15.15%) | 1,994 (80.79%) | 56 (2.27%) | 56.00% |
+| east / VL | C | 2,468 | 29 (1.18%) | 776 (31.44%) | 1,663 (67.38%) | 8 (0.32%) | 27.59% |
+| east / VL | D | 2,468 | 104 (4.21%) | 387 (15.68%) | 1,977 (80.11%) | 56 (2.27%) | 53.85% |
+| jeju-islands / TL | A | 33,310 | 2,459 (7.38%) | 7,698 (23.11%) | 23,153 (69.51%) | 1,276 (3.83%) | 51.89% |
+| jeju-islands / TL | B | 33,310 | 1,891 (5.68%) | 3,482 (10.45%) | 27,937 (83.87%) | 884 (2.65%) | 46.75% |
+| jeju-islands / TL | C | 33,310 | 2,492 (7.48%) | 9,834 (29.52%) | 20,984 (63.00%) | 1,276 (3.83%) | 51.20% |
+| jeju-islands / TL | D | 33,310 | 2,222 (6.67%) | 5,123 (15.38%) | 25,965 (77.95%) | 884 (2.65%) | 39.78% |
+| jeju-islands / VL | A | 3,994 | 277 (6.94%) | 583 (14.60%) | 3,134 (78.47%) | 151 (3.78%) | 54.51% |
+| jeju-islands / VL | B | 3,994 | 212 (5.31%) | 415 (10.39%) | 3,367 (84.30%) | 98 (2.45%) | 46.23% |
+| jeju-islands / VL | C | 3,994 | 282 (7.06%) | 924 (23.13%) | 2,788 (69.80%) | 151 (3.78%) | 53.55% |
+| jeju-islands / VL | D | 3,994 | 259 (6.48%) | 655 (16.40%) | 3,080 (77.12%) | 98 (2.45%) | 37.84% |
+
+#### Exact-title 후보 funnel과 global title 진단
+
+| Arm | exact-title 후보 0 | 후보 1 | 후보 2+ |
+| --- | ---: | ---: | ---: |
+| A | 75,530 (77.36%) | 21,592 (22.11%) | 518 (0.53%) |
+| B | 80,427 (82.37%) | 16,909 (17.32%) | 304 (0.31%) |
+| C | 72,103 (73.85%) | 24,552 (25.15%) | 985 (1.01%) |
+| D | 77,817 (79.70%) | 19,227 (19.69%) | 596 (0.61%) |
+
+아래 진단은 **same-region exact title 후보가 0인 positive만** 분모로 한다. global title 존재만으로 MATCHED를 만들지 않는다.
+
+| Arm | global exact title 없음 | 다른 권역 단일 후보 | 다른 권역 다중 후보 | 분모 (same-region no-hit) |
+| --- | ---: | ---: | ---: | ---: |
+| A | 72,103 (95.46%) | 3,265 (4.32%) | 162 (0.21%) | 75,530 |
+| B | 77,817 (96.75%) | 2,499 (3.11%) | 111 (0.14%) | 80,427 |
+| C | 72,103 (95.46%) | 3,265 (4.32%) | 162 (0.21%) | 75,530 |
+| D | 77,817 (96.75%) | 2,499 (3.11%) | 111 (0.14%) | 80,427 |
+
+visit metadata 기준(A/C)은 same-region no-hit **75,530** 중 global title 없음 **72,103**, 다른 권역 단일 **3,265**, 다중 **162**이다. Master 기준(B/D)은 no-hit **80,427** 중 없음 **77,817**, 단일 **2,499**, 다중 **111**이다. `UNMATCHED != catalog-outside`이며 catalog 부재는 여전히 **판정 불가**다.
+
+#### MATCHED method 및 eligibility
+
+| Arm | method / reason | count | rate 분모 | rate |
+| --- | --- | ---: | ---: | ---: |
+| A | `name_address` | 3,000 | 97,640 | 3.07% |
+| A | `exact_name_only_candidate` | 14,455 | 97,640 | 14.80% |
+| A | `source_signal_conflict` | 14,631 | 97,640 | 14.98% |
+| A | `conflicting_source_address_signals` | 63 | 97,640 | 0.06% |
+| A | `no_exact_signal` | 65,491 | 97,640 | 67.07% |
+| A | `eligible` | 1,530 | 3,000 | 51.00% |
+| A | `unsupported_content_type` | 1,470 | 3,000 | 49.00% |
+| B | `name_address` | 4,289 | 97,640 | 4.39% |
+| B | `exact_name_only_candidate` | 12,863 | 97,640 | 13.17% |
+| B | `master_missing` | 26,884 | 97,640 | 27.53% |
+| B | `conflicting_source_address_signals` | 61 | 97,640 | 0.06% |
+| B | `no_exact_signal` | 53,543 | 97,640 | 54.84% |
+| B | `eligible` | 2,097 | 4,289 | 48.89% |
+| B | `unsupported_content_type` | 2,192 | 4,289 | 51.11% |
+| C | `name_address` | 3,044 | 97,640 | 3.12% |
+| C | `exact_name_only_candidate` | 17,368 | 97,640 | 17.79% |
+| C | `source_signal_conflict` | 14,631 | 97,640 | 14.98% |
+| C | `conflicting_source_address_signals` | 63 | 97,640 | 0.06% |
+| C | `no_exact_signal` | 62,534 | 97,640 | 64.05% |
+| C | `eligible` | 1,530 | 3,044 | 50.26% |
+| C | `outside_request_region` | 4 | 3,044 | 0.13% |
+| C | `unsupported_content_type` | 1,510 | 3,044 | 49.61% |
+| D | `name_address` | 4,696 | 97,640 | 4.81% |
+| D | `exact_name_only_candidate` | 15,061 | 97,640 | 15.43% |
+| D | `master_missing` | 26,884 | 97,640 | 27.53% |
+| D | `conflicting_source_address_signals` | 66 | 97,640 | 0.07% |
+| D | `no_exact_signal` | 50,933 | 97,640 | 52.16% |
+| D | `eligible` | 2,097 | 4,696 | 44.66% |
+| D | `outside_request_region` | 173 | 4,696 | 3.68% |
+| D | `unsupported_content_type` | 2,426 | 4,696 | 51.66% |
+
+D의 global MATCHED **4,696** 중 eligible **2,097 (44.66%)**, `unsupported_content_type` **2,426 (51.66%)**, `outside_request_region` **173 (3.68%)**다. identity와 eligibility를 분리했으며 D의 unmatched/ambiguous를 catalog 부재로 해석하지 않는다.
+
+#### POI Master와 visit metadata 일치도
+
+분모는 권역별 합산 고유 source POI_ID이며 필드 mismatch는 master가 존재하고 안정적인 POI_ID 26,032개 기준이다. 한 POI_ID에 여러 visit row가 있으면 하나 이상의 row가 master 값과 다를 때 해당 필드를 mismatch로 센다. 지표는 중첩될 수 있다.
+
+| 항목 | count | denominator | rate |
+| --- | ---: | ---: | ---: |
+| 고유 source POI_ID 수 | 45,353 | — | — |
+| master 없음 | 19,321 | 45,353 | 42.60% |
+| master metadata 안정적으로 존재 | 26,032 | 45,353 | 57.40% |
+| visit row 내부 signal 불일치 | 2,149 | 45,353 | 4.74% |
+| 기존 visit conflict 중 master가 안정된 경우 | 1,629 | 2,149 | 75.80% |
+| visit/master POI_NM 차이 | 3,258 | 26,032 | 12.52% |
+| visit/master SGG_CD 차이 | 25,991 | 26,032 | 99.84% |
+| visit/master LOTNO_ADDR 차이 | 26,032 | 26,032 | 100.00% |
+| visit/master ROAD_NM_ADDR 차이 | 19,270 | 26,032 | 74.02% |
+
+Positive-weighted `master_missing`은 **26,884/97,640 (27.53%)**다. Visit row의 내부 signal 불일치는 고유 POI_ID **2,149/45,353 (4.74%)**에서 관찰됐고 이 중 master 단일 metadata로 안정된 ID는 **1,629/2,149 (75.80%)**다. exact 필드 차이 비율은 의미/ontology 차이와 표기 차이를 구분하지 않는다.
+
+
+**Metadata 차이 권역별 breakdown (고유 POI_ID 단위)**
+
+| 권역 / split | visit POI_ID | master missing | master stable | visit rows inconsistent | inconsistent 중 master stable | POI_NM differs | SGG_CD differs | LOTNO_ADDR differs | ROAD_NM_ADDR differs |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| capital / TL | 8,655 | 4,203 (48.56%) | 4,452 (51.44%) | 265 (3.06%) | 190 (71.70%) | 682 (15.32%) | 4,446 (99.87%) | 4,452 (100.00%) | 3,664 (82.30%) |
+| capital / VL | 1,545 | 592 (38.32%) | 953 (61.68%) | 24 (1.55%) | 19 (79.17%) | 141 (14.80%) | 951 (99.79%) | 953 (100.00%) | 752 (78.91%) |
+| west / TL | 9,429 | 4,042 (42.87%) | 5,387 (57.13%) | 357 (3.79%) | 277 (77.59%) | 757 (14.05%) | 5,378 (99.83%) | 5,387 (100.00%) | 4,830 (89.66%) |
+| west / VL | 1,784 | 620 (34.75%) | 1,164 (65.25%) | 33 (1.85%) | 31 (93.94%) | 155 (13.32%) | 1,160 (99.66%) | 1,164 (100.00%) | 1,015 (87.20%) |
+| east / TL | 10,381 | 4,513 (43.47%) | 5,868 (56.53%) | 800 (7.71%) | 631 (78.88%) | 673 (11.47%) | 5,859 (99.85%) | 5,868 (100.00%) | 5,365 (91.43%) |
+| east / VL | 1,938 | 720 (37.15%) | 1,218 (62.85%) | 85 (4.39%) | 75 (88.24%) | 126 (10.34%) | 1,211 (99.43%) | 1,218 (100.00%) | 1,090 (89.49%) |
+| jeju-islands / TL | 13,152 | 4,692 (35.68%) | 8,460 (64.32%) | 452 (3.44%) | 338 (74.78%) | 925 (10.93%) | 8,454 (99.93%) | 8,460 (100.00%) | 3,898 (46.08%) |
+| jeju-islands / VL | 2,677 | 726 (27.12%) | 1,951 (72.88%) | 46 (1.72%) | 39 (84.78%) | 197 (10.10%) | 1,948 (99.85%) | 1,951 (100.00%) | 752 (38.54%) |
+
+#### 좌표 검증 및 적용 한계
+
+고정 TourAPI snapshot에 `mapx/mapy`가 없어 exact MATCHED와 좌표의 거리 분포는 **산출 불가**다. AI Hub master에서 X/Y 열을 찾았지만 제공 문서에서 CRS와 축 의미를 확인하지 못했다. TourAPI v4.4 매뉴얼은 `mapX/mapY`를 WGS84 경도/위도로 정의한다. 따라서 `coordinates_for_identity=false`를 유지하며 좌표는 어떤 arm에서도 사용하지 않았다. Identity 개선의 대부분은 master metadata 사용에서 나왔고 global search 자체의 A→C 증분은 0.05%p로 작다. D에서 아직 설명하지 못한 remainder는 95.19% unresolved이며 master missing, exact title absent, address mismatch, ambiguity가 서로 겹치므로 단순 합산으로 귀인을 나누지 않는다. 다음 단계는 AI Hub와 TourAPI 사이 공식 ID crosswalk의 존재 여부를 확인하고, 주소 normalization 후보는 separate shadow diagnostic으로 검증하는 것이다.
 
 ## Synthetic validation and use
 

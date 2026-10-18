@@ -127,6 +127,8 @@ def match_source_item(
     catalog: list[CatalogPoi],
     *,
     source_region_to_admin_codes: Mapping[str, frozenset[str]],
+    identity_admin_codes: frozenset[str] | None = None,
+    global_identity_scope: bool = False,
     fuzzy_threshold: float | None = None,
     source_category_to_content_types: Mapping[str, frozenset[str]] | None = None,
 ) -> MatchResult:
@@ -137,14 +139,20 @@ def match_source_item(
     are intentionally absent because their CRS and encoding are unverified.
     Category is a consistency check only when a reviewed crosswalk is supplied;
     it never creates an identity match by itself. Identity matching also requires
-    an explicit reviewed source-region-to-catalog-admin-code mapping.
+    an explicit reviewed source-region-to-catalog-admin-code mapping unless the
+    caller explicitly selects the global identity scope. Global identity scope
+    bypasses catalog-region filtering; request eligibility remains separate.
     """
     if not source.source_item_id.strip():
         return MatchResult(source.source_item_id, "UNMATCHED", None, None, 0)
     if not 0 <= (fuzzy_threshold if fuzzy_threshold is not None else 0) <= 1:
         raise ValueError("fuzzy threshold must be between 0 and 1")
-    reviewed_region_codes = _normalize_code_map(source_region_to_admin_codes).get(normalize_code(source.region))
-    if not reviewed_region_codes:
+    reviewed_region_codes = None if global_identity_scope else (
+        frozenset(normalize_code(code) for code in identity_admin_codes if normalize_code(code))
+        if identity_admin_codes is not None
+        else _normalize_code_map(source_region_to_admin_codes).get(normalize_code(source.region))
+    )
+    if not global_identity_scope and not reviewed_region_codes:
         return MatchResult(source.source_item_id, "UNMATCHED", None, "region_unmapped", 0)
 
     source_name = normalize_text(source.name)
@@ -168,7 +176,7 @@ def match_source_item(
             raise ValueError("catalog canonical IDs must be unique within a snapshot")
         seen_catalog_ids.add(item.content_id)
         item_region_codes = {normalize_code(code) for code in item.region_codes if normalize_code(code)}
-        if not item_region_codes or not reviewed_region_codes.intersection(item_region_codes):
+        if not global_identity_scope and (not item_region_codes or not reviewed_region_codes.intersection(item_region_codes)):
             continue
         name = normalize_text(item.title)
         districts = {normalize_code(code) for code in item.district_codes if normalize_code(code)}

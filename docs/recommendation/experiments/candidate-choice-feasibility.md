@@ -112,3 +112,9 @@ All released ranking cells have at least `10+` trip support and `10+` retrieved-
 Issue #4 defines the next product-catalog candidate contract in [`poi-catalog-candidate-contract.md`](../poi-catalog-candidate-contract.md). The TL-observed set above remains a historical proxy. It is not interchangeable with product-defined eligibility, and its metrics must not be compared directly with a future catalog snapshot unless the candidate universe and evaluation support rules are aligned.
 
 The separate Issue #4 `TN_POI_MASTER` link diagnostic uses four regional Other candidate files that the user explicitly confirmed as approved. That approval does not change this TL-only proxy's basis or establish a serving catalog, canonical identity, or product-candidate coverage.
+
+## Issue #4 identity-source / search-scope comparison (2026-10-18)
+
+The fixed-snapshot A/B/C/D comparison is recorded in [the POI catalog candidate contract](../poi-catalog-candidate-contract.md). It reuses identical positives and TourAPI snapshot data. Arm D (TN_POI_MASTER metadata + global identity search) resolves 4,696/97,640 positives (4.81%), compared with Arm A's visit-row metadata + source-region search at 3,000/97,640 (3.07%). Candidate-contained positives are 2,097/97,640 (2.15%) in D. The identity path for further candidate research is therefore D, while request-region eligibility and the `{12,14,28}` product policy remain unchanged. The remaining 95.19% is unresolved, so this result supports **modify and remeasure**, not a claim that the identity/coverage contract is sufficient.
+
+The existing fixed snapshot omits `mapx/mapy`, so the coordinate-distance compatibility diagnostic could not be computed. Coordinates remain disabled as identity evidence. `UNMATCHED` and `AMBIGUOUS` remain distinct from catalog absence.
