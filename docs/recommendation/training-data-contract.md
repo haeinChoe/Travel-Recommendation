@@ -137,6 +137,8 @@ Candidate universe는 모델별로 변경하지 않고 평가 cohort별로 고�
 
 **제한:** EDA는 POI candidate overlap 및 cold-start를 요약했지만 canonical POI나 경계/crosswalk 정책을 확정하지 않았다. 이 임시 region-scoped universe는 안정된 장소 identity, 실제 서비스 재고, 이용 가능 상태를 보증하지 않는다.
 
+**Issue #4 경계:** 위 TL-observed universe는 과거 baseline 재현용 proxy다. 향후 제품 candidate ranking은 [`POI catalog and candidate eligibility contract`](poi-catalog-candidate-contract.md)의 검증된 versioned catalog와 request-time hard constraints를 사용해야 한다. `TN_POI_MASTER`는 별도 historical reference이며 `TN_VISIT_AREA_INFO.POI_ID`와의 관계나 TourAPI canonical identity를 보장하지 않는다. 두 candidate universe의 metric은 동일한 contract가 아닐 때 직접 비교하지 않는다.
+
 ## 11. Leakage, cold start, 데이터 한계
 
 - **사후 label leakage:** `DGSTFN`, `REVISIT_INTENTION`, `RCMDTN_INTENTION`은 방문 결과 뒤의 값이므로 입력 금지.
