@@ -328,6 +328,10 @@ python3 scripts/recommendation/analyze_context_poi.py \
 
 POI master candidate join coverage는 capital, west, east에서 TL과 VL 모두 `50-<75%`, jeju-islands에서 두 split 모두 `75-<90%`였습니다. 네 권역 모든 split에서 master의 duplicate candidate key와 서로 다른 행정구역 값을 가진 key는 각각 `0` bucket이었습니다. Join은 region-scoped `POI_ID` 후보 관계이며 canonical identity가 아닙니다.
 
+Issue #4의 [POI catalog / candidate contract](../poi-catalog-candidate-contract.md)는 이 집계를 **과거 `TN_POI_MASTER` 참조 커버리지**로 한정한다. 이 값은 TourAPI 식별 커버리지나 제품 후보 자격을 나타내지 않는다.
+
+Issue #4 후속 진단에 사용한 네 권역별 `TN_POI_MASTER` 후보 파일은 사용자가 승인된 파일이라고 명시적으로 확인했다. 이 확인은 해당 진단의 입력 승인을 확정하지만, 위 과거 집계를 canonical identity나 TourAPI 제품 후보 커버리지로 바꾸지는 않는다.
+
 ### B. 여행 문맥–POI 연관성과 TL→VL 재현
 
 아래 값은 지원이 공개 가능한 association에서 context-feature × POI-feature Cramér's V의 중앙값입니다. TL/VL 각 split 안에서 feature 조합을 합치지 않고, visit-row와 distinct-trip-pair를 따로 계산했습니다.

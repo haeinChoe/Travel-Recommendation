@@ -1,7 +1,7 @@
 # Travel Recommendation PRD
 
 > 
-> Last updated: 2026-09-09
+> Last updated: 2026-10-17
 
 ## 1. Product Overview
 
@@ -67,6 +67,8 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 > "부모님과 10월에 제주를 가는데 너무 많이 걷지 않고 조용한 장소 위주로 추천해줘"
 
 이때 자연어 해석 기능을 사용하더라도 실제 추천 후보 생성과 랭킹은 검증 가능한 추천 모델과 카탈로그 데이터를 기반으로 수행하는 것을 기본 방향으로 한다.
+
+**현재 계약 상태:** Issue #66에서 v1을 승인했다. 기준 catalog는 TourAPI KorService2, provider identity는 `(tourapi-korservice2, contentid)`, 추천 가능 type은 `12/14/28`이다. 버전 정책의 전체 권역 매핑과 eligibility는 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)에 기록하며, 후보 집합은 과거 노출을 뜻하지 않는다.
 
 ---
 
@@ -306,17 +308,19 @@ occurredAt
 
 ### 9.2 Item Catalog Mapping
 
-AI Hub 방문지와 TourAPI 관광지는 서로 다른 식별 체계를 사용하므로 entity resolution 과정이 필요하다.
+AI Hub 방문 POI와 serving catalog는 서로 다른 식별 체계를 사용하므로 고정된 TourAPI KorService2 v4.4 snapshot을 대상으로 entity-resolution을 수행한다. Provider canonical identity는 `(tourapi-korservice2, contentid)`이고, AI Hub source identity는 `(region, nonblank POI_ID)`로 보존한다. `TN_POI_MASTER`는 별도 historical reference이며 `TN_VISIT_AREA_INFO.POI_ID`의 FK 또는 동일 key 보장을 의미하지 않는다.
 
-매핑 후보:
+매핑 신호 후보:
 
-1. exact name
-2. name + address
-3. geographic distance
-4. fuzzy name matching
-5. manual review fallback
+1. exact normalized name + address 또는 검토된 administrative area
+2. exact normalized name only
+3. fuzzy name (diagnostic only)
 
-각 매핑에는 가능하면 다음 정보를 남긴다.
+Coordinates and distance are not used until their CRS and encoding are documented and validated.
+
+단독 name, coordinate/distance, fuzzy match는 candidate discovery 진단으로만 사용한다. 불확실하거나 여러 신호가 충돌하는 결과는 임의 확정하지 않고 `AMBIGUOUS` 또는 `UNMATCHED`로 보존한다. 확정된 link에는 source identity, provider content ID, match method, catalog snapshot/version 및 validation status를 남긴다. Confidence threshold는 활성화하지 않으며 source-region namespace는 v1에서 보존한다.
+
+Serving candidate는 catalog 전체와 구분하며, snapshot membership, 필수 필드 유효성, 지원 type `{12,14,28}`, versioned 권역 정책, 그리고 요청에서 명시된 경우의 district만 eligibility 조건으로 사용한다. Provider가 보장하지 않는 active/inactive 상태는 만들지 않는다. 방문 후 feedback과 observed visit location/category는 추천 요청 feature나 eligibility filter로 사용하지 않는다. 이 request-time eligible set은 과거 historical exposure를 의미하지 않는다. 상세 구현·근거 상태는 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)를 따른다.
 
 ```text
 sourceVisitId
