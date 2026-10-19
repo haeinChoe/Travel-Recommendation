@@ -38,7 +38,7 @@ Use repository data contracts as the source of truth. At minimum:
 - `TRAVELER_ID` identifies a traveler candidate within documented scope; do not assume cross-region identity beyond the contract.
 - `TRAVEL_ID` identifies the trip context used to group visit events.
 - `TN_VISIT_AREA_INFO` contains observed visits and visit-level information.
-- `TN_POI_MASTER` supplies POI metadata when the documented candidate linkage is valid.
+- 문서화된 후보 연결 근거가 유효할 때 `TN_POI_MASTER`를 POI 메타데이터 원천으로 사용할 수 있다.
 - `DGSTFN`, `REVISIT_INTENTION`, and `RCMDTN_INTENTION` are post-visit feedback.
 - A nonblank `POI_ID` candidate is not automatically a globally canonical POI key.
 - An observed visit can be an implicit positive; absence of a visit is not proof of dislike.
