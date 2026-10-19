@@ -1,6 +1,6 @@
 # Travel Recommendation PRD
 
-> 
+>
 > Last updated: 2026-10-20
 
 ## 문서 상태와 한눈에 보는 결론
