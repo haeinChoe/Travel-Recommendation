@@ -1,8 +1,22 @@
-# Travel Recommendation Product Reference Analysis
+# 여행 추천 제품 비교 분석
 
 > Last updated: 2026-10-20
 >
 > Related: #41
+
+## 질문과 현재 상태
+
+**질문:** 실제 여행 추천 제품은 첫 추천 전에 어떤 정보를 받고, 어떤 단위의 결과를 보여주며, 사용자의 다음 행동과 어떻게 연결하는가?
+
+**현재 상태:** 공개 사용자 경험 조사는 완료했다. 제품 수준의 방향은 PRD에 반영했으며, 세부 학습·평가 계약은 Issue #41에서 계속 확정한다.
+
+## 한눈에 보는 결론
+
+- 장기 이용 이력이 없어도 현재 여행의 목적지·기간·동행자·명시적 취향만으로 첫 추천을 시작할 수 있어야 한다.
+- 추천의 기본 출력은 **순위가 매겨진 Top-K POI**다.
+- 명백한 지역·서비스 가능 범위는 순위화 전에 후보 집합을 좁히는 데 사용한다.
+- 추천 결과는 저장·선택 후 향후 일정 구성으로 이어질 수 있지만, 일정 최적화 자체는 추천 모델의 책임이 아니다.
+- 오프라인 추천 실험은 AI Hub 식별자를 사용하고, 실제 서비스 카탈로그는 TourAPI 식별자를 사용한다. 두 식별자 사이 연결은 별도 문제로 둔다.
 
 ## 1. 목적
 
@@ -17,17 +31,17 @@ AI Hub 제공 reference model/code는 이 문서의 제품 의사결정 근거�
 - 추천을 받기 전에 사용자가 어떤 정보를 제공하는가?
 - 추천 단위는 POI, 숙소/식당, waypoint, itinerary 중 무엇인가?
 - 첫 추천에 필요한 최소 입력은 무엇인가?
-- 현재 여행의 목적지·기간·동행자·예산·취향 같은 trip context가 어떻게 사용되는가?
+- 현재 여행의 목적지·기간·동행자·예산·취향 같은 여행 문맥가 어떻게 사용되는가?
 - 추천 결과를 사용자가 어떻게 선택, 저장, 제외, 일정화하는가?
 - 추천 이후 탐색·지도·일정 작성과 어떻게 연결되는가?
 
 ## 3. 비교 요약
 
-| Product | Recommendation unit | Explicit inputs/context | Cold-start UX | Feedback / next action | 우리 서비스에 주는 인사이트 |
+| 제품 | 추천 단위 | 명시적 입력 / 여행 문맥 | 콜드 스타트 사용자 경험 | 피드백 / 다음 행동 | 우리 서비스에 주는 인사이트 |
 | --- | --- | --- | --- | --- | --- |
 | Tripadvisor AI | 호텔, 식당, Things to do, itinerary | 목적지, 날짜, 동행자 및 follow-up 조건 | 계정 없이도 계획 시작 가능 | 추천 저장, itinerary 편집·재배열·공유 | 현재 여행 context에서 선택지를 좁히고 추천한 뒤 일정으로 연결 |
 | Mindtrip | 장소, 이벤트, 숙박/식당, itinerary | 좋아하는 것/싫어하는 것, 예산, 동행자, 기타 선호 | 명시적 preference를 대화로 받아 첫 추천 가능 | 저장, 공유, itinerary 편집·협업 | 장기 history보다 현재 여행의 명시적 선호를 강하게 활용하는 UX |
-| Roadtrippers Autopilot | route waypoint / POI | 출발지, 목적지, 날짜, 차량, 동행자, 예산, 선호 장소 종류 | 몇 가지 질문 후 즉시 추천 | Add 또는 X(skip), 지도에서 계속 탐색 | context로 candidate space를 제한하고 선택/거절 feedback을 즉시 받는 패턴 |
+| Roadtrippers Autopilot | route waypoint / POI | 출발지, 목적지, 날짜, 차량, 동행자, 예산, 선호 장소 종류 | 몇 가지 질문 후 즉시 추천 | Add 또는 X(skip), 지도에서 계속 탐색 | context로 후보 집합를 제한하고 선택/거절 feedback을 즉시 받는 패턴 |
 | Google Maps | 주변 장소 / POI | 현재 위치·검색 맥락 | 현재 맥락으로 탐색 가능 | 저장, 평점, 리뷰 | 위치와 검색 맥락 중심의 로컬 discovery UX 참고 |
 | 트리플 | 관광지·맛집·숙소 및 여행 일정 | 여행 일정/목적지, 취향, 현재 위치 등 | 장기 history 없이 여행 계획·추천 기능 진입 가능 | 장소 저장/일정 추가, 일정·동선 구성 | Top-K 장소 추천을 일정 작성의 입력 후보로 연결하는 국내 UX 참고 사례 |
 
@@ -54,7 +68,7 @@ AI Hub 제공 reference model/code는 이 문서의 제품 의사결정 근거�
 
 관찰:
 
-- 명시적 preference와 trip context가 cold-start UX의 핵심이다.
+- 명시적 preference와 여행 문맥가 콜드 스타트 UX의 핵심이다.
 - 사용자 identity 자체보다 현재 여행에서 제공한 정보가 제품적으로 중요한 입력이다.
 - 추천 후보를 일정으로 가져가는 후속 행동이 자연스럽게 연결된다.
 
@@ -66,7 +80,7 @@ Autopilot은 출발지/목적지에서 시작해 날짜, 차량, 동행자, 식�
 
 관찰:
 
-- trip context가 candidate generation을 강하게 제한한다.
+- 여행 문맥가 candidate generation을 강하게 제한한다.
 - 추천 결과에 대한 Add/X는 향후 학습에 유용한 명시적 feedback 형태다.
 - 추천 → 선택 → 지도/여정 편집 흐름이 명확하다.
 
@@ -93,11 +107,11 @@ Google Maps는 현재 위치와 검색 맥락을 중심으로 주변 장소를 �
 
 - 장소 추천과 일정 생성은 연결되지만 POI를 고르는 단계 자체가 독립적인 사용자 가치가 있다.
 - 장소를 일정에 추가하는 행동은 추천 결과에 대한 명시적인 positive feedback으로 활용 가능하다.
-- 위치, 평점, 리뷰, 저장 수 같은 contextual/social signal은 향후 product catalog가 갖춰진 뒤 실험 후보가 될 수 있다.
+- 위치, 평점, 리뷰, 저장 수 같은 contextual/social signal은 향후 제품 카탈로그가 갖춰진 뒤 실험 후보가 될 수 있다.
 
-## 5. Adopt
+## 5. 채택
 
-### 5.1 Cold-start를 예외가 아니라 핵심 사용자 시나리오로 정의
+### 5.1 콜드 스타트를 예외가 아니라 핵심 사용자 시나리오로 정의
 
 사용자가 다음 정보만으로 추천을 받을 수 있어야 한다.
 
@@ -107,23 +121,23 @@ Google Maps는 현재 위치와 검색 맥락을 중심으로 주변 장소를 �
 - 사용자가 명시적으로 제공한 여행 취향
 
 
-### 5.2 추천 문제를 current-trip contextual ranking으로 정의
+### 5.2 추천 문제를 현재 여행 문맥 기반 순위화으로 정의
 
 제품 수준의 기본 흐름은 다음과 같이 둔다.
 
 ```text
 traveler preference
-+ trip context
++ 여행 문맥
 + eligible candidate POIs
   -> relevance scoring / ranking
   -> Top-K POIs
 ```
 
-세부 prediction unit과 feature contract는 #41에서 확정한다.
+세부 예측 단위과 특성 계약는 #41에서 확정한다.
 
-### 5.3 제품 constraint로 candidate space를 먼저 제한
+### 5.3 제품 constraint로 후보 집합를 먼저 제한
 
-여행 지역, 서비스 가능한 POI, 명백한 여행 조건 등은 가능한 경우 ranking 전에 candidate eligibility로 처리한다.
+여행 지역, 서비스 가능한 POI, 명백한 여행 조건 등은 가능한 경우 ranking 전에 후보 자격로 처리한다.
 
 모델이 전국의 모든 POI를 점수화한 뒤 제품 규칙으로 대부분 제거하는 구조를 기본값으로 두지 않는다.
 
@@ -139,11 +153,11 @@ Top-K POI recommendation
 
 자동 일정 생성이나 경로 최적화를 현재 추천 모델의 책임에 포함하지 않는다.
 
-## 6. Experiment
+## 6. 실험 후보
 
 ### 6.2 Social / popularity signal
 
-Product catalog가 갖춰지면 다음 값을 POI ranking feature 또는 사용자 UI signal로 실험할 수 있다.
+제품 카탈로그가 갖춰지면 다음 값을 POI ranking feature 또는 사용자 UI signal로 실험할 수 있다.
 
 - rating
 - review count
@@ -152,7 +166,7 @@ Product catalog가 갖춰지면 다음 값을 POI ranking feature 또는 사용�
 
 현재 AI Hub 학습 데이터에 동일한 서비스 신호가 존재한다고 가정하지 않는다.
 
-### 6.3 Recommendation explanation
+### 6.3 추천 이유 설명
 
 내부 model score를 그대로 보여주기보다 사용자가 이해할 수 있는 trip-context 기반 추천 이유를 제공하는 방식을 검토한다.
 
@@ -164,7 +178,7 @@ Product catalog가 갖춰지면 다음 값을 POI ranking feature 또는 사용�
 
 설명의 신뢰성과 실제 사용 feature의 일치가 확인된 경우에만 노출한다.
 
-## 7. Reject / Defer
+## 7. 현재 제외 / 보류
 
 ### 7.1 완전한 itinerary optimization
 
@@ -191,41 +205,41 @@ CF, MF, Learning-to-Rank, Two-Tower 등은 제품 조사 결과가 아니라 데
 
 현재 제품 방향은 다음과 같이 정리한다.
 
-- Primary product output: ranked Top-K POIs
-- Core request context: current trip context + explicit traveler preference
-- Cold-start: core supported scenario
+- 주요 제품 출력: ranked Top-K POIs
+- 핵심 요청 문맥: current 여행 문맥 + 명시적 여행자 선호
+- 콜드 스타트: core supported scenario
 - Candidate space: product/trip constraints로 우선 제한
-- Recommendation result: 사용자가 선택/저장할 수 있고 향후 itinerary 기능으로 연결 가능
-- Model family: 계약 및 실험 이후 선택
+- 추천 결과: 사용자가 선택/저장할 수 있고 향후 itinerary 기능으로 연결 가능
+- 모델 계열: 계약 및 실험 이후 선택
 
-### 8.1 Offline 실험과 serving catalog의 identity 경계
+### 8.1 오프라인 실험과 서비스용 카탈로그의 identity 경계
 
 Issue #4 / PR #64 및 Issue #66의 실제 검증 후 결론을 반영한다.
 
 ```text
 Offline recommendation experiment
-→ AI Hub native POI identity
-→ AI Hub candidate/evaluation contract 안에서 모델 비교
+→ AI Hub 원래 POI 식별자
+→ AI Hub 후보·평가 계약 안에서 모델 비교
 
-Product / serving
+제품 서비스
 → TourAPI KorService2 contentid
 → CandidateRequest 기반 eligibility
 
 AI Hub ↔ TourAPI
-→ 별도 identity/crosswalk 문제
+→ 별도 식별자 연결 문제
 ```
 
-제품 조사에서 확인한 "현재 여행 맥락으로 후보를 좁히고 Top-K를 제공한다"는 방향은 유지한다. 다만 이것이 **offline 평가 후보를 TourAPI serving catalog로 강제한다는 뜻은 아니다.**
+제품 조사에서 확인한 "현재 여행 맥락으로 후보를 좁히고 Top-K를 제공한다"는 방향은 유지한다. 다만 이것이 **오프라인 평가 후보를 TourAPI 서비스용 카탈로그로 강제한다는 뜻은 아니다.**
 
-현재 AI Hub → TourAPI bridge로는 observed-positive coverage를 신뢰성 있게 측정하기 어렵기 때문에, offline 추천 모델 선택은 AI Hub native POI identity에서 진행한다. TourAPI linkage는 serving integration을 위한 별도 문제로 다룬다.
+현재 AI Hub → TourAPI bridge로는 observed-positive coverage를 신뢰성 있게 측정하기 어렵기 때문에, 오프라인 추천 모델 선택은 AI Hub 원래 POI 식별자에서 진행한다. TourAPI 식별자 연결는 서비스 통합을 위한 별도 문제로 다룬다.
 
 ### 8.2 #41에서 남은 결정
 
-- prediction unit의 최종 schema
-- traveler preference / trip context serving-time feature allowlist
+- 예측 단위의 최종 schema
+- traveler preference / 여행 문맥 serving-time feature allowlist
 - observed visit과 post-event preference signal의 label 역할
 - unknown / pseudo-negative sampling 규칙
-- TL/VL split, cold-start cohort, evaluation protocol
-- offline 연구 결과를 serving-compatible artifact로 옮길 때 필요한 item/feature parity 조건
+- TL/VL split, 콜드 스타트 cohort, evaluation protocol
+- offline 연구 결과를 serving-compatible artifact로 옮길 때 필요한 item/특성 호환성 조건
 
-연령대·성별 같은 demographic 정보는 cold-start 핵심 입력으로 요구하지 않으며, 별도 필요성·공정성·개인정보 검토 없이 기본 feature로 채택하지 않는다.
+연령대·성별 같은 demographic 정보는 콜드 스타트 핵심 입력으로 요구하지 않으며, 별도 필요성·공정성·개인정보 검토 없이 기본 feature로 채택하지 않는다.
