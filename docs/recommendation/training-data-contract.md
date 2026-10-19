@@ -61,7 +61,7 @@ AI Hub 필드 표기는 [네 권역 설명서](../data/travel-log-2023/README.md
 
 **[임시 결정]** 학습 user key는 `(region, TRAVELER_ID)`로 둔다. 네 권역 간 `TRAVELER_ID` uniqueness나 동일 인물 equivalence는 입증되지 않았으므로 region을 포함하고 cross-region identity merge를 가정하지 않는다. 방문 context는 `TRAVEL_ID`로 구분한다. 이 원본 identifiers는 승인된 처리 중 memory-only join/group keys이며, artifacts나 logs에 저장하지 않는다. 모델 feature와 serving payload에도 넣지 않는다. 온라인 요청의 user identity와 AI Hub 식별자는 같다고 간주하지 않는다.
 
-**[추론]** 이 임시 정의는 공개 schema에서 `TN_TRAVEL.TRAVELER_ID`가 여행객 ID이고 `TN_TRAVEL.TRAVEL_ID`가 여행 ID라고 설명하는 데 따른다. EDA는 분석된 각 region/split scope에서 trip-to-traveler mapping이 모호하지 않았다고 기록하지만, 이는 scope 안의 관계만 뒷받침한다. 네 권역 간 traveler ID의 global uniqueness나 같은 사람 여부, 생산 서비스 식별자 연결 방식를 입증하지 않는다.
+**[추론]** 이 임시 정의는 공개 schema에서 `TN_TRAVEL.TRAVELER_ID`가 여행객 ID이고 `TN_TRAVEL.TRAVEL_ID`가 여행 ID라고 설명하는 데 따른다. EDA는 분석된 각 region/split scope에서 trip-to-traveler mapping이 모호하지 않았다고 기록하지만, 이는 scope 안의 관계만 뒷받침한다. 네 권역 간 traveler ID의 global uniqueness나 같은 사람 여부, 운영 서비스의 식별자 연결 방식을 입증하지 않는다.
 
 **[제한]** 반복 trip/user 구조가 legacy의 장기 user-history CF를 정당화하는지 결정할 만큼 문서화된 실험 결과는 없다. 신규 온라인 user는 history 없는 cold-start cohort로 따로 취급한다. AI Hub ID를 서비스 계정에 연결하거나 직접 노출하지 않는다.
 
@@ -183,19 +183,19 @@ Candidate universe는 모델별로 변경하지 않고 평가 cohort별로 고�
 
 **Limitation:** 이 계약은 data semantics와 비교 가능한 경계를 정한 것이지, 현재 로컬 자료로 수행 가능한 모델 성능이나 온라인 유효성을 보증하지 않는다. item identity, test split, serving feature availability가 unresolved인 상태에서는 결과를 해당 임시 설정 범위 안에서만 해석한다.
 
-## Decision log
+## 결정 기록
 
 | Decision | Status | Rationale |
 | --- | --- | --- |
-| `(region, TRAVELER_ID)` grouping; retain `TRAVEL_ID` context; raw IDs are memory-only and not features | Provisional | Schema roles are documented; cross-region uniqueness, serving 식별자 연결 방식, and long-term history utility are not |
-| Region-scoped nonblank `POI_ID` as temporary item candidate | Provisional | Enables bounded experiment without claiming canonical identity; no fallback mapping |
-| Visit event as binary implicit positive; no weight; unvisited unknown | Decided for baseline | Matches observed visit structure while avoiding invented preference strength/negative labels |
-| Feedback fields are post-event labels only | Decided | Their schema location/role is post-visit; leakage otherwise |
-| TL train, VL validation; no test metric | Provisional | Preserves source role split and does not invent test independence/source |
+| `(region, TRAVELER_ID)`로 사용자를 묶고 `TRAVEL_ID`로 여행 문맥을 유지하며 원본 ID는 메모리 내 조인 키로만 사용 | 임시 결정 | 스키마 역할은 문서화되어 있지만 권역 간 식별자 유일성, 서비스용 식별자 연결 방식, 장기 이력 활용 가능성은 아직 확정되지 않음 |
+| 권역별 nonblank `POI_ID`를 임시 아이템 후보로 사용 | 임시 결정 | 기준 식별자라고 주장하지 않으면서 제한된 실험을 가능하게 하며 대체 식별 규칙은 두지 않음 |
+| 방문 이벤트를 이진 암묵적 양성으로 사용하고 가중치를 두지 않으며 미방문은 알 수 없음으로 처리 | 기준 실험 결정 | 관측 방문 구조를 유지하면서 임의의 선호 강도나 음성 라벨을 만들지 않기 위함 |
+| 피드백 필드는 사후 학습 목표 후보로만 사용 | 결정 | 방문 이후 정보이므로 추천 시점 입력에 넣으면 데이터 누수가 발생함 |
+| TL은 학습, VL은 검증으로 사용하며 독립 테스트 지표는 만들지 않음 | 임시 결정 | 원천 역할을 보존하면서 확인되지 않은 테스트 독립성이나 출처를 가정하지 않기 위함 |
 | Same-region requested candidate scope | Provisional | Bounded scope; official 지역·식별자 매핑 still unresolved |
-| Exclude raw images and image embeddings | Decided | Explicit baseline boundary; no image pipeline or raw image EDA |
+| 원본 이미지와 이미지 임베딩 제외 | 결정 | 기준 실험 경계를 명확히 하고 이미지 파이프라인이나 원본 이미지 EDA를 수행하지 않기 위함 |
 | Exclude caption text from baseline | Decided | Coverage/연결 evidence is not semantic, permission, or serving-parity evidence |
-| Do not transfer legacy 0.7/0.3 weights, similarity calculation, one-hot preprocessing, or TourAPI IDs | Decided | The code expresses an intended weighted user-similarity design, but reindexes similarity columns to `visit_matrix.columns` (`content_id`); downstream consumption also assumes user-user axes. This is not validated behavior or an AI Hub transformation rule |
+| 기존 0.7/0.3 가중치, 유사도 계산, one-hot 전처리, TourAPI ID를 그대로 이전하지 않음 | 결정 | The code expresses an intended weighted user-similarity design, but reindexes similarity columns to `visit_matrix.columns` (`content_id`); downstream consumption also assumes user-user axes. This is not validated behavior or an AI Hub transformation rule |
 
 ## Appendix A. Public legacy source references
 
