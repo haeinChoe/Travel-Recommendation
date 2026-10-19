@@ -71,7 +71,7 @@ Treat the following as domain constraints unless a newer approved contract super
 - `TN_VISIT_AREA_INFO` records observed visit events;
 - `TN_POI_MASTER` is candidate item metadata, not proof of a canonical cross-region item identity;
 - `DGSTFN`, `REVISIT_INTENTION`, and `RCMDTN_INTENTION` are post-visit feedback and cannot be recommendation-time inputs;
-- `POI_ID` linkage is used only within the evidence and limitations recorded by the current data contract;
+- `POI_ID` 연결은 현재 데이터 계약에 기록된 근거와 한계 안에서만 사용한다;
 - region, popularity, and category effects can dominate recommendation experiments and should be included as appropriate baselines or controls;
 - sparsity, cold-start, popularity skew, long-tail behavior, repeated visits, and regional bias are default diagnostics for recommender evidence.
 
