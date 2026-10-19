@@ -57,7 +57,7 @@
 - **[로컬 기록]** 저장소의 승인 기록은 `SbL` 자료 묶음의 사용을 승인한다. JSON 구조 검사는 임의의 상위 입력 트리에서 파일명을 추측하지 않고, 실행자가 지정한 해당 승인 자료 묶음의 추출 루트를 대상으로 한다. HWP가 정의한 JSON 확장자와 문서화된 구조만 검사 대상이다.
 - **[공식 문서 사실]** HWP의 JSON 필드 allowlist는 `Info`의 `DATASET_NM`, `DATASET_DETAIL`; `images`의 `PHOTO_FILE_ID`, 사진 파일명·저장경로·해상도·촬영일시·X/Y 좌표, `VISIT_AREA_NM`, `LANDMARK`; `caption`의 `IMG_CAPTION`, 정수형 `TOKEN`, `TIME_STAMP`; `licenses`의 `NAME`을 포함한다. `images` 구획에 `VISIT_AREA_ID`는 정의돼 있지 않다.
 - **[로컬 집계 관측]** focused code interpretation은 `TC_CODEA`/`TC_CODEB`에서 `MIS`와 `EXP` 그룹만 메모리에서 대조했다. 세 이상 필드의 delimiter 구성요소는 각각 HWP 도메인과 해당 상세 코드 그룹에 정확히 대응했다. 전체 코드 사전이나 다른 그룹을 검증한 것은 아니다.
-- **[로컬 집계 관측]** 승인된 `SbL` archive에서 JSON 멤버만 분리한 뒤 명시적 JSON root에 대해 focused structure/linkage 검사를 완료했다. 이전 broad pre-selector aggregate는 새 collection 결과의 근거로 사용하지 않는다. bucket 결과는 EDA 보고서에 기록했다.
+- **[로컬 집계 관측]** 승인된 `SbL` archive에서 JSON 멤버만 분리한 뒤 명시적 JSON root에 대해 구조 및 연결 관계 검사를 완료했다. 이전 broad pre-selector aggregate는 새 collection 결과의 근거로 사용하지 않는다. bucket 결과는 EDA 보고서에 기록했다.
 - **[미확인]** 코드 그룹의 전체 허용값·상세 매핑은 이 참조에 포함하지 않았다. 최초 profiler 실행에는 codebook이 입력되지 않았다. 실제 캡션·토큰 내용이나 라이선스 이름은 검토하지 않았다.
 
 ## 기존 수도권 aggregate와의 대조
