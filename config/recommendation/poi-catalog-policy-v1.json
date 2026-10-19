@@ -1,0 +1,53 @@
+{
+  "policy_version": "poi-catalog-candidate-v1",
+  "manual_version": "TourAPI-KorService2-v4.4",
+  "provider": "tourapi-korservice2",
+  "identity_key": ["provider", "contentid"],
+  "supported_content_type_ids": ["12", "14", "28"],
+  "excluded_content_type_ids": ["15", "25", "32", "38", "39"],
+  "content_type_names": {
+    "12": "관광지",
+    "14": "문화시설",
+    "15": "행사/공연/축제",
+    "25": "여행코스",
+    "28": "레포츠",
+    "32": "숙박",
+    "38": "쇼핑",
+    "39": "음식점"
+  },
+  "product_region_to_ldong_regn_cd": {
+    "capital": ["11", "28", "41"],
+    "west": ["12", "30", "43", "44", "52", "36110"],
+    "east": ["26", "27", "31", "47", "48", "51"],
+    "jeju-islands": ["50"]
+  },
+  "official_macro_regions": {
+    "capital": ["11", "28", "41"],
+    "dongnam": ["26", "31", "48"],
+    "chungcheong": ["30", "36110", "43", "44"],
+    "honam": ["12", "52"],
+    "daegyeong": ["27", "47"],
+    "gangwon": ["51"],
+    "jeju": ["50"]
+  },
+  "source_basis": {
+    "aihub_2023_region_labels": "https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71778",
+    "official_seven_region_grouping": "https://korea.nabo.go.kr/board/file/down.do?fid=33318639",
+    "legal_dong_code_system": "https://www.code.go.kr/stdcode/regCodeL.do",
+    "current_legal_dong_codes_2026": "https://www.data.go.kr/data/15063424/fileData.do?recommendDataYn=Y",
+    "2026_jeonnam_gwangju_integration": "https://www.mois.go.kr/frt/bbs/type001/commonSelectBoardArticle.do?bbsId=BBSMSTR_000000000052&nttId=127039",
+    "sejong_legal_dong_code_2026": "https://www.mois.go.kr/frt/bbs/type001/commonSelectBoardArticle.do?bbsId=BBSMSTR_000000000052&nttId=127979",
+    "sejong_legal_dong_code_reference": "https://www.law.go.kr/LSW/flDownload.do?bylClsCd=&flSeq=140110577",
+    "tourapi_v44_endpoint_listing": "https://www.data.go.kr/data/15101578/openapi.do"
+  },
+  "mapping_rule": "capital=capital; west=chungcheong+honam; east=dongnam+daegyeong+gangwon; jeju-islands=jeju; use current 2026 legal province codes and the explicit Sejong code 36110 returned by KorService2",
+  "legal_code_crosswalk_note": "TourAPI KorService2 lDongRegnCd snapshot values were checked against the 2026-06-30 Ministry of Land legal-dong code dataset. The 2026 merged Jeonnam-Gwangju city is code 12; Gangwon and Jeonbuk special self-governing provinces use 51 and 52; KorService2's current Sejong region value 36110 is explicitly assigned to Chungcheong based on official legal-code and MOIS evidence. No general prefix truncation is applied.",
+  "jeju_islands_scope_note": "Official AI Hub regional metadata labels the cohort 제주도 및 도서지역 but does not enumerate island membership. This v1 maps it to the official Jeju macro-region code 50; it does not assert coverage of non-Jeju islands.",
+  "eligibility": {
+    "membership": "fixed_snapshot",
+    "required_fields": ["contentid", "contenttypeid", "title", "lDongRegnCd"],
+    "active_inactive_status": "not_inferred",
+    "district_filter": "apply_only_when_explicitly_requested",
+    "coordinates_for_identity": false
+  }
+}

@@ -5,8 +5,10 @@
 ## Skill 및 데이터 사전 점검
 
 - 특수 도구나 워크플로를 사용하기 전에 현재 세션의 skill catalog를 확인하고, 적용되는 각 skill의 전체 `SKILL.md`와 참조 자료를 읽는다. Issue/PR 작업에는 저장소 로컬 `.agents/skills/travel-issue-agent-loop/` skill과 현재 세션 catalog에서 찾은 전역 `herdr` skill을 모두 적용한다. 전역 skill의 파일 경로를 저장소 지침에 고정하지 않는다. Herdr 작업 전에 두 skill을 모두 따르고 필요한 Herdr 접근 절차를 확인한다.
-- 실제 데이터를 처리하기 전 선택한 실험·데이터 워크플로의 재현 명령을 먼저 읽고, 그 명령이 사용하는 모든 변수를 확인한다. 확인은 비내보내기 변수를 볼 수 있는 사용자의 실제 로컬 셸에서 수행하며, 조정자 하위 프로세스나 새 worktree 에이전트에서 보이지 않는다는 이유로 변수가 없다고 판단하지 않는다. 현재 popularity/CF 재현 명령은 `RAW_ROOT`, `CAPITAL_TL`, `CAPITAL_VL`, `WEST_TL`, `WEST_VL`, `EAST_TL`, `EAST_VL`, `JEJU_TL`, `JEJU_VL`을 사용한다. 결과에는 변수의 설정 여부, 대상의 존재 여부, 예상 TL/VL 역할 구조만 기록하고 값이나 경로는 출력하지 않는다.
-- 실제 로컬 셸을 확인할 수 없으면 변수 부재로 간주하지 말고 실제 데이터 읽기를 시작하지 않는다. 셸에서 변수가 설정되지 않은 경우에만 승인된 로컬·마운트 위치를 제한된 깊이와 역할 marker로 탐색한다. 전체 홈 또는 드라이브를 훑지 않는다. 읽기 전 문서와 Issue 권한으로 출처, 이용 조건, TL/VL 역할 매핑을 검증하고, 로컬 경로를 프롬프트·로그·Git·PR에 넣지 않는다.
+- 실제 데이터 분석, 추천 문제 정의 또는 반복 실험이 포함된 Issue에는 저장소 로컬 `.agents/skills/travel-data-scientist/` skill도 함께 적용한다. 이 skill은 단순 실행 절차가 아니라 problem/label/feature/metric 정렬, implicit feedback, leakage, ranking 평가와 여행로그 도메인 의미를 검토하는 전문 역할을 정의한다.
+- 승인된 실제 raw data를 한 번이라도 읽는 작업은 코드 수정 여부와 무관하게 `herdr-data-science` 전담 에이전트에 위임한다. 파일 존재 여부·개수, 디렉터리 구조, provenance/TL·VL 역할 매핑, schema/header 확인 같은 read-only 진단도 actual-data read로 간주한다. `entry-readonly` 조정자는 raw root나 TL/VL 입력을 직접 탐색하거나 파일 개수를 세지 않고, Issue·문서·Herdr 상태 확인과 위임만 담당한다.
+- 실제 데이터를 처리하기 전 선택한 실험·데이터 워크플로의 재현 명령을 읽고 필요한 데이터 입력을 식별한다. 현재 프로세스에서 `RAW_ROOT`, `CAPITAL_TL`, `CAPITAL_VL`, `WEST_TL`, `WEST_VL`, `EAST_TL`, `EAST_VL`, `JEJU_TL`, `JEJU_VL` 등 필요한 변수를 사용할 수 있으면 우선 사용한다. 변수가 보이지 않는다는 이유만으로 데이터가 없다고 판단하지 않는다.
+- 필요한 경로를 현재 환경에서 확인할 수 없으면, 선택된 Issue와 `docs/data/aihub-workflow.md`가 허용한 로컬·마운트 위치에서 제한된 깊이와 역할 marker를 사용해 bounded discovery를 수행한다. 환경변수 확인은 경로 해석 수단이지 actual-data 접근의 필수 gate가 아니다. 전체 홈 또는 드라이브를 훑지 않는다. 실제 입력을 열기 전 출처, 이용 조건, 권한, 예상 TL/VL 역할 매핑을 검증하고, 로컬 경로나 변수 값을 프롬프트·로그·Git·PR에 넣지 않는다. 승인된 데이터 위치를 유일하게 식별할 수 없거나 provenance/역할 검증에 실패할 때만 actual-data 작업을 중단한다.
 
 ## 지시와 작업 범위
 
@@ -28,6 +30,21 @@
 - 원본 데이터는 읽기 전용으로 취급한다. 원본·제한 데이터·개인정보·자격 증명을 Git, Issue, PR, 로그, 노트북 출력 또는 외부 서비스에 포함하지 않는다.
 - 데이터 처리 위치, 재현성 및 안전한 결과 공유 규칙은 docs/data/aihub-workflow.md를 따른다.
 
+## TypeScript와 Node 모듈 규칙
+
+- 새 Node.js/TypeScript 코드는 ESM을 기본으로 사용한다. `import`/`export`를 사용하고, CommonJS의 `require`/`module.exports`는 외부 라이브러리·도구 호환성 때문에 필요한 경우에만 사용하며 그 이유를 코드 또는 PR에 남긴다.
+- 루트 `package.json`의 `"type": "module"`과 `tsconfig.json`의 `NodeNext` 설정을 기준으로 한다. ESM/CJS 혼용을 위해 임의로 `type`을 제거하거나 CommonJS로 되돌리지 않는다.
+
+## 사람 중심 문서 작성
+
+- 사람이 읽는 문서, Issue, PR은 `docs/documentation-style-guide.md`를 따른다. 작업 로그를 그대로 옮기지 말고 독자가 이전 대화 없이 목적, 현재 상태, 결론, 다음 행동을 이해할 수 있게 작성한다.
+- 일반 설명과 결론은 한국어를 우선한다. 코드 식별자, 데이터 컬럼, API 필드, 공식 알고리즘·평가 지표처럼 정확한 원문이 필요한 이름은 유지한다.
+- 전문 용어와 약어는 처음 등장할 때 쉬운 한국어 설명과 원어를 함께 적는다. 추천 시스템 공통 용어는 `docs/recommendation/glossary.md`를 기준으로 한다.
+- 연구·실험 문서는 상세 수치나 재현 명령보다 질문, 상태, 결론, 결정된 것, 미결정, 다음 행동을 먼저 보여준다.
+- 결과를 기록할 때 확인된 사실, 해석, 결정, 미결정/추가 검증 필요를 구분한다. 관측 결과를 원인이나 확정된 계약으로 과장하지 않는다.
+- 표와 상세 수치를 제시하기 전에 무엇을 판단하기 위한 자료인지 설명한다. 실행 로그 전체를 문서에 복사하지 않는다.
+- 문서 정리 과정에서 기술적 의미, 실험 수치, 데이터 계약 또는 평가 기준을 임의로 바꾸지 않는다. 모순이나 별도 수정이 필요한 문제를 발견하면 현재 Issue 범위에 포함되지 않는 한 후속 Issue 후보로 보고한다.
+
 ## 검증과 문서화
 
 - 변경에 맞는 검증을 실행하고, 실행한 명령과 결과를 보고한다. 실행하지 않은 검증은 이유와 함께 명시한다.
@@ -46,13 +63,22 @@
 ## Herdr 작업
 
 - 승인된 Issue 구현과 열린 PR의 후속 작업은 저장소 로컬 `.agents/skills/travel-issue-agent-loop/` 절차를 따른다.
-- 사용자 요청을 받은 Codex 세션은 `entry-readonly` 사용자 권한 프로필을 기본으로 사용하며 저장소 내용에 대해 읽기 전용 조정자다. 범위와 상태를 확인하고 계획을 세우며 반환된 diff와 검증 결과를 읽기 전용으로 확인한다. 명령 네트워크 정책은 선택한 사용자 수준 Codex 권한 프로필과 설정에서 정의하며 호스트 목록을 저장소 지침에 복제하지 않는다. 설정에는 Herdr Unix socket 규칙이 있지만, Herdr CLI와 MCP 접근은 각각 별도로 확인한다. 이 세션은 저장소 파일 편집, 테스트, 리뷰 수정, staging, commit, push 또는 PR 생성을 하지 않는다. 사용자 또는 리뷰어의 수정 요청과 허용된 저장소 변경·전달 작업은 기존 구현 에이전트에 위임한다.
+- 사용자 요청을 받은 Codex 세션은 `entry-readonly` 사용자 권한 프로필을 기본으로 사용하며 저장소 내용에 대해 읽기 전용 조정자다. 범위와 상태를 확인하고 계획을 세우며 반환된 diff와 검증 결과를 읽기 전용으로 확인한다. 명령 네트워크 정책은 선택한 사용자 수준 Codex 권한 프로필과 설정에서 정의하며 호스트 목록을 저장소 지침에 복제하지 않는다. 설정에는 Herdr Unix socket 규칙이 있지만, Herdr CLI와 MCP 접근은 각각 별도로 확인한다. 이 세션은 저장소 파일 편집, 테스트, 리뷰 수정, staging, commit, push 또는 PR 생성을 하지 않는다. 실제 raw data read가 필요한 경우에도 조정자가 직접 raw root/TL/VL을 탐색하거나 파일 개수·구조·schema/header·provenance 역할을 검사하지 않고 `herdr-data-science`에 위임한다. 사용자 또는 리뷰어의 수정 요청과 허용된 저장소 변경·전달 작업은 기존 담당 writer에 위임한다.
 - 전용 구현 에이전트는 할당된 worktree에서 저장소 변경을 담당하며 `herdr-implementation` 사용자 권한 프로필로 시작한다. 명령 네트워크 정책은 선택한 사용자 수준 Codex 권한 프로필과 설정에서 정의한다. 설정에는 Herdr Unix socket 규칙이 있지만, Herdr CLI와 MCP 접근은 각각 별도로 확인한다. 현재 쓰기 가능 root는 `~/.herdr/worktrees` 전체이므로 이 설정은 worktree별 파일 쓰기를 강제하지 않는다. 편집, 테스트 및 리뷰 수정에 더해 Issue 또는 사용자가 허용한 경우에만 staging·commit하고, push 및 PR 생성·갱신은 명시적으로 허용된 경우에만 수행한다. 별도 허가 없이는 merge하지 않는다. 리뷰 에이전트는 `entry-readonly` 프로필로 시작하며 읽기 전용이다. Codex permission profile은 legacy `sandbox_mode` 또는 `sandbox_workspace_write`와 함께 설정하지 않는다.
+- 실제 데이터 분석 전담 에이전트는 `herdr-data-science` 사용자 권한 프로필로 시작한다. 등록된 MCP bridge가 `herdr_data_science_agent_start(workspace_id)`를 제공하면 이 guarded startup을 우선 사용해 worktree/pane/profile 선택을 bridge에 맡긴다. tool이 실패한 뒤 ordinary shell에서 `pane split`/`agent start`를 같은 목적으로 우회 재시도하지 않는다. 승인된 raw data root는 read-only, Herdr가 할당한 Issue worktree와 승인된 Git-ignored 결과 위치만 writable이어야 한다. 데이터 사이언티스트는 실행 전에 추천 문제와 label/feature/metric의 정렬을 검토하고, 문제 정의가 어긋나면 실행보다 먼저 근거와 대안을 보고한다. 제품 코드 변경이 주업무가 되면 `herdr-implementation` 에이전트로 handoff한다.
 - 필요한 사용자 권한 프로필이 없거나 선택할 수 없으면 정확한 blocker를 보고하고 중단한다. 제한 없는 기본 쓰기 설정으로 조용히 대체하거나 조정자가 구현을 대신하지 않는다.
 - Herdr가 필수 구현 에이전트를 생성하거나 시작할 수 없으면 정확한 blocker를 보고하고, 조정자가 구현을 대신하지 않는다.
 - Herdr 서버·workspace·agent 상태를 확인할 때 현재 세션에 등록된 Herdr MCP bridge의 읽기 전용 도구를 우선 사용한다. MCP 상태 확인이 성공하면 Herdr CLI를 같은 상태 확인 목적으로 다시 실행할 필요는 없다. worktree·branch·PR 상태는 Git과 GitHub에서 독립적으로 확인한다.
-- MCP bridge는 읽기 전용 상태 확인과 명시적으로 승인된 좁은 범위의 workspace/worktree teardown 도구를 제공한다. workspace/worktree 생성, agent 시작·prompt, pane 제어는 기존 승인된 Herdr orchestration 경로를 사용한다. MCP 상태 도구를 사용할 수 없거나 호출에 실패하면 skill에서 승인한 읽기 전용 Herdr CLI fallback을 사용한다. Herdr CLI가 `EPERM` 또는 `Operation not permitted`를 반환하면 해당 blocker를 그대로 보고하고 중단하며, escalation으로 재시도하지 않는다. CLI 실패만으로 MCP 실패를 추정하지 않는다.
+- MCP bridge는 읽기 전용 상태 확인, `herdr_data_science_agent_start(workspace_id)`의 좁은 startup mutation, 명시적으로 승인된 workspace/worktree teardown 도구를 제공한다. data-science agent 시작에는 dedicated MCP mutation을 우선 사용한다. workspace/worktree 생성, implementation/reviewer agent 시작·prompt, 기타 pane 제어처럼 MCP mutation 대안이 없는 승인된 상태 변경 작업은 저장소 skill과 전역 Herdr skill이 정의한 approval-reviewed 실행 경로를 첫 시도부터 사용한다. MCP 상태 도구를 사용할 수 없거나 호출에 실패하면 skill에서 승인한 읽기 전용 Herdr CLI fallback을 사용한다. dedicated startup mutation이 실패하면 ordinary sandbox의 직접 CLI를 우회 경로로 사용하지 않는다. 상태 변경 명령을 ordinary sandbox에서 잘못 시도해 `EPERM` 또는 `Operation not permitted`가 발생한 경우 그 실패 자체를 Issue blocker로 보지 말고, 아직 시도하지 않은 이미 정의된 승인 경로로만 진행한다. 그 승인 경로가 거부되거나 동일 오류로 실패하면 blocker를 보고하고 중단한다. 새롭거나 더 넓은 escalation, sandbox bypass, force/unrestricted profile로 복구하지 않는다. CLI 실패만으로 MCP 실패를 추정하지 않는다.
 - `herdr_worktree_remove`와 `herdr_workspace_close`는 사용자 또는 Issue가 cleanup을 명시적으로 승인한 경우에만 사용할 수 있으며, 사전 조건과 사후 확인은 `.agents/skills/travel-issue-agent-loop/references/agent-loop.md`의 cleanup 절차를 따른다.
+
+## 유지보수 신속 경로
+
+- 승인된 Issue 작업 중 발견된 저위험 운영·지침·에이전트 워크플로 blocker는 `docs/agent-workflow.md`의 **유지보수 신속 경로** 조건을 모두 만족할 때만 별도 Issue 없이 처리할 수 있다.
+- 사용자의 `유지보수 게이트로 처리` 지시는 해당 blocker에 한해 **별도 유지보수 workspace/worktree 생성**, 허용된 유지보수 파일 수정, 검증, 검증된 유지보수 브랜치 commit/push와 유지보수 PR 생성을 승인한다. 유지보수 브랜치는 `dev`에서 분기한 `agent/<중단된-issue>-maintenance-<slug>` 형식을 사용한다. `dev`/`main` 직접 push, force push, merge는 계속 금지한다.
+- 중단된 원래 Issue의 `agent/<issue>-<slug>` branch/worktree는 유지보수 작업에 재사용하거나 덮어쓰지 않는다. 원래 Issue의 미병합 변경이 유지보수 PR에 섞이지 않도록 별도 maintenance worktree에서만 유지보수 변경을 수행한다.
+- 추천 알고리즘, 제품 요구사항, 데이터·전처리·평가 의미, API 계약, DB schema, 서비스 도메인 로직 또는 모델 학습·추론 의미가 바뀌면 유지보수 신속 경로를 사용하지 않고 일반 Issue로 승격한다.
+- 유지보수 PR은 `.github/PULL_REQUEST_TEMPLATE/maintenance.md`를 사용해 중단된 기존 Issue, 원래 Issue branch, 별도 유지보수 branch와 검증 결과를 연결한다. 병합 후에는 maintenance worktree가 아니라 **원래 중단된 Issue worktree**로 돌아가 그 branch에 `origin/dev`를 merge하여 재개한다. 이미 push된 branch를 rebase하거나 force push하는 것을 기본 동기화 방법으로 사용하지 않는다.
 
 ## 상세 지침
 

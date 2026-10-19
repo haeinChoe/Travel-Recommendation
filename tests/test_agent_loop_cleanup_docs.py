@@ -129,7 +129,7 @@ class CleanupDocumentationTests(unittest.TestCase):
         self.assertIn("git worktree list --porcelain", readback)
 
     def test_refusal_procedure_names_the_observed_blocker_and_forbids_bypass(self) -> None:
-        self.assertIn("Caller workspace identity is unavailable; refusing teardown", self.reference)
+        self.assertIn("Caller pane identity is unavailable; refusing teardown", self.reference)
         self.assertIn("not a shared-`.git` refusal", self.reference)
         self.assertIn("blind retries", self.reference)
         self.assertIn("raw APIs", self.reference)

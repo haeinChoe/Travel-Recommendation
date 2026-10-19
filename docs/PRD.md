@@ -1,7 +1,7 @@
 # Travel Recommendation PRD
 
 > 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-20
 
 ## 1. Product Overview
 
@@ -60,13 +60,21 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 
 ## 3. Product Vision
 
-사용자가 이번 여행의 상황과 취향을 입력하면, 서비스가 현재 여행 맥락과 관광지 카탈로그를 바탕으로 관련성이 높은 여행지를 빠르게 랭킹하는 구조를 만든다.
+사용자가 이번 여행의 상황과 명시적으로 제공한 취향을 입력하면, 서비스가 현재 여행 맥락에서 추천 가능한 관광지를 관련성 순으로 랭킹해 Top-K로 제공하는 구조를 만든다.
 
 장기적으로는 다음과 같은 경험을 지원할 수 있어야 한다.
 
 > "부모님과 10월에 제주를 가는데 너무 많이 걷지 않고 조용한 장소 위주로 추천해줘"
 
-이때 자연어 해석 기능을 사용하더라도 실제 추천 후보 생성과 랭킹은 검증 가능한 추천 모델과 카탈로그 데이터를 기반으로 수행하는 것을 기본 방향으로 한다.
+자연어 해석 기능을 사용하더라도 추천 후보와 랭킹은 검증 가능한 데이터 계약과 추천 모델을 기반으로 수행하는 것을 기본 방향으로 한다.
+
+현재 item identity는 **offline 실험과 product serving을 분리**한다.
+
+- Offline 학습·평가: AI Hub native POI identity `(region, nonblank POI_ID)`
+- Product / serving catalog: TourAPI KorService2의 `(tourapi-korservice2, contentid)`
+- AI Hub ↔ TourAPI linkage: 별도 identity/crosswalk 문제
+
+Issue #4 / PR #64의 실제 데이터 검증에서 현재 linkage만으로는 offline observed-positive coverage를 신뢰성 있게 평가하기 어렵다고 판단했다. 따라서 TourAPI linkage를 offline 추천 실험의 선행조건으로 두지 않는다. TourAPI는 product/serving catalog v1 원천으로 유지한다.
 
 ---
 
@@ -75,8 +83,9 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 ### 4.1 Product Goals
 
 - 기존 TravelMate의 주요 사용자 플로우를 현대적인 UX/API 구조로 재구축한다.
-- 사용자 취향과 현재 여행 맥락을 이용한 개인화 여행지 추천을 제공한다.
+- 사용자 취향, 여행 맥락, 행동 이력을 이용한 개인화 여행지 추천을 제공한다.
 - 추천 결과에서 실제 존재하는 canonical 관광지만 반환한다.
+- 추천 결과에 대한 사용자의 반응을 추후 학습/평가에 사용할 수 있도록 interaction logging 구조를 마련한다.
 
 ### 4.2 Engineering Goals
 
@@ -90,12 +99,12 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 
 추천의 제품 목표는 **현재 여행 맥락에서 고려 가능한 POI를 관련성 순으로 랭킹해 Top-K로 제공하는 것**이다.
 
-첫 단계에서는 특정 모델 계열을 제품 요구사항처럼 선결정하지 않고, 공통 데이터·평가 계약과 재현 가능한 baseline을 우선한다.
-
-현재까지:
-
-- Popularity baseline을 공통 reference로 구축했다.
-- 이후 모델은 #41의 feature availability, cold-start, label, split 계약을 확정한 뒤 선택한다.
+- 현재 여행 맥락과 명시적 사용자 취향을 핵심 요청 입력으로 둔다.
+- 장기 사용자 history가 없는 cold-start 사용자를 핵심 시나리오로 지원한다.
+- 지역·서비스 가능 범위 같은 명백한 제품 조건은 가능한 경우 랭킹 전에 후보 자격으로 적용한다.
+- 특정 모델 계열을 제품 요구사항처럼 선결정하지 않는다.
+- Popularity baseline과 기존 CF feasibility 결과를 공통 비교 근거로 사용하고, 후속 모델은 #41의 학습·평가 계약을 확정한 뒤 선택한다.
+- Offline 실험은 AI Hub native POI identity에서 수행하며, TourAPI serving identity와의 crosswalk를 모델 비교의 필수 조건으로 두지 않는다.
 
 후속 후보에는 feature-based ranking, Learning-to-Rank, feature-aware factorization, Two-Tower 등이 포함될 수 있으나 구현 순서를 PRD에서 고정하지 않는다.
 
@@ -202,31 +211,31 @@ LLM은 향후 preference extraction 또는 recommendation explanation의 인터�
 
 ### FR-2 User Travel Preference
 
-사용자는 추천에 필요한 여행 정보를 입력할 수 있어야 한다.
+사용자는 장기 행동 이력이 없어도 이번 여행에 필요한 정보를 명시적으로 입력해 추천을 요청할 수 있어야 한다.
 
-초기 후보:
+초기 핵심 입력 후보:
 
-- 여행 지역
-- 여행 시작/종료일
-- 연령대
-- 성별 (필요성과 활용 방식 재검토)
-- 여행 스타일
-- 동반자 유형/인원
+- 여행 지역 / 목적지
+- 여행 시작·종료일 또는 기간
+- 여행 스타일 등 명시적 취향
+- 동반자 유형 / 인원 등 현재 여행 맥락
 
-개인정보 또는 민감할 수 있는 feature는 추천 성능 기여와 필요성을 검토한 뒤 최소화한다.
+연령대·성별 같은 demographic feature는 핵심 요청 입력으로 두지 않는다. 향후 성능 기여, 공정성, 개인정보 최소수집 및 동의 필요성을 별도로 검증한 경우에만 실험 후보로 다룬다.
 
 ### FR-3 Tour Spot Catalog
 
-- 관광지는 하나의 canonical ID로 식별되어야 한다.
-- 최신 관광지 메타데이터는 한국관광공사 TourAPI를 주요 source로 검토한다.
-- 지역, 카테고리/테마, 위치, 설명 등 추천 및 탐색에 필요한 메타데이터를 제공한다.
+- Product / serving 관광지 카탈로그 v1은 TourAPI KorService2를 사용한다.
+- serving canonical identity는 `(tourapi-korservice2, contentid)`다.
+- v1 추천 가능 유형과 request-time eligibility는 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)를 따른다.
+- Offline AI Hub 추천 실험의 item identity는 AI Hub native POI identity를 사용하며 TourAPI `contentid`와 동일하다고 가정하지 않는다.
+- AI Hub ↔ TourAPI crosswalk는 별도 identity 문제이며, 공식 crosswalk·검증된 좌표 호환성·신뢰 가능한 외부 장소 식별자 같은 새 근거 없이는 heuristic linkage를 확대하지 않는다.
 
 ### FR-4 Recommendation
 
 - 사용자는 현재 여행 맥락과 명시적으로 제공한 취향을 기반으로 Top-K 관광지를 추천받을 수 있다.
-- 사용자는 현재 여행 맥락과 명시적으로 제공한 취향만으로 핵심 추천 플로우를 사용할 수 있어야 한다.
+- 장기 사용자 history 없이도 핵심 추천 플로우를 사용할 수 있어야 한다.
 - 여행 지역, 서비스 가능한 POI 등 명백한 product constraint는 가능한 경우 ranking 이전 candidate eligibility에 반영한다.
-- 추천의 primary product output은 ranked Top-K POI이며, 자동 일정 생성/동선 최적화는 별도 제품 기능으로 취급한다.
+- 추천의 primary product output은 ranked Top-K POI이며, 자동 일정 생성·동선 최적화는 별도 제품 기능으로 취급한다.
 - 추천된 POI는 사용자가 저장하거나 선택할 수 있고, 향후 itinerary 기능의 입력으로 연결할 수 있어야 한다.
 - 이미 방문한 아이템 처리 방식은 evaluation 및 product rule에서 명시한다.
 - 추천 API는 최소한 다음 정보를 반환할 수 있어야 한다.
@@ -253,11 +262,41 @@ modelVersion (내부 추적용)
 
 초기 MVP 범위에서 추천 시스템 개발보다 우선순위가 낮을 수 있으며, 기존 기능 복원 이슈에서 단계별 범위를 재조정한다.
 
+### FR-7 Interaction Logging
+
+향후 추천 학습과 성능 분석을 위해 다음 이벤트를 저장할 수 있는 구조를 마련한다.
+
+후보 이벤트:
+
+- RECOMMENDATION_IMPRESSION
+- VIEW
+- CLICK
+- LIKE
+- SAVE
+- REVIEW
+- VISIT
+
+추천 노출 로그는 최소한 다음을 연결할 수 있어야 한다.
+
+```text
+userId
+itemId
+modelVersion
+rank
+score
+context
+occurredAt
+```
+
+실제 수집 이벤트와 보존 정책은 MVP 범위에서 단계적으로 결정한다.
+
+---
+
 ## 9. Recommendation Data Strategy
 
 ### 9.1 AI Hub Source Dataset
 
-기존 프로젝트에서 사용한 AI Hub 국내 여행로그 데이터를 재확보하고 원본 스키마를 분석한다.
+Offline 추천 연구는 기존 프로젝트에서 사용한 AI Hub 국내 여행로그를 기준으로 한다.
 
 활용 후보:
 
@@ -270,43 +309,61 @@ modelVersion (내부 추적용)
 - activity
 - spending
 
-기존 프로젝트의 Preference/Visited로 축약하는 과정에서 버린 feature를 확인한다.
+기존 프로젝트의 Preference/Visited로 축약하는 과정에서 버린 feature를 확인하되, 데이터셋에 존재한다는 이유만으로 serving feature로 사용하지 않는다. 추천 시점에 실제 제품이 받을 수 있는 정보만 모델 입력 후보로 허용한다.
 
-### 9.2 Item Catalog Mapping
+### 9.2 Offline / Serving Item Identity Boundary
 
-AI Hub 방문지와 TourAPI 관광지는 서로 다른 식별 체계를 사용하므로 entity resolution 과정이 필요하다.
-
-매핑 후보:
-
-1. exact name
-2. name + address
-3. geographic distance
-4. fuzzy name matching
-5. manual review fallback
-
-각 매핑에는 가능하면 다음 정보를 남긴다.
+Offline 추천 실험과 product serving은 서로 다른 item identity를 사용한다.
 
 ```text
-sourceVisitId
-tourApiContentId
-matchMethod
-matchScore
+Offline recommendation experiment
+AI Hub native POI identity
+(region, nonblank POI_ID)
+ -> candidate universe
+ -> training / validation
+ -> ranking evaluation
+
+Product / serving
+TourAPI KorService2
+(tourapi-korservice2, contentid)
+ -> CandidateRequest
+ -> eligibility
+ -> serving-compatible ranking
+ -> Top-K POIs
+
+AI Hub ↔ TourAPI
+ -> 별도 identity / crosswalk 문제
 ```
 
-### 9.3 Canonical Recommendation Dataset
+Issue #4 / PR #64에서 exact title/address, POI Master, global lookup, visit fallback, name normalization, fuzzy retrieval shadow, address normalization 및 token 관계를 진단했지만 신뢰 가능한 canonical bridge로 승격할 근거를 확보하지 못했다.
 
-추천 모델은 애플리케이션 엔티티에 직접 의존하기보다 학습/평가에 적합한 canonical dataset을 사용하도록 한다.
+따라서:
+
+- Offline model evaluation은 AI Hub native POI identity 안에서 수행한다.
+- TourAPI catalog coverage를 AI Hub positive coverage와 동일한 것으로 해석하지 않는다.
+- TourAPI `contentid` linkage를 offline model selection의 선행조건으로 두지 않는다.
+- fuzzy/title/address heuristic 또는 token overlap만으로 `MATCHED`를 추가하지 않는다.
+- serving 단계에서 사용할 모델·feature·item representation은 TourAPI serving identity와 호환됨을 별도로 검증해야 한다.
+
+상세 근거는 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)와 Issue #66의 실제 검증 후 적용 범위 수정을 따른다.
+
+### 9.3 Offline Recommendation Dataset
+
+추천 모델은 애플리케이션 엔티티에 직접 의존하기보다 학습·평가에 적합한 offline dataset을 사용한다.
 
 논리 구조:
 
 ```text
-users
-items
-interactions
-trip_context
+travelers
+trip_contexts
+poi_items
+observed_interactions
+optional_post_event_feedback
 ```
 
-실제 저장 형식은 데이터 분석 이후 결정한다.
+현재 offline item은 AI Hub native POI identity를 사용한다. 이 데이터셋을 TourAPI serving catalog의 canonical identity와 동일한 것으로 부르지 않는다.
+
+실제 저장 형식과 feature schema는 #41의 model-training-evaluation contract에서 확정한다.
 
 ---
 
@@ -316,11 +373,18 @@ trip_context
 
 ### 10.1 Split
 
-split 방식은 temporal이라는 이유만으로 우선하지 않는다.
+현재 baseline contract는 AI Hub source role을 보존해 **TL을 train, VL을 validation으로 사용하는 임시 규칙**을 둔다. 이는 TL/VL의 독립성, 공식 무작위화 또는 시간 순서를 보장한다는 뜻이 아니다.
 
-현재 데이터의 traveler 반복성, trip 구조, feature availability와 평가하려는 cold-start 시나리오를 먼저 확인한 뒤 #41에서 model-development split을 확정한다.
+#41에서는 다음을 비교해 model-development split을 확정한다.
 
-공식 VL은 높은 신규-user 비율이 확인된 만큼 삭제하거나 자동 병합하지 않고 external/cold-start evaluation 역할을 우선 검토한다.
+- TL 내부 grouped split을 별도로 둘 필요가 있는지
+- VL을 external / cold-start generalization evaluation으로 보존할지
+- traveler·trip·POI overlap과 leakage를 어떻게 통제할지
+- 독립 test 역할을 어떤 승인된 데이터에서 확보할지
+
+단순 random row split이나 temporal split을 이유만으로 자동 채택하지 않는다. 동일 `TRAVEL_ID`의 interaction과 feedback은 partition을 넘지 않게 유지한다.
+
+독립 test source/protocol이 확정되기 전까지 test metric을 생성하지 않는다.
 
 ### 10.2 Initial Metrics
 
@@ -333,6 +397,8 @@ split 방식은 temporal이라는 이유만으로 우선하지 않는다.
 - recommendation coverage
 
 rating/preference prediction을 학습 과정에서 사용할 경우 RMSE/MAE를 diagnostic으로 추가할 수 있으나, 회귀 오차만으로 추천 모델 우수성을 결론 내리지 않는다.
+
+Observed visit은 implicit positive로 사용할 수 있지만, unvisited item은 자동 negative가 아니다. sampling이 필요한 모델은 sampling 규칙과 seed를 실험 계약에 명시한다.
 
 ### 10.3 Evaluation Requirements
 
@@ -347,29 +413,30 @@ rating/preference prediction을 학습 과정에서 사용할 경우 RMSE/MAE를
 
 기존처럼 요청 때마다 대규모 전처리와 similarity matrix를 재구축하지 않는다.
 
-목표 구조:
+Offline 연구와 online serving의 identity 경계를 명시적으로 유지한다.
 
 ```text
-Offline
-raw data
+Offline research
+AI Hub native POI interactions
  -> preprocessing
  -> training
- -> embeddings/model artifact
  -> evaluation
- -> model version
+ -> experiment artifact / decision evidence
 
-Online
+Online product
 request
  -> traveler preference + trip context
- -> product/trip constraints
- -> eligible candidate POIs
- -> ranking
- -> Top-K
+ -> CandidateRequest
+ -> TourAPI serving catalog eligibility
+ -> serving-compatible ranking
+ -> Top-K TourAPI POIs
  -> save/select
  -> optional future itinerary flow
 ```
 
-아이템 규모가 수만 개 수준이라면 복잡한 vector DB/ANN을 필수 조건으로 두지 않는다. brute-force vector scoring의 실제 latency를 먼저 측정한 뒤 필요할 때 ANN을 도입한다.
+AI Hub native POI를 대상으로 학습한 실험 artifact를 TourAPI `contentid` serving artifact로 자동 간주하지 않는다. 실제 online model은 serving item identity와 feature availability가 호환되는지 별도 검증 후 연결한다.
+
+아이템 규모가 수만 개 수준이라면 복잡한 vector DB/ANN을 필수 조건으로 두지 않는다. brute-force scoring의 실제 latency를 먼저 측정한 뒤 필요할 때 ANN을 도입한다.
 
 ---
 
@@ -388,23 +455,34 @@ NestJS API
   |
   +--------> Recommendation Service
                 |
-                +--> model/embedding artifact
-                +--> recommendation runtime
+                +--> serving-compatible model / feature artifact
+                +--> TourAPI candidate identity
 
-Offline Recommendation Pipeline
-AI Hub / TourAPI catalog
+Offline Recommendation Research
+AI Hub native POI interactions
   -> preprocessing
   -> training
   -> evaluation
   -> experiment tracking
-  -> versioned artifact
+  -> research artifact / model decision
+
+Product Catalog
+TourAPI KorService2
+  -> versioned serving snapshot
+  -> request-time eligibility
+  -> Top-K serving POIs
+
+AI Hub POI ↔ TourAPI contentid
+  -> optional future crosswalk
+  -> not required for offline model comparison
 ```
 
 ### Architecture Principle
 
 - NestJS API는 product/domain orchestration을 담당한다.
-- Python recommendation 영역은 학습/평가/추천 계산을 담당한다.
+- Python recommendation 영역은 학습·평가·추천 계산을 담당한다.
 - recommendation service가 product DB의 내부 schema를 자유롭게 조회하는 구조는 지양한다.
+- Offline research identity와 serving catalog identity를 암묵적으로 합치지 않는다.
 - 데이터 전달 방식은 batch export, feature dataset, internal API 등 후보를 비교해 결정한다.
 
 ---
@@ -483,15 +561,16 @@ AI Hub / TourAPI catalog
 - 기존 TravelMate 기능/API/DB 구조 복원
 - 기존 추천 코드 및 데이터 흐름 분석
 - AI Hub 데이터 재확보
-- AI Hub ↔ TourAPI mapping 과정 복원
+- AI Hub ↔ TourAPI identity bridge 타당성 검증 완료
+- Offline AI Hub identity와 TourAPI serving identity를 별도 책임으로 분리
 
 ### Phase 1 — Recommendation Baseline & Contract
 
-- canonical dataset 정의
-- popularity baseline
-- User-CF / Item-CF feasibility 검증
-- 제품/데이터 특성에 맞는 ranking task 정의
-- preference/label, feature availability, cold-start, evaluation protocol 확정
+- AI Hub native POI 기반 offline candidate/evaluation contract 확정
+- popularity baseline 유지
+- User-CF / Item-CF feasibility 결과 반영
+- prediction unit, label, feature availability, split, cold-start cohort, ranking metric 확정
+- `model-training-evaluation-contract.md` 작성
 - 후속 모델 후보를 동일한 계약에서 비교할 수 있는 실험 구조 마련
 
 ### Phase 2 — New Product Foundation
@@ -506,25 +585,32 @@ AI Hub / TourAPI catalog
 
 - #41 계약에 맞는 feature-capable 모델 실험
 - 필요 시 Learning-to-Rank, feature-aware factorization, Two-Tower 등 후보 비교
-- baseline 대비 ranking/coverage/cold-start 성능 비교
-- online artifact/serving contract 정의
+- baseline 대비 ranking / coverage / cold-start trade-off 비교
+- serving identity와 feature parity가 검증된 online artifact/serving contract 정의
 - NestJS와 recommendation service 연동
+
+### Phase 4 — Feedback Loop
+
+- recommendation impression logging
+- click/like/save/visit interaction logging
+- 실제 서비스 데이터 기반 평가 체계 준비
 
 ---
 
 ## 16. Success Criteria
 
-초기 프로젝트 성공은 단순히 "Two-Tower를 구현했다"로 판단하지 않는다.
+초기 프로젝트 성공은 특정 모델을 구현했다는 사실만으로 판단하지 않는다.
 
 다음 조건을 만족하는 것을 목표로 한다.
 
 1. 기존 추천 파이프라인의 문제와 개선 이유를 설명할 수 있다.
-2. 동일 데이터/동일 protocol에서 서로 다른 추천 접근을 비교할 수 있다.
+2. 동일한 offline data/evaluation contract에서 서로 다른 추천 접근을 비교할 수 있다.
 3. 선택한 후속 모델이 baseline 대비 ranking, coverage, cold-start에서 어떤 trade-off를 갖는지 수치로 설명할 수 있다.
 4. 추천 serving이 요청마다 전체 데이터 전처리를 반복하지 않는다.
 5. 데이터셋/코드/모델/metric을 특정 experiment run으로 재현할 수 있다.
 6. Next.js/NestJS/Recommendation service 간 책임이 명확하다.
-7. 추천 결과가 canonical TourSpot과 연결된다.
+7. Offline AI Hub item identity와 TourAPI serving identity의 책임이 명확히 분리되어 있다.
+8. Product serving 결과는 TourAPI canonical identity를 사용하며, offline AI Hub ↔ TourAPI crosswalk를 암묵적으로 전제하지 않는다.
 
 ---
 
@@ -548,14 +634,19 @@ AI Hub / TourAPI catalog
 
 ### Recommendation
 
-제품 수준의 방향은 현재 여행 맥락에서 eligible POI를 랭킹해 Top-K로 제공하는 것으로 정리했다. 다음 세부 계약은 #41에서 확정한다.
+제품 수준의 방향은 **현재 여행 맥락에서 후보 POI를 랭킹해 Top-K로 제공하는 것**으로 정리했다.
 
-- traveler preference와 trip context의 정확한 입력 feature는 무엇인가?
+#41에서 남은 세부 계약:
+
 - prediction unit을 어떤 schema로 고정할 것인가?
-- 방문/만족도 등 관측 신호를 relevance/preference label로 어떻게 정의할 것인가?
-- unobserved item과 pseudo-negative를 어떻게 구분하고, 필요한 모델에서 sampling을 어떻게 구성할 것인가?
-- 공식 VL과 TL 내부 split을 각각 어떤 평가 역할로 사용할 것인가?
-- user/item cold-start cohort를 어떤 기준으로 분리할 것인가?
+- traveler preference와 trip context 중 어떤 feature를 serving-time allowlist로 허용할 것인가?
+- observed visit을 primary relevance로 유지할지, post-event preference signal을 어떤 보조 label로 사용할 것인가?
+- unobserved item과 sampled pseudo-negative를 어떻게 구분할 것인가?
+- TL 내부 model-development split과 공식 VL의 external/cold-start 역할을 어떻게 나눌 것인가?
+- user/item/context cold-start cohort를 어떤 기준으로 정의할 것인가?
+- offline 연구 결과를 serving-compatible model/feature contract로 옮길 때 어떤 parity 검증이 필요한가?
+
+AI Hub ↔ TourAPI crosswalk 자체는 #41의 model selection 선행조건으로 두지 않는다.
 
 ### Architecture
 
@@ -586,7 +677,7 @@ AI Hub / TourAPI catalog
 유사 여행 추천 제품의 공개 사용자 경험과 이번 프로젝트에 대한 Adopt / Experiment / Defer 판단은 다음 문서에서 관리한다.
 
 - [Travel Recommendation Product Reference Analysis](recommendation/product-reference-analysis.md)
-- #41 — 여행 추천 제품·모델 계약 재정의
+- Issue #41 — 여행 추천 제품·모델 계약 확정
 
 제품 조사는 내부 알고리즘을 추측하기 위한 근거가 아니라, 사용자가 제공하는 입력과 서비스가 반환해야 하는 경험을 검증하기 위한 자료로 사용한다.
 

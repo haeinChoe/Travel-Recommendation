@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from scripts import herdr_mcp_server as bridge
 
@@ -24,7 +24,9 @@ def _worktree(path: str, workspace_id: str = "target", branch: str = "feature") 
 
 def _recognized_herdr_unavailability(stderr: str) -> str | None:
     normalized = stderr.casefold()
-    if "operation not permitted" in normalized or "herdr socket access denied" in normalized:
+    if "socket" in normalized and any(
+        marker in normalized for marker in ("operation not permitted", "permission denied", "eperm", "eacces")
+    ):
         return "Herdr socket access was denied (EPERM)"
     if any(marker in normalized for marker in ("connection refused", "not connected", "server_not_running", "server is unavailable")):
         return "Herdr server/socket is unavailable"
@@ -68,16 +70,18 @@ def _assert_disposable_source_cleanup_safe(
 
 class MCPProtocolTests(unittest.TestCase):
     def test_real_integration_preflight_only_recognizes_socket_or_server_unavailable_errors(self) -> None:
-        self.assertEqual(_recognized_herdr_unavailability('Error: Os { message: "Operation not permitted" }'), "Herdr socket access was denied (EPERM)")
+        self.assertEqual(_recognized_herdr_unavailability("Herdr socket access denied: EPERM"), "Herdr socket access was denied (EPERM)")
+        self.assertIsNone(_recognized_herdr_unavailability("worktree: Operation not permitted"))
+        self.assertIsNone(_recognized_herdr_unavailability("checkout: permission denied (EACCES)"))
         self.assertEqual(_recognized_herdr_unavailability("server_not_running: connection refused"), "Herdr server/socket is unavailable")
         self.assertIsNone(_recognized_herdr_unavailability("error: unrecognized subcommand 'status'"))
         self.assertIsNone(_recognized_herdr_unavailability("herdr: command not found"))
         self.assertIsNone(_recognized_herdr_unavailability("configuration error: invalid socket path"))
 
-    def test_tools_list_has_two_strict_workspace_id_schemas(self) -> None:
+    def test_tools_list_has_three_strict_workspace_id_schemas(self) -> None:
         response = bridge._handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         tools = {tool["name"]: tool for tool in response["result"]["tools"]}
-        for name in ("herdr_worktree_remove", "herdr_workspace_close"):
+        for name in ("herdr_data_science_agent_start", "herdr_worktree_remove", "herdr_workspace_close"):
             self.assertEqual(
                 tools[name]["inputSchema"],
                 {
@@ -94,6 +98,19 @@ class MCPProtocolTests(unittest.TestCase):
                 {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "herdr_worktree_remove", "arguments": args}}
             )
             self.assertTrue(response["result"]["isError"])
+
+        response = bridge._handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "herdr_data_science_agent_start",
+                    "arguments": {"workspace_id": "target", "profile": "unrestricted"},
+                },
+            }
+        )
+        self.assertTrue(response["result"]["isError"])
 
     def test_disposable_source_cleanup_requires_target_gone_and_source_agent_free(self) -> None:
         with tempfile.TemporaryDirectory(prefix="herdr-source-cleanup-") as temp_dir:
@@ -238,7 +255,9 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
                 "args = sys.argv[1:]\n"
                 "with commands_path.open('a', encoding='utf-8') as stream: stream.write(json.dumps(args) + '\\n')\n"
                 "state = json.loads(state_path.read_text(encoding='utf-8'))\n"
-                "if args[:2] == ['status', 'server']:\n"
+                "if args == ['pane', 'current', '--current']:\n"
+                "    result = {'type': 'pane_current', 'pane': {'pane_id': 'fixture-pane', 'workspace_id': 'caller', 'focused': True}}\n"
+                "elif args[:2] == ['status', 'server']:\n"
                 "    result = {'status': 'running', 'running': True, 'version': '0.9.3', 'protocol': 22, 'compatible': True}\n"
                 "elif args[:2] == ['workspace', 'list']:\n"
                 "    result = {'workspaces': state['workspaces']}\n"
@@ -260,7 +279,8 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
                 {
                     "PATH": f"{bin_dir}{os.pathsep}{environment.get('PATH', '')}",
                     "HERDR_ENV": "1",
-                    "HERDR_WORKSPACE_ID": "caller",
+                    "HERDR_PANE_ID": "fixture-pane",
+                    "HERDR_WORKSPACE_ID": "ignored-stale-workspace",
                     "HERDR_TEST_STATE": str(state_path),
                     "HERDR_TEST_COMMANDS": str(commands_path),
                 }
@@ -309,6 +329,153 @@ class IsolatedMCPIntegrationTests(unittest.TestCase):
             self.assertEqual(bridge._git_status_snapshot([str(repo), str(linked_path)]), git_status_before)
 
 
+class DataScienceStartupTests(unittest.TestCase):
+    def test_startup_uses_verified_worktree_new_pane_and_fixed_profile(self) -> None:
+        workspace = {"workspace_id": "target", "focused": False}
+        all_workspaces = [
+            {"workspace_id": "caller", "focused": True},
+            workspace,
+        ]
+        linked_worktree = {
+            "path": "/verified/worktree",
+            "branch": "agent/57-hotfix",
+            "is_linked_worktree": True,
+            "open_workspace_id": "target",
+        }
+        panes_before = [
+            {"pane_id": "target:p1", "workspace_id": "target", "cwd": "/verified/worktree"}
+        ]
+        panes_after = [
+            *panes_before,
+            {"pane_id": "target:p2", "workspace_id": "target", "cwd": "/verified/worktree"},
+        ]
+        agents_after = [
+            {
+                "name": "data-scientist",
+                "workspace_id": "target",
+                "pane_id": "target:p2",
+                "agent_status": "working",
+            }
+        ]
+
+        with patch.object(bridge, "_caller_workspace_id", return_value="caller"), patch.object(
+            bridge, "_workspace_context", return_value=(workspace, all_workspaces, [])
+        ), patch.object(bridge, "_worktrees_for", return_value=[linked_worktree]), patch.object(
+            bridge, "_assert_startup_linked_worktree", return_value="/verified/worktree"
+        ) as verify_worktree, patch.object(
+            bridge, "_panes_for", side_effect=[panes_before, panes_after]
+        ), patch.object(
+            bridge, "_assert_caller_context_unchanged"
+        ) as caller_guard, patch.object(
+            bridge, "_run_herdr_json"
+        ) as herdr_call, patch.object(
+            bridge, "_restore_focus"
+        ) as restore_focus, patch.object(
+            bridge, "_collection", return_value=agents_after
+        ) as inventory:
+            result = bridge._start_data_science_agent("target")
+
+        verify_worktree.assert_called_once_with("target", linked_worktree)
+        self.assertEqual(
+            herdr_call.call_args_list,
+            [
+                call(
+                    [
+                        "pane",
+                        "split",
+                        "--pane",
+                        "target:p1",
+                        "--direction",
+                        "right",
+                        "--cwd",
+                        "/verified/worktree",
+                        "--no-focus",
+                    ]
+                ),
+                call(
+                    [
+                        "agent",
+                        "start",
+                        "data-scientist",
+                        "--kind",
+                        "codex",
+                        "--pane",
+                        "target:p2",
+                        "--",
+                        "--config",
+                        'default_permissions="herdr-data-science"',
+                    ]
+                ),
+            ],
+        )
+        self.assertEqual(caller_guard.call_count, 2)
+        self.assertEqual(restore_focus.call_count, 2)
+        inventory.assert_called_once_with(["agent", "list"], "agents")
+        self.assertEqual(
+            result,
+            {
+                "workspace_id": "target",
+                "pane_id": "target:p2",
+                "agent_name": "data-scientist",
+                "profile": "herdr-data-science",
+                "started": True,
+            },
+        )
+        self.assertNotIn("worktree", result)
+
+    def test_startup_rejects_protected_branch_before_git_checks(self) -> None:
+        worktree = {
+            "path": "/verified/worktree",
+            "branch": "dev",
+            "is_linked_worktree": True,
+            "open_workspace_id": "target",
+        }
+        with patch.object(bridge, "_git") as git_call, self.assertRaisesRegex(
+            RuntimeError, "dev or main"
+        ):
+            bridge._assert_startup_linked_worktree("target", worktree)
+        git_call.assert_not_called()
+
+    def test_startup_refuses_ambiguous_new_pane_before_agent_start(self) -> None:
+        workspace = {"workspace_id": "target", "focused": False}
+        all_workspaces = [
+            {"workspace_id": "caller", "focused": True},
+            workspace,
+        ]
+        linked_worktree = {
+            "path": "/verified/worktree",
+            "branch": "agent/57-hotfix",
+            "is_linked_worktree": True,
+            "open_workspace_id": "target",
+        }
+        panes_before = [
+            {"pane_id": "target:p1", "workspace_id": "target", "cwd": "/verified/worktree"}
+        ]
+        panes_after = [
+            *panes_before,
+            {"pane_id": "target:p2", "workspace_id": "target", "cwd": "/verified/worktree"},
+            {"pane_id": "target:p3", "workspace_id": "target", "cwd": "/verified/worktree"},
+        ]
+
+        with patch.object(bridge, "_caller_workspace_id", return_value="caller"), patch.object(
+            bridge, "_workspace_context", return_value=(workspace, all_workspaces, [])
+        ), patch.object(bridge, "_worktrees_for", return_value=[linked_worktree]), patch.object(
+            bridge, "_assert_startup_linked_worktree", return_value="/verified/worktree"
+        ), patch.object(
+            bridge, "_panes_for", side_effect=[panes_before, panes_after]
+        ), patch.object(
+            bridge, "_assert_caller_context_unchanged"
+        ), patch.object(
+            bridge, "_run_herdr_json"
+        ) as herdr_call, patch.object(
+            bridge, "_restore_focus"
+        ), self.assertRaisesRegex(RuntimeError, "exactly one new Herdr pane"):
+            bridge._start_data_science_agent("target")
+
+        self.assertEqual(herdr_call.call_count, 1)
+        self.assertEqual(herdr_call.call_args.args[0][:2], ["pane", "split"])
+
+
 class WorkspaceCloseVersionTests(unittest.TestCase):
     def test_guarded_close_version_detection(self) -> None:
         for version, expected in (("0.9.0", True), ("0.9.3", True), ("1.0.0", True), ("0.8.2", False)):
@@ -328,8 +495,13 @@ class WorkspaceCloseVersionTests(unittest.TestCase):
 
 class TeardownSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.caller_env = patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "caller"})
+        self.caller_env = patch.dict(
+            os.environ,
+            {"HERDR_PANE_ID": "fixture-caller-pane", "HERDR_WORKSPACE_ID": "ignored-stale-workspace"},
+        )
         self.caller_env.start()
+        self.caller_context = patch.object(bridge, "_caller_workspace_id", return_value="caller")
+        self.caller_context.start()
         self.safe_close_support = patch.object(bridge, "_supports_guarded_workspace_close", return_value=True)
         self.safe_close_support.start()
         self.temp_root = Path(tempfile.mkdtemp(prefix="herdr-bridge-unit-"))
@@ -346,6 +518,7 @@ class TeardownSafetyTests(unittest.TestCase):
     def tearDown(self) -> None:
         shutil.rmtree(self.temp_root)
         self.safe_close_support.stop()
+        self.caller_context.stop()
         self.caller_env.stop()
 
     def _git_worktree(self, branch: str = "feature", checkout_name: str = "checkout") -> Path:
@@ -399,51 +572,170 @@ class TeardownSafetyTests(unittest.TestCase):
             raise AssertionError(command)
 
         for name in ("herdr_worktree_remove", "herdr_workspace_close"):
-            with self.subTest(name=name), patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "target"}), patch.object(
-                bridge, "_collection", side_effect=collection
-            ) as inventory, patch.object(bridge, "_run_herdr_json") as mutation:
+            with self.subTest(name=name), patch.object(
+                bridge, "_caller_workspace_id", return_value="target"
+            ), patch.object(bridge, "_collection", side_effect=collection) as inventory, patch.object(
+                bridge, "_run_herdr_json"
+            ) as mutation:
                 with self.assertRaisesRegex(RuntimeError, "workspace running this caller"):
                     bridge._mutate_tool(name, "target")
             inventory.assert_called_once_with(["workspace", "list"], "workspaces")
             mutation.assert_not_called()
 
-    def test_rejects_teardown_without_caller_context(self) -> None:
-        for name in ("herdr_worktree_remove", "herdr_workspace_close"):
-            with self.subTest(name=name), patch.dict(os.environ, {}, clear=True), patch.object(
-                bridge, "_collection"
-            ) as inventory, patch.object(bridge, "_run_herdr_json") as mutation:
-                with self.assertRaisesRegex(RuntimeError, "Caller workspace identity is unavailable"):
-                    bridge._mutate_tool(name, "target")
-            inventory.assert_not_called()
-            mutation.assert_not_called()
+    @staticmethod
+    def _pane_info(workspace_id: str, *, focused: bool = False) -> dict[str, object]:
+        return {
+            "result": {
+                "type": "pane_info",
+                "pane": {"pane_id": "current-pane", "workspace_id": workspace_id, "focused": focused},
+            }
+        }
 
-    def test_rejects_malformed_caller_context_before_inventory_or_mutation(self) -> None:
-        for name in ("herdr_worktree_remove", "herdr_workspace_close"):
-            for caller_id in (" ", "bad\nidentity"):
-                with self.subTest(name=name, caller_id=repr(caller_id)), patch.dict(
-                    os.environ, {"HERDR_WORKSPACE_ID": caller_id}
-                ), patch.object(bridge, "_collection") as inventory, patch.object(
-                    bridge, "_run_herdr_json"
-                ) as mutation:
-                    with self.assertRaisesRegex(RuntimeError, "Caller workspace identity is unavailable"):
-                        bridge._mutate_tool(name, "target")
-                inventory.assert_not_called()
-                mutation.assert_not_called()
+    @staticmethod
+    def _pane_current(workspace_id: str, *, focused: bool = False) -> dict[str, object]:
+        return {
+            "result": {
+                "type": "pane_current",
+                "pane": {"pane_id": "current-pane", "workspace_id": workspace_id, "focused": focused},
+            }
+        }
 
-    def test_rejects_stale_caller_identity_before_reading_agents_or_mutating(self) -> None:
+    def _use_real_caller_context(self) -> None:
+        self.caller_context.stop()
+
+    def test_moved_nonfocused_pane_uses_pane_current_not_stale_workspace_env(self) -> None:
+        self._use_real_caller_context()
+        with patch.dict(
+            os.environ,
+            {"HERDR_PANE_ID": "launch-pane-alias", "HERDR_WORKSPACE_ID": "stale-launch-workspace"},
+        ), patch.object(bridge, "_run_herdr_json", return_value=self._pane_current("moved-workspace")) as pane_call:
+            self.assertEqual(bridge._caller_workspace_id(), "moved-workspace")
+        pane_call.assert_called_once_with(["pane", "current", "--current"])
+
+    def test_caller_identity_requires_exactly_one_inventory_match_before_agents(self) -> None:
+        self._use_real_caller_context()
+        workspaces = [
+            {"workspace_id": "moved-workspace", "focused": False},
+            {"workspace_id": "other-focused-workspace", "focused": True},
+        ]
+
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
             if command[:2] == ["workspace", "list"]:
-                return [{"workspace_id": "target", "focused": False}]
-            raise AssertionError(command)
+                return workspaces
+            raise AssertionError(f"unexpected inventory read: {command}")
 
-        for name in ("herdr_worktree_remove", "herdr_workspace_close"):
-            with self.subTest(name=name), patch.dict(os.environ, {"HERDR_WORKSPACE_ID": "stale-caller"}), patch.object(
+        with patch.object(bridge, "_run_herdr_json", return_value=self._pane_info("moved-workspace")) as pane_call, patch.object(
+            bridge, "_collection", side_effect=collection
+        ) as inventory:
+            result = bridge._mutate_tool("herdr_workspace_close", "absent-target")
+        self.assertTrue(result["already_absent"])
+        pane_call.assert_called_once_with(["pane", "current", "--current"])
+        inventory.assert_called_once_with(["workspace", "list"], "workspaces")
+
+    def test_denies_missing_closed_malformed_or_failed_pane_context_before_inventory_or_mutation(self) -> None:
+        self._use_real_caller_context()
+        cases = (
+            ("missing", {}, None, "Caller pane identity is unavailable"),
+            ("invalid env", {"HERDR_PANE_ID": "bad pane"}, None, "Caller pane identity is unavailable"),
+            ("closed pane", {"HERDR_PANE_ID": "caller-pane"}, RuntimeError("Herdr CLI failed with exit status 1"), "Herdr CLI failed"),
+            (
+                "no workspace-id fallback",
+                {"HERDR_PANE_ID": "caller-pane", "HERDR_WORKSPACE_ID": "target"},
+                RuntimeError("Herdr CLI failed with exit status 1"),
+                "Herdr CLI failed",
+            ),
+            ("timeout", {"HERDR_PANE_ID": "caller-pane"}, RuntimeError("Herdr command timed out after 8 seconds"), "timed out"),
+            ("wrong result type", {"HERDR_PANE_ID": "caller-pane"}, {"result": {"type": "workspace_info", "pane": {"workspace_id": "caller"}}}, "invalid caller pane context"),
+            ("missing CLI result wrapper", {"HERDR_PANE_ID": "caller-pane"}, {"type": "pane_info", "pane": {"workspace_id": "caller"}}, "invalid caller pane context"),
+            ("missing pane", {"HERDR_PANE_ID": "caller-pane"}, {"result": {"type": "pane_info"}}, "invalid caller pane context"),
+            ("missing workspace", {"HERDR_PANE_ID": "caller-pane"}, {"result": {"type": "pane_info", "pane": {"pane_id": "private-pane"}}}, "invalid caller pane workspace context"),
+            ("invalid workspace", {"HERDR_PANE_ID": "caller-pane"}, self._pane_info("bad workspace"), "invalid caller pane workspace context"),
+        )
+        for label, environment, response, error in cases:
+            with self.subTest(label=label), patch.dict(os.environ, environment, clear=True), patch.object(
+                bridge, "_run_herdr_json", side_effect=response if isinstance(response, Exception) else None,
+                return_value=response if not isinstance(response, Exception) else None,
+            ) as pane_call, patch.object(bridge, "_collection") as inventory:
+                with self.assertRaisesRegex(RuntimeError, error):
+                    bridge._mutate_tool("herdr_workspace_close", "target")
+                inventory.assert_not_called()
+                if environment.get("HERDR_PANE_ID") == "caller-pane":
+                    pane_call.assert_called_once_with(["pane", "current", "--current"])
+                else:
+                    pane_call.assert_not_called()
+
+        secret_markers = ("private-pane", "/private/workspace", "private-pid")
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "caller-pane"}, clear=True), patch.object(
+            bridge,
+            "_run_herdr_json",
+            return_value={
+                "result": {
+                    "type": "pane_info",
+                    "pane": {
+                        "pane_id": secret_markers[0],
+                        "workspace_id": "bad workspace",
+                        "cwd": secret_markers[1],
+                        "pid": secret_markers[2],
+                    },
+                }
+            },
+        ), patch.object(bridge, "_collection") as inventory:
+            with self.assertRaises(RuntimeError) as raised:
+                bridge._mutate_tool("herdr_workspace_close", "target")
+        inventory.assert_not_called()
+        for marker in secret_markers:
+            self.assertNotIn(marker, str(raised.exception))
+
+    def test_denies_mismatched_or_duplicate_inventory_without_agent_inspection_or_mutation(self) -> None:
+        self._use_real_caller_context()
+        cases = (
+            ("missing match", [{"workspace_id": "other", "focused": False}], "missing from the Herdr inventory"),
+            (
+                "duplicate match",
+                [
+                    {"workspace_id": "caller-current", "focused": False},
+                    {"workspace_id": "caller-current", "focused": True},
+                    {"workspace_id": "target", "focused": False},
+                ],
+                "identity is ambiguous",
+            ),
+        )
+        for label, workspaces, error in cases:
+            def collection(command: list[str], key: str) -> list[dict[str, object]]:
+                if command[:2] == ["workspace", "list"]:
+                    return workspaces
+                raise AssertionError(f"unexpected inventory read: {command}")
+
+            with self.subTest(label=label), patch.dict(
+                os.environ, {"HERDR_PANE_ID": "caller-pane", "HERDR_WORKSPACE_ID": "target"}, clear=True
+            ), patch.object(bridge, "_run_herdr_json", return_value=self._pane_info("caller-current")) as pane_call, patch.object(
                 bridge, "_collection", side_effect=collection
-            ) as inventory, patch.object(bridge, "_run_herdr_json") as mutation:
-                with self.assertRaisesRegex(RuntimeError, "missing from the Herdr inventory"):
-                    bridge._mutate_tool(name, "target")
-            inventory.assert_called_once_with(["workspace", "list"], "workspaces")
-            mutation.assert_not_called()
+            ) as inventory:
+                with self.assertRaisesRegex(RuntimeError, error):
+                    bridge._mutate_tool("herdr_workspace_close", "target")
+            pane_call.assert_called_once_with(["pane", "current", "--current"])
+            self.assertEqual(inventory.call_args_list, [call(["workspace", "list"], "workspaces")])
+
+    def test_rechecks_pane_context_before_mutation_and_refuses_move_into_target(self) -> None:
+        target = {"workspace_id": "target", "focused": False, "worktree": None}
+        caller = {"workspace_id": "caller", "focused": False}
+        with patch.object(bridge, "_caller_workspace_id", side_effect=["caller", "target"]), patch.object(
+            bridge, "_workspace_context", return_value=(target, [caller, target], [])
+        ), patch.object(bridge, "_focused_workspace_id", return_value=None), patch.object(
+            bridge, "_assert_not_focused"
+        ), patch.object(bridge, "_assert_agents_settled"), patch.object(
+            bridge, "_supports_guarded_workspace_close", return_value=True
+        ), patch.object(bridge, "_worktrees_for", return_value=[]), patch.object(
+            bridge, "_assert_plain_workspace_provenance", return_value=("owner", "fixture")
+        ), patch.object(bridge, "_git_status_snapshot", return_value=[]), patch.object(
+            bridge, "_git_worktree_snapshot", return_value=[]
+        ), patch.object(bridge, "_collection") as inventory, patch.object(
+            bridge, "_run_mutation_preserving_focus"
+        ) as mutation:
+            with self.assertRaisesRegex(RuntimeError, "changed during teardown checks"):
+                bridge._mutate_tool("herdr_workspace_close", "target")
+        inventory.assert_not_called()
+        mutation.assert_not_called()
 
     def test_missing_target_returns_noop_without_reading_agents_or_mutating(self) -> None:
         def collection(command: list[str], key: str) -> list[dict[str, object]]:
@@ -746,7 +1038,7 @@ class TeardownSafetyTests(unittest.TestCase):
 
         self.assertEqual(result, {"workspace_id": "target", "closed": True, "already_absent": False})
         self.assertEqual(commands, [["workspace", "close", "target"]])
-        self.assertEqual(workspace_reads, 2)
+        self.assertEqual(workspace_reads, 3)
         self.assertTrue(linked_path.is_dir())
         self.assertEqual((linked_path / "tracked.txt").read_text(encoding="utf-8"), "dirty linked content\n")
         self.assertEqual(ignored_file.read_text(encoding="utf-8"), "ignored results remain\n")
@@ -1039,7 +1331,7 @@ class TeardownSafetyTests(unittest.TestCase):
         self.assertEqual(close_commands, [["workspace", "close", "target"]])
         self.assertIn(["worktree", "list", "--workspace", "target"], worktree_commands)
         self.assertIn(["worktree", "list", "--cwd", str(self.repo)], worktree_commands)
-        self.assertEqual(workspace_reads, 2)
+        self.assertEqual(workspace_reads, 3)
         self.assertEqual(bridge._git_worktree_snapshot(snapshot_paths), git_before)
         self.assertEqual(bridge._git_status_snapshot(snapshot_paths), status_before)
 
@@ -1089,7 +1381,7 @@ class TeardownSafetyTests(unittest.TestCase):
         ):
             result = bridge._mutate_tool("herdr_workspace_close", "target")
         self.assertTrue(result["closed"])
-        self.assertEqual(workspace_reads, 2)
+        self.assertEqual(workspace_reads, 3)
 
     def test_workspace_close_refuses_old_server_before_worktree_inspection_or_mutation(self) -> None:
         provenance = {
@@ -1429,6 +1721,212 @@ class TeardownSafetyTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "timed out"):
                 bridge._run_herdr_json(["workspace", "close", "target"])
 
+    def test_nonzero_cli_failure_reports_fixed_step_category_and_exit_status(self) -> None:
+        cases = (
+            (
+                ["workspace", "close", "private-workspace-id"],
+                "workspace close",
+                "Herdr refused to close a primary workspace (group close refused)",
+                "workspace_group_close_required",
+                1,
+            ),
+            (
+                ["worktree", "list", "--cwd", "/private/local/checkout"],
+                "checkout worktree inventory read",
+                "permission denied",
+                "Operation not permitted",
+                23,
+            ),
+            (
+                ["worktree", "list", "--cwd", "/private/local/checkout"],
+                "checkout worktree inventory read",
+                "permission denied",
+                "permission denied (EACCES)",
+                13,
+            ),
+            (
+                ["workspace", "list"],
+                "workspace inventory read",
+                "socket access denied (EPERM)",
+                "Herdr Unix socket access denied: EPERM",
+                1,
+            ),
+            (
+                ["workspace", "list"],
+                "workspace inventory read",
+                "CLI command failed",
+                "unclassified failure",
+                2,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "caller pane unavailable",
+                '{"id":"cli:pane:current","error":{"code":"not_found","message":"pane not found"}}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "caller pane unavailable",
+                '{"error":{"code":"pane_not_found","message":"pane not found"},"id":"cli:pane:current"}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                '{"error":{"code":"pane_not_found","message":"workspace not found"},"id":"cli:pane:current"}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                '{"error":{"code":"not_found","message":"Pane not found"},"id":"cli:pane:current"}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                '{"error":{"code":["pane_not_found"],"message":"pane not found"},"id":"cli:pane:current"}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                '{"error":{"code":{"value":"pane_not_found"},"message":"pane not found"},"id":"cli:pane:current"}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                '{"id":"cli:pane:current","error":{"code":"not_found","message":"workspace not found"}}',
+                1,
+            ),
+            (
+                ["pane", "current", "--current"],
+                "caller pane resolution",
+                "CLI command failed",
+                "pane not found: pane=private-pane workspace=private-workspace",
+                1,
+            ),
+            (
+                ["workspace", "list"],
+                "workspace inventory read",
+                "CLI command failed",
+                '{"id":"cli:pane:current","error":{"code":"not_found","message":"pane not found"}}',
+                1,
+            ),
+            (
+                ["workspace", "list"],
+                "workspace inventory read",
+                "CLI command failed",
+                '{"error":{"code":"pane_not_found","message":"pane not found"},"id":"cli:pane:current"}',
+                1,
+            ),
+        )
+        for command, operation, category, stderr, exit_status in cases:
+            with self.subTest(operation=operation), patch.object(
+                bridge.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    ["herdr"], exit_status, stdout="", stderr=stderr
+                ),
+            ):
+                with self.assertRaises(RuntimeError) as raised:
+                    bridge._run_herdr_json(command)
+            self.assertEqual(
+                str(raised.exception),
+                f"Herdr {operation} failed: {category} (exit status {exit_status})",
+            )
+            self.assertNotIn("private-workspace-id", str(raised.exception))
+            self.assertNotIn("/private/local/checkout", str(raised.exception))
+
+    def test_caller_pane_error_category_redacts_raw_cli_output(self) -> None:
+        self._use_real_caller_context()
+        sensitive_values = (
+            "/home/private-user/workspaces/secret-checkout",
+            "workspace-secret-123",
+            "pane-secret-456",
+            "credential-secret-token",
+            "private travel data",
+        )
+        raw_output = " ".join(sensitive_values)
+        error_document = {
+            "id": f"cli:pane:current:{raw_output}",
+            "error": {"code": "pane_not_found", "message": "pane not found"},
+            "details": raw_output,
+        }
+        with patch.dict(os.environ, {"HERDR_PANE_ID": "caller-pane"}, clear=True), patch.object(
+            bridge.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                ["herdr"],
+                1,
+                stdout=raw_output,
+                stderr=json.dumps(error_document),
+            ),
+        ):
+            response = bridge._handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 10,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "herdr_workspace_close",
+                        "arguments": {"workspace_id": "target"},
+                    },
+                }
+            )
+
+        self.assertTrue(response["result"]["isError"])
+        diagnostic = response["result"]["content"][0]["text"]
+        self.assertEqual(
+            diagnostic,
+            "Herdr caller pane resolution failed: caller pane unavailable (exit status 1)",
+        )
+        for sensitive in sensitive_values:
+            self.assertNotIn(sensitive, json.dumps(response))
+        self.assertNotIn(raw_output, json.dumps(response))
+
+    def test_mcp_cli_failure_redacts_output_and_sensitive_identifiers(self) -> None:
+        sensitive_values = (
+            "/home/private-user/workspaces/secret-checkout",
+            "workspace-secret-123",
+            "pane-secret-456",
+            "credential-secret-token",
+            "private travel data",
+        )
+        raw_output = " ".join(sensitive_values)
+        with patch.object(
+            bridge.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                ["herdr"], 7, stdout=raw_output, stderr=f"Herdr socket access denied: EPERM {raw_output}"
+            ),
+        ):
+            response = bridge._handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 9,
+                    "method": "tools/call",
+                    "params": {"name": "herdr_workspace_list", "arguments": {}},
+                }
+            )
+
+        self.assertTrue(response["result"]["isError"])
+        diagnostic = response["result"]["content"][0]["text"]
+        self.assertEqual(
+            diagnostic,
+            "Herdr workspace inventory read failed: socket access denied (EPERM) (exit status 7)",
+        )
+        for sensitive in sensitive_values:
+            self.assertNotIn(sensitive, json.dumps(response))
+
     def test_mutation_and_failed_readback_are_errors(self) -> None:
         path = self._git_worktree()
         mocks, _, _, worktrees = self._setup_api(worktree=_worktree(str(path)))
@@ -1449,7 +1947,7 @@ class TeardownSafetyTests(unittest.TestCase):
             nonlocal workspace_reads, worktree_reads
             if command[:2] == ["workspace", "list"]:
                 workspace_reads += 1
-                return self._with_caller([workspace]) if workspace_reads == 1 else []
+                return self._with_caller([workspace]) if workspace_reads <= 2 else []
             if command[:2] == ["agent", "list"]:
                 return []
             if command[:2] == ["worktree", "list"]:

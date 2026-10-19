@@ -1,6 +1,6 @@
 # Travel Recommendation Product Reference Analysis
 
-> Last updated: 2026-10-12
+> Last updated: 2026-10-20
 >
 > Related: #41
 
@@ -198,10 +198,34 @@ CF, MF, Learning-to-Rank, Two-Tower 등은 제품 조사 결과가 아니라 데
 - Recommendation result: 사용자가 선택/저장할 수 있고 향후 itinerary 기능으로 연결 가능
 - Model family: 계약 및 실험 이후 선택
 
-아직 #41에서 결정해야 할 세부사항:
+### 8.1 Offline 실험과 serving catalog의 identity 경계
 
-- traveler preference와 trip context의 정확한 feature 범위
+Issue #4 / PR #64 및 Issue #66의 실제 검증 후 결론을 반영한다.
+
+```text
+Offline recommendation experiment
+→ AI Hub native POI identity
+→ AI Hub candidate/evaluation contract 안에서 모델 비교
+
+Product / serving
+→ TourAPI KorService2 contentid
+→ CandidateRequest 기반 eligibility
+
+AI Hub ↔ TourAPI
+→ 별도 identity/crosswalk 문제
+```
+
+제품 조사에서 확인한 "현재 여행 맥락으로 후보를 좁히고 Top-K를 제공한다"는 방향은 유지한다. 다만 이것이 **offline 평가 후보를 TourAPI serving catalog로 강제한다는 뜻은 아니다.**
+
+현재 AI Hub → TourAPI bridge로는 observed-positive coverage를 신뢰성 있게 측정하기 어렵기 때문에, offline 추천 모델 선택은 AI Hub native POI identity에서 진행한다. TourAPI linkage는 serving integration을 위한 별도 문제로 다룬다.
+
+### 8.2 #41에서 남은 결정
+
 - prediction unit의 최종 schema
-- relevance/preference label
+- traveler preference / trip context serving-time feature allowlist
+- observed visit과 post-event preference signal의 label 역할
 - unknown / pseudo-negative sampling 규칙
-- split / cold-start cohort / evaluation protocol
+- TL/VL split, cold-start cohort, evaluation protocol
+- offline 연구 결과를 serving-compatible artifact로 옮길 때 필요한 item/feature parity 조건
+
+연령대·성별 같은 demographic 정보는 cold-start 핵심 입력으로 요구하지 않으며, 별도 필요성·공정성·개인정보 검토 없이 기본 feature로 채택하지 않는다.

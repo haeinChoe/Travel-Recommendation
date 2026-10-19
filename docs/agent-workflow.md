@@ -24,6 +24,18 @@ Decision Issue는 아직 결정되지 않은 데이터·모델·아키텍처 선
 
 ## 작업 전 확인과 중단 기준
 
+Herdr 관련 선행 절차와 명령은 현재 세션이 Herdr 관리 환경이거나 사용자가 Herdr 사용을 명시한 경우에만 적용한다. ChatGPT Desktop Work 등 Herdr와 무관한 세션에서는 Herdr를 호출하지 않고, 그 세션에서 허용된 workspace·Git·GitHub·subagent 경로로 같은 branch/worktree 보존 및 권한 원칙을 지킨다. 사용 가능한 승인 경로가 있으면 Herdr 부재만으로 작업을 중단하지 않는다.
+
+### 기술 실패 복구와 진행 확인
+
+기술 실패는 네트워크/서비스 일시 장애, timeout·정체, 호출·컨텍스트 오류, 자격 증명·권한 부족, 데이터 출처 불확실성, 코드 결함으로 나눠 기록한다. 안전한 상태 정보만 확인하고, 멱등 작업만 backoff를 두어 최대 두 번 재시도한다. 같은 branch/worktree에 두 번째 writer를 시작하지 말고 기존 변경을 보존한다. 외부 의존성이 막혀도 독립적인 코드·문서·synthetic 검증은 계속한다.
+
+필요한 credential은 값이 아닌 존재 여부만 확인한다. 네트워크/DNS/TLS와 endpoint 접근·이용 조건을 확인한 뒤, 허용된 경우에만 제한적이고 비용이 발생하지 않는 smoke 요청을 한다. timeout/DNS/TLS, 401/403, 429, 5xx를 구분한다. 키 발급, 이용 조건 동의, 유료 사용은 수행하지 않는다.
+
+환경 변수 전체, shell history, 헤더, credential이 포함된 URL, 원본 행, 정확한 로컬 경로와 식별자를 로그나 PR에 남기지 않는다. 오류 분류/status, 안전한 request ID, 시각, query를 제거한 host/path만 보존한다. 에이전트가 정체되면 상태를 읽기 전용으로 확인하고 한 번만 제한된 연장 또는 checkpoint를 요청한다. 원 writer가 종료됐는지 확인하기 전 대체 writer를 띄우지 않는다.
+
+이미 승인된 범위의 가역적 일상 작업이고 새 제품·데이터·보안·credential·이용 조건·비용 결정이 필요 없는 단순 “계속할까요?”는 조정자가 자동으로 계속한다. 새 결정, 범위 확대, 파괴적 정리 또는 중대한 모호성이 있으면 해당 지점에서만 멈춘다.
+
 파일이나 실제 데이터에 접근하기 전에 다음을 확인한다.
 
 1. 사용자가 지정한 Issue와 권한 선택
@@ -61,6 +73,62 @@ push·PR 권한이 선택된 Issue를 사용자가 작업 대상으로 지정하
 
 API Key 발급, 이용 조건 동의, 데이터셋 승인 신청·승인 대행, 유료 리소스 사용, 제3자 서비스로 원본 전송, 자격 증명 변경은 이 선택값에 포함되지 않는다. 이 행위는 사용자의 별도 명시적 지시가 필요하다. MCP는 메타데이터 탐색에만 사용하고 파일 다운로드에 사용하지 않는다. 세부 절차는 docs/data/aihub-workflow.md를 따른다.
 
+## 데이터 사이언티스트 에이전트 역할
+
+실제 데이터의 반복 분석이나 추천 실험 설계가 중심인 Issue는 저장소의 `travel-data-scientist` skill을 적용한 전담 데이터 사이언스 에이전트에 맡긴다. Herdr 관리 세션에서는 `herdr-data-science` 프로필을 사용하고, Herdr와 무관한 세션에서는 해당 세션에서 승인된 전담 분석 에이전트 경로를 사용한다. 안전한 전담 경로가 없으면 실제 데이터 읽기만 보류하고 독립적인 synthetic 검증과 문서·코드 작업은 계속한다.
+
+- 분석 전에 제품 질문, 예측 시점, user/trip context/item/interaction/feedback 역할, label, feature, split/cohort, baseline, metric이 서로 정렬되는지 확인한다.
+- 방문 같은 implicit interaction은 관측 positive가 될 수 있지만 미관측 item을 자동 negative로 해석하지 않는다. negative sampling과 exposure 가정은 실험별로 명시한다.
+- classification, retrieval, ranking을 구분하며 추천 ranking 질문을 일반 classification accuracy만으로 결론내리지 않는다.
+- 방문 후 feedback과 추천 시점 feature를 구분하고 동일 trip/user/item 및 시간 기준 leakage를 검토한다.
+- 기존 Issue나 문서의 실험 정의도 제품 목표와 어긋나면 그대로 실행하지 않고 차이, 영향, 더 직접적인 대안을 먼저 보고한다.
+- raw data는 Issue가 승인한 범위에서 read-only로 다루고, raw path·identifier·row·좌표·자유 텍스트를 Git/Issue/PR/log에 남기지 않는다.
+- 데이터 분석 범위를 넘어서는 구현 변경은 전담 implementation 에이전트에 handoff한다. Herdr 세션은 `herdr-implementation`을 사용하고, 다른 세션은 그 세션의 승인된 writer 경로를 사용한다. 필요한 권한 경로가 없으면 더 넓은 profile로 대체하지 않는다.
+
+상세 역할, Codex profile 계약, handoff 형식은 [`data/data-science-agent.md`](data/data-science-agent.md)를 따른다.
+
+## 문서 작성과 전달
+
+저장소 문서와 Issue/PR 설명은 실행 주체가 아니라 **사람 독자**를 기준으로 작성한다. 세부 원칙은 [사람 중심 문서 작성 가이드](documentation-style-guide.md)를 따른다.
+
+### 문서 작성 순서
+
+연구·실험·설계 문서는 가능한 경우 다음 내용을 상단에서 먼저 제공한다.
+
+1. 답하려는 질문
+2. 현재 상태
+3. 한눈에 보는 결론
+4. 현재 결정된 것
+5. 아직 결정되지 않은 것
+6. 다음 행동
+
+재현 명령, 해시, 세부 진단 표는 핵심 결론 뒤에 둔다. 긴 실행 로그를 그대로 붙이지 않는다.
+
+### 용어 사용
+
+- 일반 설명은 한국어를 우선한다.
+- 코드/컬럼/API/파일명/공식 알고리즘 이름은 원문을 유지한다.
+- 전문 용어와 약어는 첫 등장 시 한국어 설명과 원어를 함께 적는다.
+- 추천 시스템 공통 용어는 [추천 시스템 용어 사전](recommendation/glossary.md)의 의미와 일치시킨다.
+- 새 내부 용어가 필요하면 정의, 기존 용어와의 차이, 필요한 이유를 함께 기록한다.
+
+### 사실과 판단
+
+분석 결과는 다음을 구분한다.
+
+- **확인된 사실**: 데이터, 코드, 실행 결과, 공식 문서에서 직접 확인한 내용
+- **해석**: 사실로부터 도출한 프로젝트의 이해
+- **결정**: 실제로 채택한 규칙 또는 방향
+- **미결정 / 추가 검증 필요**: 현재 근거만으로 판단할 수 없는 내용
+
+문서 정리 중 기술적 의미나 계약의 모순을 발견해도 현재 Issue가 허용하지 않으면 함께 수정하지 않는다. 후속 Issue 후보로 남긴다.
+
+### Issue와 PR
+
+Issue는 해결 방법을 나열하기 전에 문제와 질문, 완료 조건을 명확히 한다. PR은 파일 목록보다 먼저 **변경 이유, 결과, 의미 변화 여부, 사람이 검토해야 할 판단**을 설명한다.
+
+표를 사용할 때는 표 앞에서 무엇을 판단하려는지 설명한다. 상세 수치가 많으면 핵심 결과와 진단용 세부 결과를 분리한다.
+
 ## 브랜치와 작업 트리
 
 - Issue별 전용 작업 브랜치를 사용하고 dev에서 분기한다.
@@ -93,6 +161,150 @@ PR은 명시적으로 허가된 경우에만 만든다. PR에는 다음 내용�
 - 사람이 검토해야 할 판단과 한계
 
 PR에는 실제 데이터 행, 개인 식별 가능 정보, 토큰·비밀값, 원본 데이터 파일을 넣지 않는다. 상세한 데이터 처리 규칙은 data/aihub-workflow.md를 따른다.
+
+
+## 유지보수 신속 경로
+
+승인된 Issue 작업 중 발견된 저위험 운영·지침·에이전트 워크플로 blocker는 별도 Issue 생명주기를 처음부터 반복하지 않고 **유지보수 신속 경로**로 처리할 수 있다. 이 경로는 안전 장치를 줄이는 우회 절차가 아니라, 현재 작업과 직접 연결된 작은 유지보수 변경의 승인·검증·PR 절차를 짧게 만드는 경로다.
+
+### 진입 조건
+
+다음 조건을 모두 만족해야 한다.
+
+1. 이미 승인된 Issue 작업 중 발견된 blocker 또는 운영 결함이다.
+2. 제품 요구사항, 데이터 의미, 모델 의미, 평가 의미를 변경하지 않는다.
+3. 변경 이유와 중단된 작업의 관계를 짧고 명확하게 설명할 수 있다.
+4. 변경 파일이 아래 초기 허용 범위에 속한다.
+5. 자동 테스트 또는 명확한 수동 검증 방법이 있다.
+6. 원래 Issue의 기능 범위를 대신 확장하지 않는다.
+
+사용자가 특정 blocker에 대해 `유지보수 게이트로 처리`라고 명시하면, 그 blocker에 한해 다음 작업을 승인한 것으로 해석한다.
+
+- Herdr 관리 세션에서는 기존 승인 경로를 통한 별도 maintenance workspace/worktree 생성. 다른 세션에서는 해당 세션에서 승인된 repository/worktree 경로를 사용
+- `dev`에서 분기한 `agent/<중단된-issue>-maintenance-<slug>` 유지보수 브랜치 생성
+- 허용된 유지보수 파일 수정과 검증
+- 검증된 유지보수 브랜치 commit/push
+- `dev` 대상 유지보수 PR 생성 또는 갱신
+
+이 문구는 `dev`/`main` 직접 push, force push, merge 권한을 부여하지 않는다. 유지보수 신속 경로 자체가 새 제품 결정을 승인하지 않는다. 진입 조건을 만족하지 못하거나 의미 변경 여부가 불분명하면 일반 Issue로 승격한다.
+
+### 작업 격리와 브랜치/worktree
+
+일반 Issue는 기존 규칙대로 Issue별 전용 branch/worktree를 사용한다.
+
+```text
+중단된 원래 작업
+  branch: agent/<N>-<issue-slug>
+  worktree: 해당 Issue에 매핑된 기존 worktree
+
+유지보수 작업
+  branch: agent/<N>-maintenance-<maintenance-slug>
+  worktree: dev에서 새로 만든 별도 maintenance worktree
+```
+
+여기서 `<N>`은 **중단된 기존 Issue 번호**다. 유지보수 신속 경로는 새 Issue를 만들지 않으므로 중단된 Issue가 추적성 기준점으로 남는다.
+
+중단된 원래 Issue branch/worktree는 유지보수 수정 장소로 재사용하지 않는다. 원래 branch에는 아직 PR되지 않은 기능 변경, 데이터 분석 코드 또는 로컬 변경이 존재할 수 있으므로 그 worktree에서 유지보수 파일을 수정하면 유지보수 PR에 원래 Issue diff가 섞일 수 있다. 유지보수 변경은 반드시 `dev`를 base로 한 별도 maintenance branch/worktree에서 수행한다.
+
+이 별도 maintenance worktree 생성은 동일 Issue 작업을 중복 구현하는 것이 아니라 **PR 격리를 위한 명시적 예외**다. `.agents/skills/travel-issue-agent-loop/references/agent-loop.md`의 유지보수 격리 절차를 따른다. Herdr 세션은 기존 승인된 Herdr 경로를 사용하고, 다른 세션은 그 세션의 승인된 repository/worktree 도구를 사용한다. 실제 worktree 경로는 해당 도구와 Git 상태에서 확인하고 임의로 추측하거나 합성하지 않는다.
+
+### 초기 허용 범위
+
+자동 적용 범위는 보수적인 allowlist로 시작한다.
+
+- `AGENTS.md`
+- `docs/agent-workflow.md`
+- `.agents/skills/**`
+- `.github/PULL_REQUEST_TEMPLATE.md`
+- `.github/PULL_REQUEST_TEMPLATE/**`
+- `.github/ISSUE_TEMPLATE/**`
+- 유지보수 신속 경로 자체의 계약 검증 파일
+  - `scripts/maintenance/validate-fast-path-scope.ts`
+  - `tests/maintenance-fast-path.test.ts`
+  - `package.json`의 관련 테스트 스크립트
+
+현재 Issue를 직접 막는 좁은 CI/개발 도구 설정이 필요하더라도 위 allowlist 밖이면 자동으로 통과시키지 않는다. 해당 정확한 경로와 비의미 변경임을 먼저 검토하고, 필요하면 일반 Issue 또는 별도 승인으로 범위를 확장한다.
+
+### 금지 범위
+
+다음 의미를 바꾸는 변경은 파일 위치와 관계없이 유지보수 신속 경로를 사용할 수 없다.
+
+- 추천 알고리즘 또는 모델 학습·추론
+- 제품 요구사항 또는 서비스 도메인 규칙
+- 데이터 계약, 데이터 의미 또는 전처리 의미
+- 평가 프로토콜, label/feature/split/metric 의미
+- API 계약
+- DB schema
+- 실제 데이터 처리 결과를 바꾸는 로직
+
+경계가 애매하면 신속 경로가 아니라 일반 Issue로 처리한다. 단순 diff 크기만으로 안전 여부를 판단하지 않는다.
+
+### 신속 경로 적용 범위 확인
+
+변경 파일은 다음 도구로 1차 확인한다.
+
+```bash
+node scripts/maintenance/validate-fast-path-scope.ts <changed-file>...
+```
+
+maintenance branch 전체 변경 파일을 확인하는 예:
+
+```bash
+git diff --name-only -z origin/dev...HEAD \
+  | xargs -0 node scripts/maintenance/validate-fast-path-scope.ts
+```
+
+이 검사는 경로 allowlist만 확인한다. **경로가 허용되었다고 의미 변경까지 안전하다는 뜻은 아니다.** PR 작성자와 검토자는 금지 의미 변경이 없는지 별도로 확인하고 관련 계약 검증 테스트를 실행한다.
+
+### 유지보수 PR
+
+유지보수 PR은 `.github/PULL_REQUEST_TEMPLATE/maintenance.md`를 사용하고 반드시 다음을 기록한다.
+
+- 중단된 기존 Issue
+- 중단된 원래 Issue branch
+- 별도 maintenance branch
+- 발생한 blocker
+- 실제 변경 범위
+- 제품·데이터·모델·평가 의미에서 변경하지 않는 것
+- 실행한 검증과 미실행 검증의 이유
+- 병합 후 기존 작업 재개 절차
+
+유지보수 PR은 **별도 maintenance branch에서 `dev`를 대상으로** 만든다. 중단된 원래 Issue branch를 유지보수 PR의 head로 사용하지 않는다. PR diff에 원래 Issue의 미병합 변경이 섞이지 않았는지 `origin/dev...HEAD` 기준으로 확인한다. 유지보수 PR 생성 권한은 merge 권한을 포함하지 않는다.
+
+### 병합 후 작업 재개
+
+유지보수 PR이 별도 승인으로 `dev`에 병합된 뒤에는 maintenance worktree에서 원래 작업을 계속하지 않는다. 현재 세션에서 허용된 도구와 Git 상태로 중단된 Issue 번호, `agent/<N>-<issue-slug>` branch, 기존 worktree가 정확히 매핑되는지 확인한 다음 **그 원래 Issue worktree**로 돌아간다.
+
+아래 `$BLOCKED_ISSUE_WORKTREE`는 추측한 경로가 아니라 현재 세션의 허용된 worktree 도구와 Git 매핑에서 확인한 기존 Issue worktree의 절대 경로를 의미한다.
+
+```bash
+git -C "$BLOCKED_ISSUE_WORKTREE" status
+git -C "$BLOCKED_ISSUE_WORKTREE" fetch origin
+git -C "$BLOCKED_ISSUE_WORKTREE" merge origin/dev
+```
+
+기본 동기화 방식은 원래 Issue branch에 `origin/dev`를 merge하는 것이다. 이미 원격에 push된 Issue branch의 SHA를 다시 쓰는 rebase나 force push를 기본 절차로 사용하지 않는다. merge 전에 현재 변경사항과 충돌 가능성을 확인하고, 충돌 시 유지보수 변경과 원래 Issue 변경의 의미를 모두 보존한다.
+
+원래 Issue worktree의 미커밋 변경 때문에 merge가 안전하게 진행되지 않으면 이를 숨기기 위해 임의로 reset, stash, 강제 commit하지 않는다. 기존 Issue 권한과 현재 작업 상태에 맞는 안전한 방법을 선택하고, 자동으로 해결할 수 없으면 정확한 blocker를 보고한다. merge 후 원래 Issue 관련 검증을 다시 실행한 뒤 작업을 재개한다.
+
+로컬 `dev` 자체를 갱신해야 할 때는 예상치 못한 merge commit 생성을 피하기 위해 `git pull --ff-only`를 권장한다.
+
+### dry-run 기준
+
+최소 dry-run 시나리오는 다음과 같다.
+
+1. `agent/<N>-<issue-slug>` 전용 worktree에서 승인된 Issue 작업 중 문서/에이전트 지침 blocker 발견
+2. 사용자가 `유지보수 게이트로 처리` 지시
+3. 원래 Issue worktree는 그대로 보존
+4. `dev`에서 `agent/<N>-maintenance-<slug>` 별도 maintenance worktree/branch 생성
+5. 허용 경로만 수정하고 경로 검사와 관련 계약 검증 실행
+6. 별도 maintenance branch로 유지보수 PR 생성, 중단된 Issue와 원래 branch 참조
+7. 별도 merge 승인 전에는 병합하지 않음
+8. 병합 후 maintenance worktree가 아니라 원래 중단된 Issue worktree를 다시 식별
+9. 그 원래 Issue branch에 `origin/dev` merge
+10. 기존 Issue 검증 재실행 후 작업 재개
+
+긴급 우회 절차, required check 우회, 자동 merge, force push는 이 흐름에 포함하지 않는다.
 
 ## 작업 완료 보고
 
