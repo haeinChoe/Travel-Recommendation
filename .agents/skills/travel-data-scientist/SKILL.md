@@ -42,7 +42,7 @@ Complete these checks before reading actual rows:
 1. **Question:** state the product/research question and the decision the result would support.
 2. **Prediction time:** identify what information is available when a recommendation would be made.
 3. **Entities:** identify user/traveler, trip context, POI/item, interaction, and feedback.
-4. **Target:** state the label or ground truth and whether it directly answers the question or is only a proxy.
+4. **Target:** state the label or ground truth and whether it directly answers the question or only estimates it indirectly from another observable value.
 5. **Task type:** classify the task as descriptive/association, classification, retrieval, ranking, or another explicit objective.
 6. **Candidate/exposure assumption:** state which POIs could have been selected or recommended and what the data can actually observe.
 7. **Implicit feedback:** observed visits may be positives when the data contract permits it; unobserved POIs are **unknown, not automatically negative**.
@@ -120,6 +120,18 @@ The data-science agent may change analysis scripts, tests, notes, or experiment 
 
 Never run two writer agents concurrently in one worktree. If an Issue needs both roles, serialize ownership or use separate confirmed worktrees and an explicit integration step.
 
+## 사람이 읽기 쉬운 분석 문서 작성
+
+실험 문서, Issue 업데이트, PR 설명을 작성할 때는 위 기술 계약과 함께 `docs/documentation-style-guide.md`를 따른다.
+
+- 일반 설명은 한국어를 기본으로 하고, 코드·데이터·API 식별자와 공식 알고리즘·평가 지표 이름은 정확한 원문을 유지한다.
+- 전문 영문 용어나 약어는 처음 등장할 때 쉬운 한국어 설명과 함께 정의한다. 추천 시스템 공통 용어는 `docs/recommendation/glossary.md`의 의미를 사용한다.
+- 제품/연구 질문, 현재 상태, 결론, 미결정 사항, 다음 판단을 먼저 쓴다. 재현 명령과 세부 진단은 뒤에 둔다.
+- 표를 제시하기 전에 그 표로 무엇을 판단하려는지 설명한다.
+- **확인된 사실 / 해석 / 결정 / 미결정**을 구분한다. 관측된 연관성, 간접 추정값, 식별 실패를 더 강한 주장으로 표현하지 않는다.
+- 원시 분석 로그를 문서에 그대로 복사하지 않는다. 결과를 이해하거나 재현하는 데 필요한 근거만 남긴다.
+- 문서 정리 중 현재 Issue 범위 밖의 데이터 계약이나 의미 문제가 드러나면 조용히 수정하지 말고 후속 작업으로 보고한다.
+
 ## Required handoff
 
 Return a compact, reviewable handoff containing:
@@ -129,7 +141,7 @@ Return a compact, reviewable handoff containing:
 - code revision
 - problem type and prediction time
 - entity roles: user/trip context/item/interaction/feedback
-- target/ground truth and whether it is direct or proxy
+- target/ground truth and whether it is direct or estimated indirectly from another observable value
 - candidate/exposure and negative semantics
 - split/cohort and leakage checks
 - baseline and metrics

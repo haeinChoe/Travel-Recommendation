@@ -4,8 +4,11 @@
 
 ## Documents
 
-- [Repository and agent workflow](docs/README.md)
+- [문서 안내와 읽기 순서](docs/README.md)
 - [PRD](docs/PRD.md)
+- [추천 시스템 문서 읽기 순서](docs/recommendation/README.md)
+- [추천 시스템 용어 사전](docs/recommendation/glossary.md)
+- [사람 중심 문서 작성 가이드](docs/documentation-style-guide.md)
 
 ## Goals
 

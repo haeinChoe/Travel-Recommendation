@@ -1,26 +1,76 @@
-# Candidate choice feasibility
+# 후보 집합과 순위 평가 가능성 검증
 
-## Pre-data experiment contract
+**현재 상태:** 4개 권역 실험 완료 / **Issue #4·#66 후속 계약 반영**
 
-This framing was recorded before opening any actual travel-log rows.
+## 한눈에 보기
 
-- **Product question:** Can the approved 2023 four-region travel logs support a defensible choice set for a traveler/trip, and do observed visits provide enough in-set positive coverage to evaluate a ranking protocol?
-- **Decision supported:** Go to a bounded context-aware ranking baseline, remain inconclusive pending a candidate/exposure contract, or reconsider the target/catalog strategy.
-- **Prediction time:** Before the first relevant visit, at a hypothetical recommendation request. A field is eligible only if it is known at that time; the retrospective logs do not by themselves establish an actual serving request or exposure.
-- **Entities:** region-scoped `TRAVELER_ID` is traveler; `(region, TRAVELER_ID, TRAVEL_ID)` is the trip/context unit; `(region, nonblank POI_ID)` is a provisional candidate item; `TN_VISIT_AREA_INFO` rows are observed visit interactions. `DGSTFN`, `REVISIT_INTENTION`, and `RCMDTN_INTENTION` are post-visit feedback.
-- **Target:** Distinct observed POIs within a trip are implicit positive observations only. This is a proxy for a user's choices under unknown exposure, not explicit preference, relevance, or every recommendation opportunity.
-- **Task type:** Descriptive candidate/coverage feasibility and ranking-evaluation feasibility, not binary classification and not a production ranker.
-- **Candidate/exposure assumptions:** Candidate A is every nonblank region-scoped POI observed in that region's TL, fixed from TL only. This is a reproducible catalog proxy, not proof that every POI was available or exposed to each trip. Destination/admin-area and POI-category restrictions are only eligible if the source and availability contract shows the field was known at request time; post-event visit locations or inferred preferences cannot define candidates.
-- **Unvisited semantics:** Eligible but unvisited items are unlabeled/unknown. They will not be turned into true negatives. If a deterministic sampled-unlabeled diagnostic is needed, it will be reported separately with its population and seed and will not be interpreted as a negative label.
-- **Split and leakage:** TL is the sole source for candidate construction and popularity counts; VL is validation only and cannot define, tune, or filter candidates. Evaluation units are whole trips. Reject overlapping `TRAVEL_ID` across TL/VL within a region. Exclude post-event feedback and any location/category signal unavailable at request time. Report repeated visits as event counts but use distinct observed items for trip relevance. Cross-split traveler overlap limits external-generalization claims and will be diagnosed.
-- **Baseline:** Reuse the region-popularity evaluator and its TL-only scores; deterministic random order is only a protocol smoke check if useful. Neither establishes exposure-aware user choice.
-- **Metrics:** Candidate coverage, positive coverage, cold-start share, candidate-size buckets, privacy-banded positive density, and choice-set status; if ranking is technically evaluable, candidate-aware Recall@K, NDCG@K, and MRR with existing small-support suppression. Accuracy alone is not an acceptable ranking metric.
+### 이 문서가 답하려는 질문
 
-## Data, reproduction, and privacy contract
+2023 AI Hub 국내 여행로그만으로 여행자·여행 단위의 **추천 후보 집합(candidate set)**을 방어 가능하게 정의할 수 있는지, 그리고 관측된 방문 기록으로 추천 순위 평가를 수행할 만큼 후보 내부의 양성 신호가 확보되는지를 확인한다.
 
-Use the already-approved AI Hub Domestic Travel Log 2023 capital, west, east, and jeju-islands TL/VL inputs. Bind roles from approved process variables or explicit role arguments, then validate provenance, approval/terms, region and role layout using the existing popularity evaluator contract (including its explicit capital filekey-layout validation). Keep raw roots read-only. Reuse the popularity baseline loader and safe aggregate helpers where their semantics fit. Results belong only under the ignored `results/experiments/candidate-choice-feasibility/<run-id>/` location. Do not persist raw paths, identifiers, rows, coordinates, free text, candidate lists, or source filenames.
+### 결론
 
-The existing four-region role mapping, capital layout exception, and confirmation flags follow [`popularity-baseline.md`](popularity-baseline.md). Reproduce with the same local role variables and a new run ID:
+초기 네 권역 실험에서는 같은 규칙으로 후보 집합을 만들고 순위 지표를 계산할 수 있었다. 그러나 여행별 후보가 `500+`로 매우 크고 대부분의 여행에서 관측 양성 밀도가 1% 미만이며, 권역에 따라 VL 관측 양성의 25–75%가 TL 관측 POI 기반 후보 밖에 있었다. 여행로그에는 실제 방문은 있지만 **노출(exposure)** 기록이 없으므로, 이 과거 후보 정의만으로 미방문 장소를 음성으로 보거나 실제 서비스 후보 집합을 확정할 수는 없다.
+
+이후 Issue #66에서 TourAPI KorService2 v4.4 기반 **제품 후보 계약**을 별도로 승인했다. 지원 유형은 `{12,14,28}`이고 전체 권역 정책은 버전 관리되는 설정에 고정했다. 따라서 TL 관측 POI 집합은 제품 후보 자격과 구분되는 **과거 실험용 임시 후보 정의**로만 남긴다.
+
+Issue #4의 후속 식별 진단에서는 AI Hub와 TourAPI를 잇는 현재 식별 방식으로 전체 97,640개 관측 양성 중 4,696개(4.81%)만 Arm D에서 식별됐고, 제품 후보에 실제 포함된 양성은 2,097개(2.15%)였다. 이는 TourAPI 제품 카탈로그가 부적합하다는 뜻이 아니라 **현재 AI Hub→TourAPI 식별 연결만으로 오프라인 후보 커버리지를 신뢰성 있게 측정하기 어렵다**는 뜻이다. 오프라인 학습·평가는 AI Hub 자체 POI 식별자를 사용하고, TourAPI `contentid` 연결은 별도 식별 연결 문제로 다룬다.
+
+### 현재 결정된 것
+
+- TL 관측 POI 기반 결과는 과거 실험 결과로 보존하되 제품 후보 자격이나 과거 노출로 해석하지 않는다.
+- 제품 후보 계약은 TourAPI KorService2 v4.4를 기준으로 하며 지원 유형은 `12/14/28`이다.
+- 방문 기록은 관측 양성(observed positive)으로만 해석하고, 미방문 POI는 별도 근거가 없으면 음성이 아니라 미관측 상태로 둔다.
+- 오프라인 학습·평가의 아이템 식별은 AI Hub 자체 POI 식별자를 사용한다.
+- AI Hub와 TourAPI의 연결은 별도 식별 연결 문제로 유지하며, 추가 fuzzy threshold·제목 정규식·주소 휴리스틱·토큰 겹침만으로 `MATCHED`를 승격하지 않는다.
+- 순위 평가에는 Recall@K, NDCG@K, MRR 같은 순위 지표를 사용한다.
+
+### 아직 결정되지 않은 것
+
+- 실제로 사용자가 볼 수 있었던 장소를 나타내는 과거 노출 계약
+- AI Hub POI와 TourAPI `contentid`를 신뢰성 있게 연결할 공식 교차표 또는 이에 준하는 새 식별 근거
+- 제품 후보 계약과 오프라인 평가 집합을 함께 사용할 때의 최종 서빙/평가 연결 방식
+- 이 경계를 고정한 뒤 어떤 문맥 기반 순위 모델을 비교할지
+
+### 다음 행동
+
+오프라인 추천 실험은 AI Hub 자체 POI 식별자를 기준으로 계속 진행하되, 노출과 미관측 항목의 의미를 별도 계약으로 명시한다. TourAPI 제품 카탈로그와의 연결이 필요하면 문자열 휴리스틱을 더 확장하지 않고 **공식 source-provider 교차표, 검증된 좌표 호환성, 신뢰할 수 있는 외부 주소·장소 식별자** 중 새로운 근거를 확보한 뒤 다시 검증한다.
+
+## 필요한 용어
+
+공통 정의는 [추천 시스템 용어 사전](../glossary.md)을 따른다.
+
+- **후보 집합(candidate set)**: 특정 추천 요청에서 추천 대상으로 고려할 수 있는 POI 목록
+- **노출(exposure)**: 사용자가 실제로 볼 수 있었거나 선택할 기회가 있었던 아이템
+- **관측 양성(observed positive)**: 방문처럼 실제 상호작용이 기록되어 실험상 양성 신호로 사용하는 항목
+- **임시 후보 정의**: 실제 서비스 후보 집합을 직접 관측할 수 없어 임시로 사용하는 재현 가능한 대체 정의
+- **예측 시점(prediction time)**: 추천을 생성한다고 가정한 시점
+- **원천 식별(source identity)**: AI Hub 안에서 장소를 구분하기 위해 사용하는 `(region, nonblank POI_ID)`
+- **제공자 식별(provider identity)**: TourAPI 제품 카탈로그에서 장소를 구분하는 `(tourapi-korservice2, contentid)`
+
+## 1. 실험 전 계약
+
+다음 정의는 실제 여행로그 행을 열기 전에 고정했다.
+
+- **제품 질문:** 승인된 2023 네 권역 여행로그로 여행자·여행 단위의 방어 가능한 후보 집합을 만들 수 있는가? 관측 방문이 후보 내부에서 순위 평가를 수행할 만큼 충분히 포함되는가?
+- **이 결과가 지원할 결정:** 제한된 문맥 기반 순위 기준 모델로 진행할지, 후보/노출 계약이 확정될 때까지 판정을 보류할지, 목표 또는 카탈로그 전략을 다시 검토할지 판단한다.
+- **예측 시점:** 첫 관련 방문 이전의 가상 추천 요청 시점이다. 이 시점에 알 수 있는 필드만 사용할 수 있다. 과거 여행로그 자체는 실제 추천 요청이나 노출을 증명하지 않는다.
+- **개체 역할:** 권역 범위의 `TRAVELER_ID`를 여행자로, `(region, TRAVELER_ID, TRAVEL_ID)`를 여행/문맥 단위로, `(region, 비어 있지 않은 POI_ID)`를 임시 후보 아이템으로 본다. `TN_VISIT_AREA_INFO` 행은 관측 방문 상호작용이다. `DGSTFN`, `REVISIT_INTENTION`, `RCMDTN_INTENTION`은 방문 후 피드백이다.
+- **목표 신호:** 한 여행 안에서 중복을 제거한 관측 POI를 암묵적 양성 신호로만 사용한다. 이는 노출을 알 수 없는 상태에서 사용자 선택을 간접적으로 추정하는 신호이며, 명시적 선호·관련성·모든 추천 기회를 뜻하지 않는다.
+- **문제 유형:** 후보/커버리지와 순위 평가 가능성을 확인하는 서술적 타당성 분석이다. 이진 분류나 운영 순위 모델 학습이 아니다.
+- **후보/노출 가정:** 후보 A는 해당 권역 TL에서 관측된 비어 있지 않은 모든 권역 범위 POI다. TL만 사용해 고정한다. 재현 가능한 임시 카탈로그 정의일 뿐, 각 여행에서 모든 POI가 실제로 사용 가능했거나 노출되었다는 증거는 아니다. 목적지·행정구역·POI 카테고리 제한은 해당 정보가 요청 시점에 알려졌다는 계약이 있을 때만 후보 조건으로 사용할 수 있다.
+- **미방문 의미:** 후보에 포함됐지만 방문하지 않은 아이템은 라벨이 없는 미관측 상태다. 자동으로 실제 음성으로 바꾸지 않는다. 표본 추출 진단이 필요하다면 모집단과 seed를 별도로 기록하고 음성 라벨로 해석하지 않는다.
+- **분할과 누수:** TL만 후보 정의와 인기도 계산에 사용한다. VL은 검증 전용이며 후보를 정의·튜닝·필터링하지 않는다. 평가 단위는 전체 여행이다. 같은 권역에서 TL/VL의 `TRAVEL_ID`가 겹치면 거부한다. 방문 후 피드백과 요청 시점에 알 수 없는 위치·카테고리 신호는 입력에서 제외한다.
+- **기준 모델(baseline):** 기존 권역 인기도 평가기와 TL 전용 점수를 재사용한다. 결정적 무작위 순서는 필요한 경우 프로토콜 확인용으로만 사용한다. 어느 것도 실제 노출을 반영한 사용자 선택을 증명하지 않는다.
+- **평가 지표:** 후보 커버리지, 관측 양성 커버리지, 콜드 스타트 비율, 후보 수 구간, 개인정보 보호 구간을 적용한 양성 밀도, 후보 집합 상태를 본다. 순위 평가가 기술적으로 가능한 경우 Recall@K, NDCG@K, MRR을 사용한다. 일반 분류 정확도만으로 순위 품질을 판단하지 않는다.
+
+## 2. 데이터·재현·개인정보 보호 계약
+
+이미 승인된 AI Hub 국내 여행로그 2023의 수도권(capital), 서부권(west), 동부권(east), 제주·도서권(jeju-islands) TL/VL 입력을 사용했다. 승인된 프로세스 변수 또는 명시적 역할 인자로 TL/VL 역할을 먼저 고정하고, 기존 인기도 평가 계약에 따라 출처, 승인/이용 조건, 권역과 역할 레이아웃을 검증했다. 수도권의 별도 filekey 레이아웃 검증도 기존 계약을 유지했다.
+
+원본 경로는 읽기 전용으로 유지했다. 결과는 Git에서 제외된 `results/experiments/candidate-choice-feasibility/<run-id>/` 아래에만 기록하며, 원본 경로·식별자·행·좌표·자유 텍스트·후보 목록·원본 파일명은 저장하지 않는다.
+
+네 권역 역할 매핑, 수도권 레이아웃 예외, 확인 플래그는 [`popularity-baseline.md`](popularity-baseline.md)를 따른다. 같은 로컬 역할 변수를 사용하고 새 run ID로 재현한다.
 
 ```bash
 python3 scripts/recommendation/analyze_candidate_choice_feasibility.py \
@@ -34,113 +84,192 @@ python3 scripts/recommendation/analyze_candidate_choice_feasibility.py \
   --confirm-approved --confirm-terms --confirm-poi-candidate
 ```
 
-The command validates all eight explicit region/role bindings and their layout before opening rows. It writes only `metrics.csv` and path-free `run_metadata.json` under the ignored candidate-choice result directory. Synthetic regression tests run with `python3 -m unittest discover -s tests -p 'test_candidate_choice_feasibility.py' -v`.
+이 명령은 실제 행을 열기 전에 여덟 개 권역/역할 바인딩과 레이아웃을 검증한다. Git 제외 결과 디렉터리에는 `metrics.csv`와 로컬 경로를 제거한 `run_metadata.json`만 기록한다.
 
-## Four-region diagnostics
+합성 회귀 테스트:
 
-The final four-region run is `issue59-four-region-final3-20261014`. Run metadata fingerprints both output-affecting scripts: `analyze_candidate_choice_feasibility.py` SHA-256 `eb869c5e9c3852523b8f909f323506cab70ad6d0f545bf8eea412f9535627b32` and `evaluate_popularity.py` SHA-256 `84a9dbe268efbf7237c258c8547a304b1f2eb1882881a1e429092270cce6ae9a`. The recorded source revision is `711237507773bc587132440e293b8d12bb0dd6d7` with a dirty worktree (`code_worktree_dirty: true`); this is a pre-commit run and is not represented as a clean revision. The ignored output contains aggregate metrics and path-free run metadata only.
+```bash
+python3 -m unittest discover -s tests -p 'test_candidate_choice_feasibility.py' -v
+```
 
-The run used AI Hub Domestic Travel Log 2023, the explicitly bound capital/west/east/jeju-islands TL/VL inputs, TL-only region-scoped nonblank `POI_ID` candidates and popularity counts, trip-level VL positives, K=5/10/20, no sampling seed, and no test metrics. All four TL/VL trip-ID overlap checks passed with a safe `0` bucket; the diagnostic traveler overlap was also `0` in all four regions. The only feature inputs read were the existing evaluator's trip owner and visit item identity fields. Post-visit feedback was not read.
+## 3. 네 권역 진단 결과
 
-| Region | Candidate items | Trips with a candidate | Candidate size per trip | Distinct positive density per trip | VL positive coverage | VL cold-start positive share |
+### 3.1 실행 정보
+
+최종 네 권역 실행은 `issue59-four-region-final3-20261014`다.
+
+결과에 영향을 주는 두 스크립트의 SHA-256:
+
+- `analyze_candidate_choice_feasibility.py`: `eb869c5e9c3852523b8f909f323506cab70ad6d0f545bf8eea412f9535627b32`
+- `evaluate_popularity.py`: `84a9dbe268efbf7237c258c8547a304b1f2eb1882881a1e429092270cce6ae9a`
+
+기록된 소스 리비전은 `711237507773bc587132440e293b8d12bb0dd6d7`이며 당시 작업 트리는 `code_worktree_dirty: true`였다. 즉 커밋 전 실행으로, 깨끗한 하나의 리비전 결과라고 표현하지 않는다. Git 제외 산출물에는 집계 지표와 로컬 경로를 제거한 실행 메타데이터만 있다.
+
+실행 조건:
+
+- AI Hub 국내 여행로그 2023 네 권역 TL/VL
+- TL에서만 권역 범위의 비어 있지 않은 `POI_ID` 후보와 인기도 계산
+- 여행 단위 VL 관측 양성
+- K = 5, 10, 20
+- 표본 추출 seed 없음
+- test 지표 없음
+- 네 권역 모두 TL/VL `TRAVEL_ID` 중복 검사에서 안전한 `0` 구간
+- 진단용 여행자 중복도 네 권역 모두 `0`
+- 입력 특성은 기존 평가기의 여행 소유자와 방문 아이템 식별 필드만 사용
+- 방문 후 피드백은 읽지 않음
+
+### 3.2 후보 집합과 관측 양성 커버리지
+
+이 표는 **TL 관측 POI 기반 임시 후보 정의이 VL의 관측 방문을 어느 정도 포함하는지** 판단하기 위한 것이다.
+
+| 권역 | 후보 아이템 | 후보가 있는 여행 | 여행당 후보 수 | 여행당 중복 제거 양성 밀도 | VL 양성 커버리지 | VL 콜드 스타트 양성 비율 |
 | --- | --- | --- | --- | --- | --- | --- |
-| capital | 10+ | 90–100% | 500+ | 0% and 0–<1% buckets | 25–<50% | 50–<75% |
-| west | 10+ | 90–100% | 500+ | 0% and 0–<1% buckets | 50–<75% | 25–<50% |
-| east | 10+ | 90–100% | 500+ | 0% and 0–<1% buckets | 50–<75% | 25–<50% |
-| jeju-islands | 10+ | 90–100% | 500+ | 0% and 0–<1% buckets | 50–<75% | 25–<50% |
+| capital | 10+ | 90–100% | 500+ | 0% 및 0–<1% 구간 | 25–<50% | 50–<75% |
+| west | 10+ | 90–100% | 500+ | 0% 및 0–<1% 구간 | 50–<75% | 25–<50% |
+| east | 10+ | 90–100% | 500+ | 0% 및 0–<1% 구간 | 50–<75% | 25–<50% |
+| jeju-islands | 10+ | 90–100% | 500+ | 0% 및 0–<1% 구간 | 50–<75% | 25–<50% |
 
-The density columns are trip-level distribution buckets, with trip support `10+` in each reported bucket. Choice-set status, candidate-support status, and positive-coverage status are separate dimensions, so an outside-candidate positive is still visible when the candidate list is empty or too small. Ranking metrics exclude trips with fewer than two candidates because a one-item list cannot measure a choice among candidates. Status counts are bucketed, and cells below 10 are marked `privacy_limited`. Every region had supported evaluable trips and supported cold-start/outside-positive trips. Exact small status counts are not released.
+양성 밀도는 여행 단위 분포 구간이며 각 공개 구간의 여행 지원 수는 `10+`이다. 후보 집합 상태, 후보 지원 상태, 양성 커버리지 상태는 서로 다른 차원으로 기록한다. 따라서 후보 목록이 비어 있거나 너무 작아도 후보 밖 관측 양성은 사라지지 않는다.
 
-The same run also reports TL and VL distributions for distinct trips per traveler, distinct observed positive POIs per trip, and repeated visit events per trip. Traveler, trip, and item counts use buckets; event shares use the existing small-numerator and small-denominator suppression policy. Repeated source events remain visible in repeat-event diagnostics, while ranking relevance uses distinct POIs within each trip. Trips without a usable POI remain in the distinct-positive-per-trip distribution as the zero bucket.
+후보가 2개 미만인 여행은 순위 선택을 측정할 수 없으므로 순위 지표에서 제외한다. 상태 수는 구간으로 공개하며 10 미만 셀은 `privacy_limited`로 표시한다. 네 권역 모두 평가 가능한 여행과 콜드 스타트/후보 밖 양성이 개인정보 보호 기준 이상의 지원 수로 관측됐다. 정확한 소수 셀 개수는 공개하지 않는다.
 
-| Region | TL/VL distinct trips per traveler | TL distinct positives per trip | VL distinct positives per trip | TL repeat-event share | VL repeat-event share | Trips with repeats (TL / VL) |
+### 3.3 여행과 반복 방문 분포
+
+다음 표는 동일 실행에서 여행자별 여행 수, 여행당 관측 POI 수, 반복 방문이 얼마나 나타나는지 확인하기 위한 진단이다.
+
+| 권역 | TL/VL 여행자별 중복 제거 여행 수 | TL 여행당 중복 제거 양성 | VL 여행당 중복 제거 양성 | TL 반복 이벤트 비율 | VL 반복 이벤트 비율 | 반복이 있는 여행(TL / VL) |
 | --- | --- | --- | --- | --- | --- | --- |
-| capital | 1 / 1 (each `10+` support) | 0, 1, 2–4, 5–9, 10+ (`10+` support) | 2–4, 5–9, 10+ (`10+` support); smaller cells privacy-limited | 0–<10% | 0–<10% | 10–<25% / 10–<25% |
-| west | 1 / 1 (each `10+` support) | 0, 1, 2–4, 5–9, 10+ (`10+` support) | 2–4, 5–9, 10+ (`10+` support); smaller cells privacy-limited | 0–<10% | 0–<10% | 25–<50% / 25–<50% |
-| east | 1 / 1 (each `10+` support) | 0, 1, 2–4, 5–9, 10+ (`10+` support) | 2–4, 5–9, 10+ (`10+` support); smaller cells privacy-limited | 0–<10% | 0–<10% | 25–<50% / 25–<50% |
-| jeju-islands | 1 / 1 (each `10+` support) | 0, 1, 2–4, 5–9, 10+ (`10+` support) | 2–4, 5–9, 10+ (`10+` support); smaller cells privacy-limited | 10–<25% | 10–<25% | 50–<75% / 50–<75% |
+| capital | 1 / 1 (각 `10+` 지원) | 0, 1, 2–4, 5–9, 10+ (각 `10+` 지원) | 2–4, 5–9, 10+ (`10+` 지원); 더 작은 셀은 privacy-limited | 0–<10% | 0–<10% | 10–<25% / 10–<25% |
+| west | 1 / 1 (각 `10+` 지원) | 0, 1, 2–4, 5–9, 10+ (각 `10+` 지원) | 2–4, 5–9, 10+ (`10+` 지원); 더 작은 셀은 privacy-limited | 0–<10% | 0–<10% | 25–<50% / 25–<50% |
+| east | 1 / 1 (각 `10+` 지원) | 0, 1, 2–4, 5–9, 10+ (각 `10+` 지원) | 2–4, 5–9, 10+ (`10+` 지원); 더 작은 셀은 privacy-limited | 0–<10% | 0–<10% | 25–<50% / 25–<50% |
+| jeju-islands | 1 / 1 (각 `10+` 지원) | 0, 1, 2–4, 5–9, 10+ (각 `10+` 지원) | 2–4, 5–9, 10+ (`10+` 지원); 더 작은 셀은 privacy-limited | 10–<25% | 10–<25% | 50–<75% / 50–<75% |
 
-The trip-per-traveler distribution uses `TN_TRAVEL` trips with one unambiguous traveler owner; ownerless or ambiguous trips cannot be assigned to a traveler and are excluded from that distribution. Repeat-event shares count usable nonblank POI visit events beyond the first occurrence of the same region-scoped POI within a trip. No row-level or exact small-count results are retained in the document.
+여행자별 여행 수 분포는 `TN_TRAVEL`에서 여행 소유자가 하나로 명확한 여행만 사용한다. 소유자가 없거나 여러 명으로 모호한 여행은 여행자 단위 분포에서 제외한다.
 
-The region-popularity protocol check among in-candidate positives produced the following trip-macro metrics. These are feasibility evidence for the fixed candidate set, not production quality estimates; observed positives do not establish exposure or true negatives.
+반복 이벤트 비율은 한 여행 안에서 같은 권역 범위 POI가 처음 등장한 뒤 추가로 발생한, 비어 있지 않은 POI 방문 이벤트를 센다. 순위 관련성은 중복 제거 POI를 사용한다. 사용 가능한 POI가 없는 여행도 여행당 중복 제거 양성 분포의 0 구간에 남는다. 행 단위 결과나 정확한 소수 셀 수는 문서에 보존하지 않는다.
 
-| Region | Recall@10 | NDCG@10 | MRR@10 |
+### 3.4 인기도 기준 모델의 순위 지표
+
+이 표는 **고정된 임시 후보 정의 안에서 단순 권역 인기도 순서가 관측 양성을 어느 정도 위에 놓는지** 확인하는 프로토콜 점검이다. 운영 추천 품질 추정치가 아니며, 관측 양성은 실제 노출이나 진짜 음성을 증명하지 않는다.
+
+| 권역 | Recall@10 | NDCG@10 | MRR@10 |
 | --- | ---: | ---: | ---: |
 | capital | 0.064440 | 0.037433 | 0.051227 |
 | west | 0.055809 | 0.058266 | 0.121140 |
 | east | 0.067931 | 0.060881 | 0.113462 |
 | jeju-islands | 0.084768 | 0.159746 | 0.406333 |
 
-All released ranking cells have at least `10+` trip support and `10+` retrieved-positive support. The separately reported all-observed-positive metrics include out-of-candidate positives in the relevance denominator, so those metrics include the candidate-coverage limitation.
+공개된 모든 순위 셀에는 `10+` 여행 지원과 `10+` 검색된 양성 지원이 있다. 별도로 계산된 전체 관측 양성 기준 지표는 후보 밖 양성도 관련성 분모에 포함하므로 후보 커버리지 한계가 함께 반영된다.
 
-## Issue #4 product-catalog contract update
+## 4. Issue #4 이후 제품 후보 계약과 식별 진단
 
-위 TL-observed 후보 실험은 과거 proxy 결과로 유지한다. 이후 Issue #66에서 TourAPI KorService2 v4.4 기반 별도 제품 후보 계약을 승인했으며, 지원 type은 `{12,14,28}`, 전체 권역 정책은 [`config/recommendation/poi-catalog-policy-v1.json`](../../../config/recommendation/poi-catalog-policy-v1.json)에 고정했다. AI Hub 네 권역은 공식 광역권 분류에 따라 결정적으로 매핑한다. `jeju-islands`는 제주 코드 `50`을 뜻하며 다른 도서를 포함한다고 주장하지 않는다. 기존 TL-observed 집합을 제품 eligibility로 부르거나 서로 다른 후보 universe의 지표를 같은 조건의 값처럼 비교하지 않는다. 최종 Issue #4 판정 및 AI Hub native identity를 offline 학습·평가에 사용한다는 경계는 [POI catalog candidate contract](../poi-catalog-candidate-contract.md)의 최종 요약을 따른다.
+이 절은 초기 TL 관측 POI 실험 이후 확정된 기술 내용을 정리한다. **과거 실험용 후보 정의와 제품 후보 계약은 서로 다른 후보 집합**이며, 분모와 식별 체계가 다른 지표를 같은 조건의 수치처럼 직접 비교하지 않는다.
 
-### Issue #4 exact-mode #60 TL-observed proxy 재실행
+### 4.1 제품 후보 계약
 
-2026-10-18 exact-mode run에서 기존 `diagnose_region`을 동일한 TL-only 후보 / VL validation 기준으로 다시 호출했다. 아래는 기존 TL-observed proxy와 product-catalog 후보 실험을 구분한 exact 집계다. positive event coverage 분모는 #60의 관측 visit-event이며, TourAPI funnel의 distinct `(TRAVEL_ID, POI_ID)` 양성 쌍과는 단위가 다르다.
+Issue #66에서 TourAPI KorService2 v4.4 기반 제품 후보 계약을 승인했다. 지원 유형은 `{12,14,28}`이고 전체 권역 정책은 [`config/recommendation/poi-catalog-policy-v1.json`](../../../config/recommendation/poi-catalog-policy-v1.json)에 고정했다. AI Hub 네 권역은 공식 광역권 분류에 따라 결정적으로 매핑하며, `jeju-islands`는 제주 코드 `50`을 뜻하고 다른 도서까지 포함한다고 주장하지 않는다.
 
-| Region | TL-observed candidate items | VL requests / non-empty | VL positive events | Positive event coverage | Cold-start events | Cold-start share | TL/VL trip ID overlap |
+초기 TL 관측 POI 집합은 이 제품 후보 계약과 별개인 **과거 실험용 임시 후보 정의**다. 제품 자격이나 과거 노출을 뜻하지 않는다. 최신 제품 후보·식별 계약은 [POI catalog / candidate contract](../poi-catalog-candidate-contract.md)를 따른다.
+
+### 4.2 과거 TL 관측 후보의 exact-mode 재실행
+
+2026-10-18 exact-mode 실행에서 기존 `diagnose_region`을 같은 TL-only 후보 / VL 검증 기준으로 다시 실행했다. 아래 positive event coverage의 분모는 과거 실험의 관측 visit-event이며, TourAPI 식별 진단의 distinct `(TRAVEL_ID, POI_ID)` 양성 쌍과 단위가 다르다.
+
+| 권역 | TL 관측 후보 수 | VL 요청 / 후보 있음 | VL 양성 이벤트 | 양성 이벤트 커버리지 | 콜드 스타트 이벤트 | 콜드 스타트 비율 | TL/VL trip ID 중복 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | capital | 8,655 | 320 / 320 (100.00%) | 1,942 | 956/1,942 (49.23%) | 986/1,942 | 50.77% | 0 |
 | west | 9,429 | 320 / 320 (100.00%) | 2,596 | 1,655/2,596 (63.75%) | 941/2,596 | 36.25% | 0 |
 | east | 10,381 | 320 / 320 (100.00%) | 2,715 | 1,668/2,715 (61.44%) | 1,047/2,715 | 38.56% | 0 |
 | jeju-islands | 13,152 | 320 / 320 (100.00%) | 4,621 | 3,449/4,621 (74.64%) | 1,172/4,621 | 25.36% | 0 |
 
-각 region-level TL candidate set은 모든 VL 요청에 공통 적용되므로 요청당 후보 수는 candidate items와 같다. 정확한 후보 수는 capital 8,655, west 9,429, east 10,381, jeju-islands 13,152다. 네 권역 모두 VL 320/320 요청 non-empty, TL/VL trip ID overlap 0, traveler overlap 0이었다.
+각 권역의 TL 후보 집합은 모든 VL 요청에 공통 적용됐다. 네 권역 모두 VL 320/320 요청에서 후보가 비어 있지 않았고, TL/VL `TRAVEL_ID` 중복과 여행자 중복은 0이었다. 이 exact-mode 재실행은 기존 넓은 구간 값을 정확 집계로 바꾼 것이며 제품 후보 커버리지나 과거 노출을 뜻하지 않는다.
 
-이 exact-mode 재실행에서 이전 privacy band `10+` 후보 수는 위 정확 수로 풀렸고, `90–100%` non-empty request는 모두 `320/320 (100.00%)`였다. 이전 broad event-coverage band도 exact numerator/denominator로 교체했다. 이 표는 #60의 과거 후보 대리값이며 TourAPI canonical identity coverage나 과거 exposure를 뜻하지 않는다.
+### 4.3 AI Hub → TourAPI 식별 범위 비교
 
-### Issue #4 identity diagnostic follow-up
+고정 TourAPI 스냅샷과 같은 관측 양성을 사용해 식별에 쓰는 메타데이터와 탐색 범위를 비교했다.
 
-2026-10-18 재실행의 고정 TourAPI snapshot + AI Hub 원본 TL/VL exact aggregate identity 진단은 [POI catalog candidate contract](../poi-catalog-candidate-contract.md)의 Identity 진단 funnel 절에 기록했다. 이 진단은 historical TL-observed proxy와 별개이며, API 재호출이나 row-level export 없이 source-name/title, address, row-signal variation, matched type, eligibility reason을 source POI와 observed-positive 단위로 분리한다. exact-title 후보 0은 같은 권역에서 exact normalized title 후보를 찾지 못했다는 뜻이며 catalog 부재로 해석하지 않는다.
+| Arm | 메타데이터 / 탐색 범위 | MATCHED | AMBIGUOUS | UNMATCHED | 전체 양성 기준 식별률 | 제품 후보 포함 | 전체 양성 기준 포함률 | MATCHED 중 포함률 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| A | visit row / source region | 3,000 | 29,149 | 65,491 | 3.07% | 1,530 | 1.57% | 51.00% |
+| B | TN_POI_MASTER / source region | 4,289 | 12,924 | 53,543 | 4.39% | 2,097 | 2.15% | 48.89% |
+| C | visit row / global snapshot | 3,044 | 32,062 | 62,534 | 3.12% | 1,530 | 1.57% | 50.26% |
+| D | TN_POI_MASTER / global snapshot | 4,696 | 15,127 | 50,933 | 4.81% | 2,097 | 2.15% | 44.66% |
 
-## Candidate alternatives and limits
+Arm D에서는 전체 97,640개 관측 양성 중 26,884개에 같은 권역의 POI Master 메타데이터가 없었다. 따라서 source-available 분모는 70,756이고, 이 분모에서 D의 식별률은 6.64%다. 네 권역 Master 합집합을 확인했지만 같은 권역 Master가 없던 26,884개 중 다른 권역에서 복구된 항목은 0개였다. 별도 D2 arm은 추가하지 않았고 D를 이 실험의 기준 비교 경로로 유지한다.
 
-- **A — region-level TL-observed POIs:** implemented uniformly in all four regions. It creates an auditable catalog proxy, but every trip inherits a `500+` candidate list and most trips have observed-positive density below 1%. It does not show that those items were available or exposed to the traveler.
-- **B — destination/admin-area constraint:** not used. The available contract does not establish an actual recommendation request or prove that a retrospective trip destination was known at the simulated prediction time. Visit-area location is post-event and cannot filter candidates. A later run needs an explicit request-time destination contract plus a validated item-to-area mapping.
-- **C — context/category constraint:** not used. A POI category or trip survey value alone is not an exposure or candidate-membership record, and no explicit request-time user filter is defined. Applying a category from an observed visit would infer preference from the target.
-- **Unvisited and sampling:** eligible unvisited TL candidates remain unlabeled. No negative sampling was required for this feasibility diagnostic. Any follow-up sampled-unlabeled protocol must name its population, ratio, seed, replacement rule, positive exclusion and region/context rule, and must continue to call samples unlabeled.
+이 결과는 **현재 AI Hub→TourAPI 식별 연결이 신뢰할 수 있는 오프라인 관측 양성 커버리지 측정을 지원하지 못한다**는 근거다. TourAPI 제품 카탈로그 자체가 부적합하다는 근거는 아니다.
 
-## Decision
+### 4.4 Master 우선 + visit fallback 비교
 
-**Inconclusive.** The same deterministic region-level candidate rule can be built and evaluated across all four regions, with nonempty candidates for 90–100% of VL trip units and ranking metrics supported by the privacy threshold. However, the candidate space is `500+` per trip, positive density is concentrated below 1%, and 25–75% of observed VL positive events are outside the TL candidate catalog depending on region. Most importantly, travel logs contain observed visits rather than a record of what was offered or considered. The data therefore do not establish a serving-time choice set or justify treating unvisited candidates as negatives. Destination/category filters do not resolve that exposure gap under the current contract.
+탐색용 Arm E는 같은 권역의 POI Master가 있으면 Master 메타데이터를 쓰고, 없을 때만 visit-row 메타데이터로 명시적으로 fallback했다. global TourAPI 탐색과 exact matching 규칙은 D와 같다.
 
-**Follow-up contract:** capture or approve a request-time candidate/exposure snapshot (or an authoritative catalog and deterministic eligibility rule), its region/destination/category availability, and the time at which each field is known. Keep TL as the sole candidate-definition source and VL as validation; group by whole trip; preserve region-scoped item identity; report cold-start and outside-candidate positives; use ranking metrics with the existing support suppression. Only after this contract is fixed should a context-aware ranking baseline be compared.
+| 지표 | D | E |
+| --- | ---: | ---: |
+| 전체 관측 양성 | 97,640 | 97,640 |
+| MATCHED | 4,696 (4.81%) | 5,195 (5.32%) |
+| AMBIGUOUS | 15,127 | 20,297 (20.79%) |
+| UNMATCHED | 50,933 | 72,148 (73.89%) |
+| 제품 후보 포함 | 2,097 (2.15%) | 2,423 (2.48%) |
+| MATCHED 중 포함률 | 44.66% | 46.64% |
 
-Issue #4 defines the next product-catalog candidate contract in [`poi-catalog-candidate-contract.md`](../poi-catalog-candidate-contract.md). The TL-observed set above remains a historical proxy. It is not interchangeable with product-defined eligibility, and its metrics must not be compared directly with a future catalog snapshot unless the candidate universe and evaluation support rules are aligned.
+26,884개 fallback subset에서 MATCHED는 499개(1.86%), AMBIGUOUS는 5,170개(19.23%), UNMATCHED는 21,215개(78.91%)였다. global exact-title 후보 수는 0개가 22,777, 1개가 3,894, 2개 이상이 213이었다. fallback MATCHED 499개 중 326개는 `eligible`, 173개는 `unsupported_content_type`이었고 제품 후보 포함은 326개였다. D→E 증가는 MATCHED +499, 제품 후보 포함 +326이지만 E를 기준 식별 경로로 승격하지 않았다.
 
-The separate Issue #4 `TN_POI_MASTER` link diagnostic uses four regional Other candidate files that the user explicitly confirmed as approved. That approval does not change this TL-only proxy's basis or establish a serving catalog, canonical identity, or product-candidate coverage.
+### 4.5 메타데이터 일치성 shadow 검증
 
-## Issue #4 identity-source / search-scope comparison (2026-10-18)
+같은 70,756개 양성에 대해 Master와 visit 메타데이터를 독립적으로 같은 고정 TourAPI 스냅샷에 연결했다. 두 경로가 모두 MATCHED인 양성은 1,927개였고, 이 1,927개는 모두 같은 `contentid`를 선택했다. 양쪽 모두 MATCHED인 subset 안의 일치율은 100.00%다.
 
-The fixed-snapshot A/B/C/D comparison is recorded in [the POI catalog candidate contract](../poi-catalog-candidate-contract.md). It reuses identical positives and TourAPI snapshot data. Arm D (TN_POI_MASTER metadata + global identity search) resolves 4,696/97,640 positives (4.81%), compared with Arm A's visit-row metadata + source-region search at 3,000/97,640 (3.07%). For B/D, 26,884 positives lack same-region Master metadata; they are recorded only as `identity_source_missing` and excluded from title-candidate diagnostics. Thus D has 70,756 source-available positives and a 6.64% conditional identity rate while its all-positive rate remains 4.81%. Candidate-contained positives are 2,097/97,640 (2.15%) in D. The four-region Master union contains none of the same-region missing IDs (0/26,884 found elsewhere), so a D2 global Master identity arm has no observed recovery benefit. D remains the canonical comparison arm for this experiment, but its AI Hub→TourAPI identity bridge does not support a reliable offline observed-positive coverage estimate. This does not establish that TourAPI's product catalog is unsuitable. Offline training/evaluation should use AI Hub native POI identity; linking the TourAPI `contentid` product catalog is a separate identity/crosswalk problem. The final decision is **modify** with that meaning; do not keep extending string heuristics.
+visit 경로 MATCHED 2,545개 중 Master도 MATCHED인 것은 1,927개(75.72%), Master AMBIGUOUS는 583개, Master UNMATCHED는 35개였다. visit 메타데이터 신호가 하나로 안정된 양성은 58,092개였고, `source_signal_conflict` 12,664개는 visit 경로에서 모두 AMBIGUOUS였다. 이 결과는 두 메타데이터가 함께 exact rule로 풀린 subset의 **조건부 일치성 지표**일 뿐 독립적인 정답 데이터가 아니다.
 
-### Arm E follow-up (2026-10-18)
+고정 스냅샷에는 `mapx/mapy`가 없어 좌표 거리 호환성은 계산하지 못했다. 좌표는 식별 근거로 계속 비활성화한다.
 
-Arm E uses same-region Master metadata when present and explicitly falls back to visit-row metadata only when Master is missing; global TourAPI identity search and D's exact matching rules remain unchanged. Of the 97,640 positives, 70,756 use `master` provenance and 26,884 use `visit_fallback`. E statuses are MATCHED 5,195 (5.32%), AMBIGUOUS 20,297 (20.79%), and UNMATCHED 72,148 (73.89%). E contains 2,423 positives in the eligible candidate set (2.48% end-to-end; 46.64% conditional among MATCHED), compared with D's 4,696 MATCHED (4.81%) and 2,097 contained (2.15%). The increases are +499 MATCHED and +326 contained.
+### 4.6 문자열·주소 진단의 종료 기준
 
-Within the 26,884-positive visit-fallback subset, 499 are MATCHED (1.86%), 5,170 AMBIGUOUS (19.23%), and 21,215 UNMATCHED (78.91%). Global exact-title candidate counts are 0 for 22,777 (84.72%), 1 for 3,894 (14.48%), and 2+ for 213 (0.79%). The 499 fallback matches include 326 `eligible` (65.33%) and 173 `unsupported_content_type` (34.67%); 326 positives are candidate-contained. Arm E remains diagnostic only and does not make this bridge a reliable offline coverage measure.
+Arm D의 `global_exact_title_absent` 50,933개 양성을 대상으로 이름 후보 복구를 진단했다. N1 구두점 정리는 11개 후보를 추가했고 이 중 exact-address 일치는 1개, 불일치는 10개였다. N2 괄호 변형은 58개를 추가했고 exact-address 일치는 9개, 불일치는 49개였다. 고유 `(region, POI_ID)` 기준으로는 각각 5개(주소 일치 1 / 불일치 4), 37개(주소 일치 8 / 불일치 29)였다.
 
-### Master / visit shadow validation (2026-10-18)
+N4 fuzzy top-N 검색은 49,892개 양성에 여러 `contentid` 후보를 반환했지만 이는 검색 후보일 뿐 식별 근거가 아니다. canonical MATCHED 규칙은 바꾸지 않았다.
 
-For the 70,756 observed positives with both same-region metadata sources, Master and visit metadata were independently matched against the same fixed global TourAPI snapshot with D's existing exact rule. Both sources MATCHED for 1,927 positives; all 1,927 selected the same `contentid` (100.00% agreement within the both-MATCHED subset; 0 different IDs). Of 2,545 visit MATCHED positives, 1,927 (75.72%) were also Master MATCHED, 583 were Master AMBIGUOUS, and 35 were Master UNMATCHED.
+D의 AMBIGUOUS 15,127개 중 exact-title 후보가 1개인 경우는 14,698개(97.16%), 2개 이상은 429개(2.84%)였다. 단일 후보군에서는 source 주소가 있으나 exact catalog 주소와 맞지 않는 경우가 14,238개(96.87%), source 주소가 없는 경우가 460개(3.13%)였다. 다중 후보군에서는 exact 주소 불일치가 363개(84.62%), 여러 POI와 exact 주소가 동시에 맞는 경우가 66개(15.38%)였으며, 유일한 exact-address 후보로 좁혀진 경우는 없었다.
 
-Visit signal class is reported separately: 58,092 positives had a single visit metadata signal, while 12,664 had `source_signal_conflict`. All 12,664 conflict cases were visit AMBIGUOUS under the unchanged rule; they were not relaxed or promoted. The full 3×3 status matrix, exact count/rate, and agreement metric are recorded in the POI catalog contract and ignored aggregate. This is a conditional consistency proxy, not independent ground truth or a canonical-ID promotion decision.
+보수적인 A1 주소 정규화 후 단일 exact-title 후보 14,698개 중 normalized exact는 12개(0.08%), 불일치는 14,226개(96.79%), source 주소 누락은 460개(3.13%)였다. 2개 이상 후보 429개에서는 A1이 유일 후보를 선택한 경우가 **0개**였다.
 
-The existing fixed snapshot omits `mapx/mapy`, so the coordinate-distance compatibility diagnostic could not be computed. Coordinates remain disabled as identity evidence. `UNMATCHED` and `AMBIGUOUS` remain distinct from catalog absence.
+A1 이후 남은 15,115개에 대한 A2 토큰 관계는 `partial_overlap` 8,491개(56.18%), `source_tokens_subset_of_catalog` 2,448개(16.20%), `catalog_tokens_subset_of_source` 966개(6.39%), `no_meaningful_overlap` 2,684개(17.76%), `normalized_exact` 66개(0.44%), source 주소 누락 460개(3.04%)였다. 토큰 관계도 식별 확정 근거로 사용하지 않는다.
 
-### Name candidate recovery shadow diagnostic (2026-10-18)
+branch suffix tag는 문자열 끝의 `지점`, `본점`, `DT점`, 또는 끝의 `점`만 잡도록 경계를 좁혔다. 그 결과 D title-miss에서 5,958/50,933개 양성(11.70%), 2,343/20,856개 고유 POI(11.23%)에 해당했다. 이 역시 텍스트 진단 특성일 뿐이다.
 
-Arm D's 50,933 `global_exact_title_absent` observed positives were examined with diagnostic-only N1 punctuation, N2 parenthetical variants, N3 suffix/token presence tags, and N4 top-N fuzzy retrieval. The exact matcher and A/B/C/D/E outcomes remain unchanged. On the positive-weighted denominator, N1 recovered 11 cases (1 exact-address match, 10 mismatches); N2 added 58 cases (9 exact-address matches, 49 mismatches). At the unique `(region, POI_ID)` level, the corresponding counts were 5 (1 exact, 4 mismatch) and 37 (8 exact, 29 mismatch). Thus only a small fraction of title misses were recovered by deterministic punctuation/parenthetical diagnostics, and most such candidates lacked exact address confirmation. N4 returned multiple contentid candidates for 49,892 positives after its title prefilter; these are retrieval suggestions only and do not establish identity. Full exact aggregate, tag overlap, and regional/TL/VL breakdown are in the POI catalog contract and ignored experiment artifact. No fuzzy, coordinate, or relaxed-address result is promoted to MATCHED.
+**최종 식별 결정:** 단순 문자열 정규화 단계는 충분히 소진했다. 추가 fuzzy threshold, 제목 정규식, 주소 휴리스틱, 토큰 겹침만으로 MATCHED를 승격하지 않는다. 오프라인 학습·평가는 AI Hub 자체 POI 식별자를 사용한다. TourAPI `contentid` 연결은 공식 source-provider 교차표, 검증된 좌표 호환성, 신뢰할 수 있는 외부 주소·장소 식별자처럼 새로운 식별 근거가 생길 때 다시 검증한다.
 
-The later Arm D ambiguous-address shadow diagnostic found 15,127 ambiguous positives: 14,698 (97.16%) had one exact-title candidate and 429 (2.84%) had two or more. Among the single-title group, 14,238 (96.87%) had source address values but no exact catalog-address match, while 460 (3.13%) lacked source addresses. In the multiple-title group, 363 (84.62%) had no exact address match and 66 (15.38%) had an exact address matching multiple catalog POIs. Every title candidate had a TourAPI address; no unique exact-address candidate was found among these ambiguous positives. These are aggregate explanations only; they do not change the canonical resolution or establish whether address disagreement is formatting or a different place.
+## 5. 검토한 후보 대안과 한계
 
-The follow-up A1/A2 address diagnostic kept A0 and the canonical matcher unchanged. A1 applied NFKC, casefold, whitespace cleanup, and generic Unicode punctuation-to-separator cleanup only. Of 14,698 one-title-candidate positives, 12 (0.08%) were A1 normalized exact, 14,226 (96.79%) remained mismatches, and 460 (3.13%) lacked source address. Of 429 positives with 2+ exact-title candidates, A1 uniquely selected **0**; 66 (15.38%) selected multiple candidates and 363 (84.62%) selected none. A1 exact is diagnostic evidence only and was not promoted to MATCHED.
+- **A — 권역별 TL 관측 POI:** 네 권역 모두 동일한 규칙으로 구현했다. 검토 가능한 임시 카탈로그 정의이지만 모든 여행이 `500+` 후보를 공유하고 대부분의 여행에서 관측 양성 밀도가 1% 미만이다. 이 후보들이 실제로 여행자에게 사용 가능했거나 노출되었다는 증거는 아니다.
+- **B — 목적지/행정구역 제한:** 사용하지 않았다. 현재 계약은 실제 추천 요청을 제공하지 않으며, 과거 여행 목적지가 가상 추천 시점에 알려졌다고 증명하지 않는다. 방문지 위치는 사건 이후 정보이므로 후보를 필터링하는 데 사용할 수 없다. 후속 실험에는 명시적인 요청 시점 목적지 계약과 검증된 아이템-지역 매핑이 필요하다.
+- **C — 문맥/카테고리 제한:** 사용하지 않았다. POI 카테고리나 여행 설문 값만으로 노출 또는 후보 자격을 증명할 수 없으며, 요청 시점 사용자 필터도 정의되어 있지 않다. 실제 방문에서 관측된 카테고리를 이용해 후보를 줄이면 목표값에서 선호를 역추론하게 된다.
+- **미방문과 표본 추출:** 후보에 포함된 미방문 TL 아이템은 계속 미관측 상태다. 이번 진단에는 음성 표본 추출이 필요하지 않았다. 후속 표본 추출 프로토콜은 모집단, 비율, seed, 복원 여부, 양성 제외 규칙, 권역/문맥 규칙을 명시하고 표본을 계속 미관측 항목으로 불러야 한다.
 
-For the 15,115 positives unresolved after A1, A2's strongest address-token relation was `partial_overlap` for 8,491 (56.18%), `source_tokens_subset_of_catalog` for 2,448 (16.20%), `catalog_tokens_subset_of_source` for 966 (6.39%), `no_meaningful_overlap` for 2,684 (17.76%), `normalized_exact` for 66 (0.44%), and source address missing for 460 (3.04%); no candidate addresses were missing. The strongest relation is chosen over source road/lot × each catalog address in this order: normalized exact, source subset, catalog subset, partial overlap, no overlap. Unique `(region, POI_ID)` results are 3,927 ambiguous POIs; A1 yielded 5 normalized exact among the 3,751 one-title-candidate POIs, and again uniquely selected 0 of the 176 multi-title cases. On the 3,922 unique unresolved POIs, A2 reported partial overlap for 2,232 (56.91%), source subset for 645 (16.45%), catalog subset for 295 (7.52%), no overlap for 707 (18.03%), normalized exact for 5 (0.13%), and source missing for 38 (0.97%). Token relations do not establish identity and do not change MATCHED. Exact region/TL/VL counts and rates are in the POI catalog contract and ignored fixed-snapshot artifact; all prior A0, A/B/C/D/E, and N0–N4 aggregate fields were regression-compared and unchanged.
+## 6. 판정 정리
 
-The overlapping branch suffix tag was also narrowed to terminal branch-like forms (`지점`, `본점`, `DT점`, or terminal `점`). This reduced its D title-miss count to 5,958/50,933 weighted positives (11.70%) and 2,343/20,856 unique POIs (11.23%). It remains a text-feature tag only.
+### 확인된 사실
 
-**Final identity decision:** Name N1/N2 added candidate diagnostics for 69/50,933 title misses. Address A1 produced 12/14,698 normalized-exact cases among one-title-candidate positives and selected a unique candidate in 0/429 multi-title cases. These are diagnostic candidate results, not verified identity links. The string-heuristic experiment is closed. No further fuzzy thresholds, title regexes, address heuristics, or token-overlap MATCHED promotion will be added. Offline training/evaluation uses AI Hub native POI identity; the TourAPI `contentid` linkage remains a separate crosswalk problem. Future linkage work requires an official source-provider crosswalk, verified coordinate compatibility, or a trusted external address/place identifier.
+- 초기 TL 관측 POI 규칙은 네 권역 모두에 동일하게 적용할 수 있었고 순위 지표를 계산할 수 있었다.
+- 초기 실험에서 여행별 후보는 `500+`였고 관측 양성 밀도는 주로 1% 미만 구간에 있었다.
+- 권역에 따라 VL 관측 양성의 25–75%가 TL 관측 POI 기반 임시 후보 정의 밖에 있었다.
+- 여행로그에는 실제 방문 기록은 있지만 과거 서비스에서 제공된 후보 또는 노출 목록은 없다.
+- Issue #66에서 TourAPI KorService2 v4.4 제품 후보 계약과 지원 유형 `{12,14,28}`을 별도로 확정했다.
+- Issue #4의 기준 Arm D는 97,640개 관측 양성 중 4,696개(4.81%)를 식별했고, 제품 후보에 포함된 양성은 2,097개(2.15%)였다.
+- 문자열·주소 기반 추가 진단은 후보를 만들 수는 있었지만 신뢰할 수 있는 새로운 식별 확정 기준을 만들지 못했다.
+
+### 해석
+
+초기 TL 관측 POI 실험은 순위 평가 프로토콜을 실행할 수 있다는 점은 보여주지만 실제 서비스 후보나 노출을 재구성하지는 못한다. 반대로 Issue #4의 낮은 AI Hub→TourAPI 식별률도 TourAPI 제품 카탈로그 자체의 부적합을 뜻하지 않는다. 현재 한계는 **과거 관측 로그, 오프라인 아이템 식별, 제품 후보 카탈로그를 서로 잇는 근거가 부족하다**는 것이다.
+
+### 결정
+
+- **초기 TL 관측 POI 기반 후보 타당성:** 판정 보류(Inconclusive)를 유지한다.
+- **제품 후보 계약:** Issue #66에서 승인한 TourAPI KorService2 v4.4 계약을 사용한다.
+- **오프라인 학습·평가 식별:** AI Hub 자체 POI 식별자를 사용한다.
+- **AI Hub→TourAPI 연결:** 별도 식별 연결 문제로 유지하며 문자열 휴리스틱 확장은 중단한다.
+
+### 미결정 / 추가 검증 필요
+
+실제 과거 노출을 알 수 있는 근거와 AI Hub POI를 TourAPI `contentid`에 안정적으로 연결할 새 식별 근거는 아직 없다. 따라서 미방문 항목을 실제 음성으로 바꾸지 않으며, 서로 다른 후보 집합에서 나온 커버리지 수치를 같은 조건의 성능처럼 비교하지 않는다.
+
+다음 추천 모델 실험에서는 AI Hub 자체 식별자를 사용한 오프라인 후보·평가 계약과 노출/미관측 의미를 먼저 고정한다. 제품 카탈로그 연결이 필요한 단계에서는 공식 교차표, 검증된 좌표 호환성, 신뢰할 수 있는 외부 식별자 가운데 새로운 근거가 확보됐을 때 별도 검증한다.

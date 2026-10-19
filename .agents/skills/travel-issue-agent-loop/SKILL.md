@@ -93,6 +93,28 @@ When the selected Issue requires any actual-data read or asks whether a recommen
 
 The permission contract, machine-local profile example, and validation boundary are documented in [`docs/data/data-science-agent.md`](../../../docs/data/data-science-agent.md).
 
+## 사람이 읽기 쉬운 문서 검토
+
+문서, Issue 본문, PR 설명을 검토할 때 `docs/documentation-style-guide.md`를 검토 기준으로 적용한다.
+
+이전 에이전트 대화를 보지 않은 독자가 다음 질문에 답할 수 있는지 확인한다.
+
+1. 왜 이 변경이 필요한가?
+2. 현재 상태나 결과는 무엇인가?
+3. 기술적 의미가 바뀌었는가?
+4. 아직 결정되지 않은 것은 무엇인가?
+5. 사람이 무엇을 검토하거나 다음에 해야 하는가?
+
+일반 설명은 한국어를 우선하고 정확한 식별자·공식 기술명은 원문을 유지한다. 전문 영문 용어는 첫 등장 시 설명하고 추천 시스템 용어는 `docs/recommendation/glossary.md`와 의미를 맞춘다.
+
+다음 문서는 기술 내용이 맞더라도 가독성 문제로 지적한다.
+
+- 결론보다 긴 실행 명령·출력 로그가 먼저 나오는 문서
+- 프로젝트 내부 영문 용어를 설명 없이 사용하는 문서
+- 확인된 사실, 해석, 결정, 미결정을 섞어 쓰는 문서
+- 표가 어떤 판단을 지원하는지 설명하지 않는 문서
+- 표현만 정리한다고 하면서 데이터·모델·평가 계약의 의미를 바꾸는 문서
+
 ## Autonomous review loop
 
 Have the assigned writer (implementation or data-science) read the Issue, repository instructions, acceptance criteria, applicable role skill, and assigned scope before editing or reading actual data. It performs its authorized edits, tests/analysis, and review fixes in its assigned worktree. It may stage and commit only when the Issue or user authorization permits; it may push or create/update a PR only when explicitly authorized, and must never merge without separate authorization. The entry coordinator verifies the assigned writer's state, actual diff, and validation evidence read-only; it does not perform repository mutations.
