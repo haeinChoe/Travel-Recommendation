@@ -88,7 +88,7 @@ Travel Recommendation은 기존 TravelMate 프로젝트를 기반으로 여행�
 
 현재 item identity는 **오프라인 실험과 product serving을 분리**한다.
 
-- 오프라인 학습·평가: AI Hub native POI identity `(region, nonblank POI_ID)`
+- 오프라인 학습·평가: AI Hub 원래 POI 식별자 `(region, nonblank POI_ID)`
 - 제품 서비스용 카탈로그: TourAPI KorService2의 `(tourapi-korservice2, contentid)`
 - AI Hub ↔ TourAPI: 별도의 식별자 연결 문제
 
@@ -122,7 +122,7 @@ Issue #4 / PR #64의 실제 데이터 검증에서 현재 식별자 연결만으
 - 지역·서비스 가능 범위 같은 명백한 제품 조건은 가능한 경우 랭킹 전에 후보 자격으로 적용한다.
 - 특정 모델 계열을 제품 요구사항처럼 선결정하지 않는다.
 - Popularity baseline과 기존 CF feasibility 결과를 공통 비교 근거로 사용하고, 후속 모델은 #41의 학습·평가 계약을 확정한 뒤 선택한다.
-- 오프라인 실험은 AI Hub native POI identity에서 수행하며, TourAPI 서비스용 식별자와의 식별자 연결를 모델 비교의 필수 조건으로 두지 않는다.
+- 오프라인 실험은 AI Hub 원래 POI 식별자에서 수행하며, TourAPI 서비스용 식별자와의 연결을 모델 비교의 필수 조건으로 두지 않는다.
 
 후속 후보에는 feature-based ranking, Learning-to-Rank, feature-aware factorization, Two-Tower 등이 포함될 수 있으나 구현 순서를 PRD에서 고정하지 않는다.
 
@@ -245,8 +245,8 @@ LLM은 향후 preference extraction 또는 recommendation explanation의 인터�
 - Product / serving 관광지 카탈로그 v1은 TourAPI KorService2를 사용한다.
 - 서비스 기준 식별자는 `(tourapi-korservice2, contentid)`다.
 - v1 추천 가능 유형과 request-time eligibility는 [POI catalog / candidate contract](recommendation/poi-catalog-candidate-contract.md)를 따른다.
-- Offline AI Hub 추천 실험의 item identity는 AI Hub native POI identity를 사용하며 TourAPI `contentid`와 동일하다고 가정하지 않는다.
-- AI Hub ↔ TourAPI 식별자 연결는 별도 identity 문제이며, 공식 식별자 연결 정보·검증된 좌표 호환성·신뢰 가능한 외부 장소 식별자 같은 새 근거 없이는 heuristic 식별자 연결를 확대하지 않는다.
+- Offline AI Hub 추천 실험의 item identity는 AI Hub 원래 POI 식별자를 사용하며 TourAPI `contentid`와 동일하다고 가정하지 않는다.
+- AI Hub ↔ TourAPI 식별자 연결은 별도 장소 식별 문제이며, 공식 식별자 연결 정보·검증된 좌표 호환성·신뢰 가능한 외부 장소 식별자 같은 새 근거 없이는 추정 규칙만으로 식별자 연결을 확대하지 않는다.
 
 ### FR-4 Recommendation
 
@@ -335,7 +335,7 @@ Offline 추천 실험과 product serving은 서로 다른 item identity를 사�
 
 ```text
 Offline recommendation experiment
-AI Hub native POI identity
+AI Hub 원래 POI 식별자
 (region, nonblank POI_ID)
  -> candidate universe
  -> training / validation
@@ -357,9 +357,9 @@ Issue #4 / PR #64에서 exact title/address, POI Master, global lookup, visit fa
 
 따라서:
 
-- Offline model evaluation은 AI Hub native POI identity 안에서 수행한다.
+- Offline model evaluation은 AI Hub 원래 POI 식별자 안에서 수행한다.
 - TourAPI catalog coverage를 AI Hub positive coverage와 동일한 것으로 해석하지 않는다.
-- TourAPI `contentid` 식별자 연결를 offline model selection의 선행조건으로 두지 않는다.
+- TourAPI `contentid` 식별자 연결을 오프라인 모델 선택의 선행조건으로 두지 않는다.
 - fuzzy/title/address heuristic 또는 token overlap만으로 `MATCHED`를 추가하지 않는다.
 - serving 단계에서 사용할 모델·feature·item representation은 TourAPI 서비스용 식별자와 호환됨을 별도로 검증해야 한다.
 
@@ -379,7 +379,7 @@ observed_interactions
 optional_post_event_feedback
 ```
 
-현재 offline item은 AI Hub native POI identity를 사용한다. 이 데이터셋을 TourAPI 서비스용 카탈로그의 canonical identity와 동일한 것으로 부르지 않는다.
+현재 offline item은 AI Hub 원래 POI 식별자를 사용한다. 이 데이터셋을 TourAPI 서비스용 카탈로그의 기준 식별자와 동일한 것으로 부르지 않는다.
 
 실제 저장 형식과 feature schema는 #41의 model-training-evaluation contract에서 확정한다.
 
@@ -492,7 +492,7 @@ TourAPI KorService2
 
 AI Hub POI ↔ TourAPI contentid
   -> 향후 필요 시 식별자 연결
-  -> not required for offline model comparison
+  -> not required for 오프라인 모델 comparison
 ```
 
 ### Architecture Principle
@@ -579,7 +579,7 @@ AI Hub POI ↔ TourAPI contentid
 - 기존 TravelMate 기능/API/DB 구조 복원
 - 기존 추천 코드 및 데이터 흐름 분석
 - AI Hub 데이터 재확보
-- AI Hub ↔ TourAPI 식별자 연결 방식 타당성 검증 완료
+- AI Hub ↔ TourAPI 식별자 연결 방식의 타당성 검증 완료
 - Offline AI Hub identity와 TourAPI 서비스용 식별자를 별도 책임으로 분리
 
 ### Phase 1 — Recommendation Baseline & Contract
@@ -628,7 +628,7 @@ AI Hub POI ↔ TourAPI contentid
 5. 데이터셋/코드/모델/metric을 특정 experiment run으로 재현할 수 있다.
 6. Next.js/NestJS/Recommendation service 간 책임이 명확하다.
 7. Offline AI Hub item identity와 TourAPI 서비스용 식별자의 책임이 명확히 분리되어 있다.
-8. Product serving 결과는 TourAPI canonical identity를 사용하며, offline AI Hub ↔ TourAPI 식별자 연결를 암묵적으로 전제하지 않는다.
+8. 제품 서비스 결과는 TourAPI 기준 식별자를 사용하며, 오프라인 AI Hub ↔ TourAPI 식별자 연결을 암묵적으로 전제하지 않는다.
 
 ---
 
@@ -664,7 +664,7 @@ AI Hub POI ↔ TourAPI contentid
 - user/item/context 콜드 스타트 cohort를 어떤 기준으로 정의할 것인가?
 - offline 연구 결과를 서비스 호환 model/feature contract로 옮길 때 어떤 parity 검증이 필요한가?
 
-AI Hub ↔ TourAPI 식별자 연결 자체는 #41의 model selection 선행조건으로 두지 않는다.
+AI Hub ↔ TourAPI 식별자 연결 자체는 #41의 모델 선택 선행조건으로 두지 않는다.
 
 ### Architecture
 
