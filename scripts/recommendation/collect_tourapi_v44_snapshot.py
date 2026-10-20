@@ -16,6 +16,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from scripts.recommendation.poi_catalog_candidate_contract import normalize_code
 from scripts.recommendation.poi_catalog_policy import load_poi_catalog_policy, validate_live_region_codes
 from scripts.recommendation.tourapi_snapshot_adapter import (
+    SNAPSHOT_CSV_COLUMNS,
     TourApiCollectionError,
     TourApiFieldMap,
     adapt_tourapi_snapshot,
@@ -30,10 +31,7 @@ V44_CONTENT_TYPE_IDS = ("12", "14", "15", "25", "28", "32", "38", "39")
 
 def _snapshot_content_hash(rows: list[dict[str, str]]) -> str:
     canonical = sorted([
-        {key: row.get(key, "") for key in (
-            "contentid", "contenttypeid", "title", "addr1", "lDongRegnCd",
-            "lDongSignguCd", "lclsSystm1", "lclsSystm2", "lclsSystm3", "modifiedtime",
-        )}
+        {key: row.get(key, "") for key in SNAPSHOT_CSV_COLUMNS}
         for row in rows
     ], key=lambda row: row["contentid"])
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()

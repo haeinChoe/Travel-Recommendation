@@ -23,6 +23,32 @@ from scripts.recommendation.poi_catalog_candidate_contract import (
 )
 
 
+SNAPSHOT_CSV_COLUMNS = (
+    "contentid",
+    "contenttypeid",
+    "title",
+    "addr1",
+    "addr2",
+    "mapx",
+    "mapy",
+    "lDongRegnCd",
+    "lDongSignguCd",
+    "lclsSystm1",
+    "lclsSystm2",
+    "lclsSystm3",
+    "modifiedtime",
+)
+
+
+def normalize_tourapi_item(item: Mapping[str, object]) -> dict[str, str]:
+    """Extract and clean canonical v4.4 fields from a raw TourAPI item."""
+    clean: dict[str, str] = {}
+    for col in SNAPSHOT_CSV_COLUMNS:
+        val = item.get(col)
+        clean[col] = "" if val is None else str(val).strip()
+    return clean
+
+
 @dataclass(frozen=True)
 class TourApiFieldMap:
     content_id: str = "contentid"
@@ -32,6 +58,9 @@ class TourApiFieldMap:
     district_codes: tuple[str, ...] = ("lDongSignguCd",)
     classification_codes: tuple[str, ...] = ("lclsSystm1", "lclsSystm2", "lclsSystm3")
     address: str | None = "addr1"
+    addr2: str | None = "addr2"
+    mapx: str | None = "mapx"
+    mapy: str | None = "mapy"
     modified_time: str | None = "modifiedtime"
 
 
@@ -88,6 +117,27 @@ def adapt_tourapi_snapshot(
         address = row.get(fields.address, "") if fields.address else ""
         if not isinstance(address, str):
             raise ValueError("snapshot address field must be text")
+        addr2_val = row.get(fields.addr2, "") if fields.addr2 else ""
+        addr2 = str(addr2_val).strip() if addr2_val is not None else ""
+
+        mapx: float | None = None
+        if fields.mapx:
+            raw_mapx = row.get(fields.mapx)
+            if raw_mapx is not None and str(raw_mapx).strip():
+                try:
+                    mapx = float(str(raw_mapx).strip())
+                except ValueError:
+                    mapx = None
+
+        mapy: float | None = None
+        if fields.mapy:
+            raw_mapy = row.get(fields.mapy)
+            if raw_mapy is not None and str(raw_mapy).strip():
+                try:
+                    mapy = float(str(raw_mapy).strip())
+                except ValueError:
+                    mapy = None
+
         classification_codes = tuple(
             value.strip() for field in fields.classification_codes
             if isinstance((value := row.get(field)), str) and value.strip()
@@ -104,6 +154,9 @@ def adapt_tourapi_snapshot(
             district_codes=district_codes,
             classification_codes=classification_codes,
             modified_time=modified_time.strip(),
+            addr2=addr2,
+            mapx=mapx,
+            mapy=mapy,
         ))
     return CatalogSnapshot(
         snapshot_version=snapshot_version,
@@ -262,7 +315,7 @@ def collect_tourapi_snapshot(
                 for item in item_block:
                     if not isinstance(item, dict):
                         continue
-                    clean = {str(k): str(v) for k, v in item.items() if v is not None}
+                    clean = normalize_tourapi_item(item)
                     content_id = clean.get("contentid", "").strip()
                     if not content_id:
                         raise TourApiCollectionError("TourAPI returned an item without contentid")
@@ -353,16 +406,12 @@ def fetch_current_legal_region_codes(
 
 def write_snapshot_csv(path: str | Path, rows: Iterable[Mapping[str, str]]) -> None:
     """Write only contract fields to a caller-selected Git-ignored path."""
-    fields = (
-        "contentid", "contenttypeid", "title", "addr1", "lDongRegnCd",
-        "lDongSignguCd", "lclsSystm1", "lclsSystm2", "lclsSystm3", "modifiedtime",
-    )
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
+        writer = csv.DictWriter(handle, fieldnames=SNAPSHOT_CSV_COLUMNS, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows({field: row.get(field, "") for field in fields} for row in rows)
+        writer.writerows({field: row.get(field, "") for field in SNAPSHOT_CSV_COLUMNS} for row in rows)
 
 
 def read_source_observations_csv(
