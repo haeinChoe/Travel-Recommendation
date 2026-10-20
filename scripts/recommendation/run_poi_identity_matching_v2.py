@@ -1425,38 +1425,33 @@ def run_pipeline(
     }
 
     # -------------------------------------------------------------
-    # 6. Task 4: Newly Promoted MATCHED Auxiliary Signal Verification & Stratified Audit
+    # 6. Task 4: Newly Promoted MATCHED Post-Promotion Signal Verification & Stratified Audit
     # -------------------------------------------------------------
     STAGE_SIGNAL_ROLES = {
         1: {
-            "primary_signals": ["structured_address_full_key"],
-            "primary_desc": "구조화 주소 키 (도로명/지번 full key 일치)",
-            "auxiliary_signals": ["wgs84_distance_le_200m", "tc_sgg_crosswalk"],
-            "auxiliary_desc": "WGS84 좌표 근접성(<=200m) 및 TC_SGG 시군구 일치",
+            "primary_selection": "구조화 주소 키 (도로명/지번 full key 일치)",
+            "veto_gating": "없음 (단독 주소 full key 성립 시 즉시 선택)",
+            "post_hoc_diagnostic": "WGS84 좌표 근접성(<=200m) 및 TC_SGG 시군구 일치",
         },
         2: {
-            "primary_signals": ["tc_sgg_crosswalk"],
-            "primary_desc": "TC_SGG 시군구 일치 (유일 후보 매칭)",
-            "auxiliary_signals": ["wgs84_distance_le_200m", "address_main_no_non_conflict"],
-            "auxiliary_desc": "WGS84 좌표 근접성(<=200m) 및 주소 본번 무충돌",
+            "primary_selection": "TC_SGG 시군구 일치 (유일 후보 매칭)",
+            "veto_gating": "WGS84 좌표 거리 > 200m 차단 veto 및 동일 도로명/법정동 본번 충돌 차단 veto",
+            "post_hoc_diagnostic": "WGS84 좌표 거리 분위수(<=200m 일치율) 및 주소 본번 무충돌",
         },
         3: {
-            "primary_signals": ["wgs84_distance_le_200m_or_500m"],
-            "primary_desc": "WGS84 좌표 근접성 (<=200m, 200~500m 조건부 승격)",
-            "auxiliary_signals": ["tc_sgg_crosswalk", "address_main_no_non_conflict"],
-            "auxiliary_desc": "TC_SGG 시군구 일치 및 주소 본번 무충돌",
+            "primary_selection": "WGS84 좌표 근접성 (<=200m 승격)",
+            "veto_gating": "200~500m 구간 승격 시 TC_SGG 시군구 일치 필수 게이팅",
+            "post_hoc_diagnostic": "TC_SGG 시군구 일치율 및 주소 본번 무충돌",
         },
         4: {
-            "primary_signals": ["visit_signals_address_coord_sgg"],
-            "primary_desc": "TN_VISIT_AREA_INFO 방문 행 다중 신호 보강 (주소/좌표/SGG)",
-            "auxiliary_signals": ["wgs84_distance_le_200m", "tc_sgg_crosswalk"],
-            "auxiliary_desc": "WGS84 좌표 근접성(<=200m) 및 TC_SGG 시군구 일치",
+            "primary_selection": "TN_VISIT_AREA_INFO 방문 행 다중 신호 보강 (주소/좌표/SGG)",
+            "veto_gating": "없음 (구조화 주소 full key 또는 좌표 거리 <=200m 규칙 재적용)",
+            "post_hoc_diagnostic": "WGS84 좌표 거리(<=200m) 및 TC_SGG 시군구 일치",
         },
         5: {
-            "primary_signals": ["spatial_gating_name_normalization"],
-            "primary_desc": "공간 게이팅(<=200m + 마진) 기반 이름 정규화/지점명 분리",
-            "auxiliary_signals": ["wgs84_distance_le_200m", "tc_sgg_crosswalk"],
-            "auxiliary_desc": "WGS84 좌표 근접성(<=200m) 및 TC_SGG 시군구 일치",
+            "primary_selection": "이름 정규화 / 지점명 분리 규칙",
+            "veto_gating": "반경 <= 200m 공간 게이팅 + Nearest-Neighbor Margin (d2 - d1 >= 50m)",
+            "post_hoc_diagnostic": "WGS84 좌표 거리(<=200m) 및 TC_SGG 시군구 일치",
         },
     }
 
@@ -1585,10 +1580,11 @@ def run_pipeline(
         sig_info = STAGE_SIGNAL_ROLES.get(st_idx, {})
         newly_promoted_verification[f"stage_{st_idx}"] = {
             "stage_index": st_idx,
-            "primary_signals": sig_info.get("primary_signals", []),
-            "primary_desc": sig_info.get("primary_desc", ""),
-            "auxiliary_signals": sig_info.get("auxiliary_signals", []),
-            "auxiliary_desc": sig_info.get("auxiliary_desc", ""),
+            "primary_selection": sig_info.get("primary_selection", ""),
+            "veto_gating": sig_info.get("veto_gating", ""),
+            "post_hoc_diagnostic": sig_info.get("post_hoc_diagnostic", ""),
+            "primary_desc": sig_info.get("primary_selection", ""),
+            "auxiliary_desc": sig_info.get("post_hoc_diagnostic", ""),
             "total_newly_promoted_pois": tot_prom,
             "valid_coordinate_pairs": len(h_distances),
             "distance_quantiles": {
@@ -1672,7 +1668,6 @@ def run_pipeline(
             "sample_multi_evidence_non_conflict_rate": samp_rate,
             "population_defects": pop_defects,
             "population_multi_evidence_non_conflict_rate": pop_rate,
-            "strict_multi_evidence_precision_lower_bound": samp_rate,
             "multi_evidence_non_conflict_rate": samp_rate,
             "defects": samp_defects,
         }
@@ -1901,26 +1896,27 @@ def format_markdown_report(metrics: dict) -> str:
 
     lines.extend([
         "",
-        "## 5. 신규 승격 건(Newly Promoted) 보조 신호 정합성 진단 및 층화 감사 (과제 4)",
+        "## 5. 신규 승격 건(Newly Promoted) 물리 신호 사후 정합성 진단 및 층화 감사 (과제 4)",
         "",
-        "> Stage 0의 단락된 기준점 매칭을 제외하고, 각 단계(Stage 1~5)에서 새롭게 MATCHED로 승격된 건들에 대해 승격에 직접 사용된 주 신호(Primary)와 승격에 직접 사용되지 않은 보조 신호(Auxiliary)를 분리하고, 보조 신호(Holdout WGS84 좌표 거리 분위수, TC_SGG 시군구 일치율) 정합성 진단과 4개 권역 기준 비례 층화 100건 표본 감사(seed=42) 및 전수 감사를 병행 실시했습니다.",
+        "> Stage 0의 단락된 기준점 매칭을 제외하고, 각 단계(Stage 1~5)에서 새롭게 MATCHED로 승격된 건들에 대해 각 물리 신호의 역할((a) 후보 선택 주 규칙, (b) 충돌 차단/보조 게이팅, (c) 사후 관측 진단)을 명시하고, 사후 관측 신호(WGS84 좌표 거리 분위수, TC_SGG 시군구 일치율) 정합성 진단과 4개 권역 기준 비례 층화 100건 표본 감사(seed=42) 및 전수 감사를 병행 실시했습니다.",
         "",
-        "### (1) 신규 승격 건 보조 신호 정합성 진단 (Auxiliary Signal Consistency Diagnostic)",
+        "### (1) 신규 승격 건 물리 신호 사후 정합성 진단 (Post-Promotion Signal Consistency Diagnostic)",
         "",
-        "| 승격 단계 | 신규 승격 POI 수 | 주 신호 (Primary) | 보조 신호 (Auxiliary) | 좌표 거리 p50 | 좌표 거리 p90 | <=200m 일치율 | SGG 일치율 |",
-        "| :--- | :---: | :--- | :--- | :---: | :---: | :---: | :---: |",
+        "| 승격 단계 | 신규 승격 POI 수 | 후보 선택 주 규칙 (Primary Selection) | 충돌 차단/보조 게이팅 (Veto/Gating) | 사후 관측 진단 (Post-Hoc Diagnostic) | 좌표 거리 p50 | 좌표 거리 p90 | <=200m 일치율 | SGG 일치율 |",
+        "| :--- | :---: | :--- | :--- | :--- | :---: | :---: | :---: | :---: |",
     ])
 
     for i in range(1, 6):
         pv = prom_ver.get(f"stage_{i}", {})
         cnt = pv.get("total_newly_promoted_pois", 0)
-        p_desc = pv.get("primary_desc", "")
-        a_desc = pv.get("auxiliary_desc", "")
+        p_sel = pv.get("primary_selection", "")
+        v_gate = pv.get("veto_gating", "")
+        ph_diag = pv.get("post_hoc_diagnostic", "")
         p50 = pv.get("distance_quantiles", {}).get("p50", 0.0)
         p90 = pv.get("distance_quantiles", {}).get("p90", 0.0)
         le_200 = pv.get("distance_threshold_shares", {}).get("le_200m", 0.0) * 100
         sgg_rate = pv.get("sgg_agreement_rate", 0.0) * 100
-        lines.append(f"| **Stage {i} 신규 승격** | {cnt:,}개 | {p_desc} | {a_desc} | {p50}m | {p90}m | {le_200:.2f}% | {sgg_rate:.2f}% |")
+        lines.append(f"| **Stage {i} 신규 승격** | {cnt:,}개 | {p_sel} | {v_gate} | {ph_diag} | {p50}m | {p90}m | {le_200:.2f}% | {sgg_rate:.2f}% |")
 
     lines.extend([
         "",
