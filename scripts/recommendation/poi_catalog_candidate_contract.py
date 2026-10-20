@@ -10,6 +10,7 @@ from __future__ import annotations
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Mapping
 
 
@@ -39,6 +40,9 @@ class CatalogPoi:
     district_codes: frozenset[str] = frozenset()
     classification_codes: tuple[str, ...] = ()
     modified_time: str = ""
+    addr2: str = ""
+    mapx: float | None = None
+    mapy: float | None = None
 
 
 @dataclass(frozen=True)
@@ -466,3 +470,97 @@ def diagnose_candidate_coverage(
         "unresolved_identity_excluded_from_candidate_coverage": True,
         "interpretation": "hypothetical_product_eligibility_not_historical_exposure",
     }
+
+
+def load_tourapi_v44_snapshot_csv(
+    path: str | Path,
+    *,
+    snapshot_version: str = "",
+    retrieved_at: str = "",
+    request_config_hash: str = "",
+    policy_version: str = "poi-catalog-candidate-v1",
+) -> CatalogSnapshot:
+    """Read a TourAPI v4.4 snapshot CSV with backwards compatibility for 10-column schema."""
+    import csv
+
+    path_obj = Path(path)
+    if not path_obj.exists():
+        raise FileNotFoundError(f"snapshot CSV not found: {path}")
+
+    records: list[CatalogPoi] = []
+    seen_ids: set[str] = set()
+    with path_obj.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError("snapshot CSV must have a header")
+
+        required = {"contentid", "contenttypeid", "title", "lDongRegnCd"}
+        if not required.issubset(reader.fieldnames):
+            raise ValueError("snapshot CSV is missing one or more required columns")
+
+        for row in reader:
+            content_id = (row.get("contentid") or "").strip()
+            if not content_id:
+                raise ValueError("snapshot contains a row without contentid")
+            if content_id in seen_ids:
+                raise ValueError("snapshot contains duplicate provider content IDs")
+            seen_ids.add(content_id)
+
+            content_type_id = (row.get("contenttypeid") or "").strip()
+            title = (row.get("title") or "").strip()
+            address = (row.get("addr1") or "").strip()
+            addr2 = (row.get("addr2") or "").strip()
+
+            mapx_val = row.get("mapx")
+            mapy_val = row.get("mapy")
+            mapx: float | None = None
+            mapy: float | None = None
+            if mapx_val is not None and str(mapx_val).strip():
+                try:
+                    mapx = float(str(mapx_val).strip())
+                except ValueError:
+                    mapx = None
+            if mapy_val is not None and str(mapy_val).strip():
+                try:
+                    mapy = float(str(mapy_val).strip())
+                except ValueError:
+                    mapy = None
+
+            region_code = (row.get("lDongRegnCd") or "").strip()
+            region_codes = frozenset([region_code]) if region_code else frozenset()
+
+            district_code = (row.get("lDongSignguCd") or "").strip()
+            district_codes = frozenset([district_code]) if district_code else frozenset()
+
+            classes = tuple(
+                (row.get(f) or "").strip()
+                for f in ("lclsSystm1", "lclsSystm2", "lclsSystm3")
+                if (row.get(f) or "").strip()
+            )
+            modified_time = (row.get("modifiedtime") or "").strip()
+
+            records.append(
+                CatalogPoi(
+                    content_id=content_id,
+                    title=title,
+                    district_code=district_code,
+                    address=address,
+                    content_type_id=content_type_id,
+                    region_codes=region_codes,
+                    district_codes=district_codes,
+                    classification_codes=classes,
+                    modified_time=modified_time,
+                    addr2=addr2,
+                    mapx=mapx,
+                    mapy=mapy,
+                )
+            )
+
+    ver = snapshot_version or path_obj.stem
+    return CatalogSnapshot(
+        snapshot_version=ver,
+        records=tuple(records),
+        retrieved_at=retrieved_at,
+        request_config_hash=request_config_hash,
+        policy_version=policy_version,
+    )

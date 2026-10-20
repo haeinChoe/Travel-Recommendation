@@ -31,6 +31,8 @@
 - [recommendation/training-data-contract.md](recommendation/training-data-contract.md) — Legacy TravelMate와 AI Hub 2023 근거에 기반한 추천 학습 데이터 계약 (Issue #17)
 - [recommendation/experiments/candidate-choice-feasibility.md](recommendation/experiments/candidate-choice-feasibility.md) — 후보 집합과 평가 가능성 검증
 - [recommendation/experiments/context-poi-signal-feasibility.md](recommendation/experiments/context-poi-signal-feasibility.md) — 여행 문맥과 POI 사이의 예측 신호 검증 (Issue #45)
+- [recommendation/poi-catalog-candidate-contract.md](recommendation/poi-catalog-candidate-contract.md) — 서비스 카탈로그(TourAPI KorService2 v4.4) 기반 POI 후보 생성 및 식별자 매칭 계약 (Issue #67, #69)
+- [recommendation/experiments/poi-identity-matching-v2.md](recommendation/experiments/poi-identity-matching-v2.md) — 5대 비퍼지 다단계 POI 식별자 매칭 및 코호트 커버리지 실험 보고서 (Issue #69)
 
 ## 운영·도구 문서
 

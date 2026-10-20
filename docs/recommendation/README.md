@@ -4,17 +4,23 @@
 
 ## 처음 읽는 경우
 
-1. [추천 시스템 용어 사전](glossary.md)  
+1. [추천 시스템 용어 사전](glossary.md)
    이 저장소에서 사용하는 사용자, 여행 문맥, POI, 후보 집합, 노출, 관측 양성, 순위화 등의 의미를 확인한다.
 
-2. [추천 학습 데이터 계약](training-data-contract.md)  
+2. [추천 학습 데이터 계약](training-data-contract.md)
    어떤 데이터를 사용자·여행·POI·상호작용으로 해석하고 어떤 신호를 학습에 사용할 수 있는지 확인한다.
 
-3. [후보 집합 타당성 실험](experiments/candidate-choice-feasibility.md)  
+3. [후보 집합 타당성 실험](experiments/candidate-choice-feasibility.md)
    과거 여행로그만으로 평가 가능한 추천 후보를 어떻게 정의했으며 왜 현재 결론이 판정 보류인지 확인한다.
 
-4. [여행 문맥 × POI 신호 타당성 실험](experiments/context-poi-signal-feasibility.md)  
+4. [여행 문맥 × POI 신호 타당성 실험](experiments/context-poi-signal-feasibility.md)
    여행 문맥이 POI 선택과 관련된 예측 신호를 제공하는지, 무엇까지 확인했고 무엇은 아직 추천 순위 품질로 해석할 수 없는지 확인한다.
+
+5. [서비스 카탈로그 기반 후보 계약](poi-catalog-candidate-contract.md)
+   한국관광공사 TourAPI KorService2 v4.4 서비스 카탈로그와 AI Hub 여행로그 간 POI 후보 집합 정의, 식별자 매칭 계약 및 위치 조건부 5단계 매칭 기준을 확인한다.
+
+6. [POI 식별자 매칭 및 코호트 커버리지 실험](experiments/poi-identity-matching-v2.md)
+   5대 비퍼지 다단계 식별자 매칭 파이프라인의 단계별 누적 성과와 관광 대상 코호트 분리 분석 결과를 확인한다.
 
 ## 새 연구·실험 문서를 작성할 때
 
