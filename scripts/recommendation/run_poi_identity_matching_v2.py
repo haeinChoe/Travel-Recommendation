@@ -1429,8 +1429,8 @@ def run_pipeline(
     # -------------------------------------------------------------
     STAGE_SIGNAL_ROLES = {
         1: {
-            "primary_selection": "구조화 주소 키 (도로명/지번 full key 일치)",
-            "veto_gating": "없음 (단독 주소 full key 성립 시 즉시 선택)",
+            "primary_selection": "도로명/지번 exact_full 주소 키 (main_no + sub_no 일치)",
+            "veto_gating": "exact_main(부번 생략) 시 단일 동명 후보 + (TC_SGG 일치 또는 거리 <= 200m) 게이팅",
             "post_hoc_diagnostic": "WGS84 좌표 근접성(<=200m) 및 TC_SGG 시군구 일치",
         },
         2: {
@@ -1444,8 +1444,8 @@ def run_pipeline(
             "post_hoc_diagnostic": "TC_SGG 시군구 일치율 및 주소 본번 무충돌",
         },
         4: {
-            "primary_selection": "TN_VISIT_AREA_INFO 방문 행 다중 신호 보강 (주소/좌표/SGG)",
-            "veto_gating": "없음 (구조화 주소 full key 또는 좌표 거리 <=200m 규칙 재적용)",
+            "primary_selection": "방문 행 exact_full 주소 키 또는 WGS84 좌표 거리 <= 200m",
+            "veto_gating": "exact_main 시 단일 후보+(TC_SGG 일치 또는 거리<=200m), 거리 시 단일 후보 또는 마진(d2-d1>=50m) 게이팅",
             "post_hoc_diagnostic": "WGS84 좌표 거리(<=200m) 및 TC_SGG 시군구 일치",
         },
         5: {
