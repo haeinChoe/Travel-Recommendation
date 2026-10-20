@@ -15,7 +15,7 @@ Issue #12의 EDA 파이프라인과 보고 양식이다. 이 문서에는 안전
 | API Key | 사용자 로컬 `pass` 저장소에만 보관. 성공한 Shell 다운로드 모드 호출에서 인증됨. 키 값은 기록하지 않음 |
 | 수도권 파일 | PR #14의 과거 pilot 입력으로 Shell 목록 8개 범주가 추출됨. 사진 archive 포함은 당시 이력이며 후속 권역 입력 요구가 아님 |
 | 원본 보관 | 사용자가 지정한 로컬 raw root 하위에서 읽기 전용으로 사용. 실제 경로는 문서에 기록하지 않음 |
-| 수도권 pilot | **프로파일링·집계 재억제·read-only 재검토 완료**. 모든 tabular 입력을 검사했고 linkage-pair 검사는 최대 20개로 제한. 결과와 checksum inventory는 계속 로컬에만 유지 |
+| 수도권 pilot | **프로파일링·집계 재억제·read-only 재검토 완료**. 모든 tabular 입력을 검사했고 연결 후보 쌍 검사는 최대 20개로 제한. 결과와 checksum inventory는 계속 로컬에만 유지 |
 | 4개 권역 EDA | **4개 권역 구조·추천 적합성 EDA 실행 완료, 필드별 관측값 의미 검증 일부 미완료**. 네 권역 프로파일·C 집계·비교 및 SbL 허용 필드 포함률·후보 연결 산출물이 생성됨. West/East/Jeju의 문서 매핑 필드는 제한 검사했으며, 일부 값은 직접 대응 미확인이고 수도권은 기존 일부 검증만 재사용함. East 프로파일 숫자 종료 코드는 보존되지 않았으며 권역 밖 방문 검사는 미확인 |
 | 실제 분석 결과 | 수도권 역사 기록과 네 권역 safe aggregate를 로컬에 생성함. 이 문서에는 원본 레코드·식별자·캡션·정확 좌표·정확 count/rate를 기록하지 않음 |
 
@@ -41,7 +41,7 @@ Issue #12의 EDA 파이프라인과 보고 양식이다. 이 문서에는 안전
 
 - **[공식 문서 사실]** 2026-10-07 확인 시 페이지의 데이터 버전 표시는 1.2였고, 버전 변경이력은 2024-12-04 서브라벨링 추가를 기록한다. 페이지의 별도 데이터 히스토리에는 이후 구축업체 정보 수정 이력이 표시된다.
 
-- **[범위 구분]** 아래 사진 파일·스키마 사실과 수도권 사진 집계는 PR #14의 과거 수도권 pilot 기록이다. 현재 후속 권역 정책은 사진 archive의 다운로드, binary metadata 검사, 사진 파일 수·형식·크기 집계를 요구하지 않는다. 후속 JSON 작업은 승인된 `SbL`의 JSON 구조·스키마 coverage·후보 linkage만 다룬다.
+- **[범위 구분]** 아래 사진 파일·스키마 사실과 수도권 사진 집계는 PR #14의 과거 수도권 pilot 기록이다. 현재 후속 권역 정책은 사진 archive의 다운로드, binary metadata 검사, 사진 파일 수·형식·크기 집계를 요구하지 않는다. 후속 JSON 작업은 승인된 `SbL`의 JSON 구조·스키마 coverage·후보 연결만 다룬다.
 
 - **[공식 문서 사실]** 페이지는 CSV/JPG/JSON 형식을 설명하고, 표준 CSV 이름에 영문 테이블명·한글 설명·권역 코드가 들어가며 `E`가 수도권이라고 정의한다. GPS CSV 이름은 `tn_gps_coord_{여행객 ID}.csv` 형태이고 여행객별 파일로 설명한다. `Other`는 POI Master 1set으로 설명한다. 사진과 캡션 JSON의 이름 규칙은 여행자·여행일 순번·경로·사진 구분·활동·사진 순번 요소를 담는 구조로 설명한다.
 - **[공식 문서 사실]** 캡션 JSON 예시는 `Info`, `images`, `caption`, `licenses` 네 최상위 구획과 각각 데이터셋 정보, 이미지 메타데이터, 캡션 정보, 라이선스 정보의 역할을 보여 준다. 이미지 메타데이터 설명에는 시간·좌표·방문지 관련 필드도 포함된다. 예시 레코드의 값은 이 보고서에 옮기지 않았다.
@@ -85,7 +85,7 @@ Issue #12의 EDA 파이프라인과 보고 양식이다. 이 문서에는 안전
 | `TL_csv`, `VL_csv` | 각 split의 표 구조·coverage·추천 적합성 지표 |
 | `TL_gps_data`, `VL_gps_data` | GPS 파일·테이블 구조 및 요청된 coverage·품질 점검 |
 | `Other` | POI Master 및 코드/POI 보조자료의 구조·연결 후보 |
-| `SbL` | 이미지 payload 없이 JSON schema 구조, allowlisted 필드 coverage, photo-ID 후보 linkage를 안전 집계 |
+| `SbL` | 이미지 payload 없이 JSON schema 구조, allowlisted 필드 coverage, photo-ID 후보 연결를 안전 집계 |
 
 Shell 목록의 반올림 용량 기준으로 선택 파일은 west 약 16.575 GB, east 약 14.599 GB, jeju-islands 약 15.657 GB이며 세 권역 합계는 약 47.831 GB다. 파일 시스템 여유 공간은 다운로드·압축 해제 가이드의 2–3배 기준으로 전체 batch 약 95.7–143.5 GB를 확보한다. 권역별 순차 처리의 3배 상한은 west 약 49.8 GB, east 약 43.8 GB, jeju-islands 약 47.0 GB다. 실제 다운로드 직전에 Shell 용량과 대상 볼륨의 여유를 다시 확인한다. 이 추정은 사진 archive를 제외하고 SbL JSON archive를 포함한다.
 
@@ -97,7 +97,7 @@ Shell 목록의 반올림 용량 기준으로 선택 파일은 west 약 16.575 G
 
 ## 수도권 pilot 이력과 기존 결과
 
-Issue #12의 승인 기록과 수도권 승인 filekey는 확인했다. AI Hub 상세페이지 및 개방 데이터 이용정책도 확인했다. 과거 수도권 pilot은 당시 선택한 8개 범주를 사용했으며 이 범위에는 사진 archive가 포함됐다. 세 번의 이전 프로파일링 시도는 결과 artifact 작성 전에 graceful interrupt 되었고 임시 폴더도 정리했다. 네 번째(capital) 실행은 2026-10-06 18:32:56–20:18:52 UTC에 완료했다. 모든 tabular 입력을 검사했으며 linkage-pair 검사는 최대 20개로 제한했다. 결과는 `results/eda/travel-log-2023/capital/`에 생성됐다. 이 과거 상태는 보존하며 후속 권역 정책으로 일반화하지 않는다.
+Issue #12의 승인 기록과 수도권 승인 filekey는 확인했다. AI Hub 상세페이지 및 개방 데이터 이용정책도 확인했다. 과거 수도권 pilot은 당시 선택한 8개 범주를 사용했으며 이 범위에는 사진 archive가 포함됐다. 세 번의 이전 프로파일링 시도는 결과 artifact 작성 전에 graceful interrupt 되었고 임시 폴더도 정리했다. 네 번째(capital) 실행은 2026-10-06 18:32:56–20:18:52 UTC에 완료했다. 모든 tabular 입력을 검사했으며 연결 후보 쌍 검사는 최대 20개로 제한했다. 결과는 `results/eda/travel-log-2023/capital/`에 생성됐다. 이 과거 상태는 보존하며 후속 권역 정책으로 일반화하지 않는다.
 
 - 기존 인증 확인 파일은 재사용했으며 중복 다운로드하지 않았다. 이 기록은 당시 수도권 pilot의 범위만 설명한다.
 - 세 번의 중단된 profiler 실행은 graceful interrupt 후 임시 폴더까지 정리했다. 완료된 실행은 checksum을 포함한 집계 산출물을 만들었고 원본은 변경하지 않았다.
@@ -109,7 +109,7 @@ Issue #12의 승인 기록과 수도권 승인 filekey는 확인했다. AI Hub �
 - 네 권역 raw root에서 승인된 `Other`, `TL_csv`, `TL_gps_data`, `VL_csv`, `VL_gps_data`, `SbL` ZIP의 존재와 중앙 디렉터리 판독을 확인했다. 동부·제주 다운로드 로그에는 각 5개 CSV 역할의 완료 기록이 있다. West/East/Jeju 추출은 extractor의 사전 검사, 스트리밍 CRC/크기 확인 및 최종 inventory가 완료됐다. 수도권 추출물은 이전 실행 산출물로 재사용했으며 이번에 전체 CRC를 다시 검증하지 않았다. 원본 ZIP은 보존했다.
 - 각 권역의 다섯 CSV 역할 추출물이 존재한다. 수도권 `VL_csv` 추출물은 다른 수도권 CSV 추출 디렉터리와 별도 경로에 있다. West/East/Jeju 추출물에는 5개 역할 디렉터리가 있다. 사진 ZIP이나 이미지 payload는 열거나 열거하지 않았다.
 - 각 권역의 추출된 TL CSV에서 `TC_CODEA`, `TC_CODEB`, `TC_SGG` 테이블이 각각 확인됐고 header는 읽을 수 있었다. 기존 `validate_capital_codebook.py` 자체는 HWP에서 옮긴 수도권 domain과 `_E.csv` 패턴에 한정되지만, 그 명시 target-field list 중 같은 이름의 38개 컬럼이 각 권역 TL/VL 역할 테이블 header에 있었다. 해당 컬럼만 한 번씩 스트리밍해 지역별 `TC_CODEA/B` reference union과 대조했다. 세부는 아래 코드표 후보 coverage 절에 기록한다. `TC_SGG`는 존재하지만 validator target list와 같은 이름으로 연결되는 field는 없어 이번 값 대조에서 제외했다.
-- SbL JSON은 ZIP에서 직접 스트리밍해 검사했고 JSON을 별도 추출하지 않았다. 아래 allowlist field coverage와 같은 권역의 `TN_TOUR_PHOTO` CSV 후보 linkage도 안전 집계했다.
+- SbL JSON은 ZIP에서 직접 스트리밍해 검사했고 JSON을 별도 추출하지 않았다. 아래 allowlist field coverage와 같은 권역의 `TN_TOUR_PHOTO` CSV 후보 연결도 안전 집계했다.
 - 원본 HWP 설명서는 Downloads에서 수도권 `119-145` (동일 문서 사본 `(2)` 포함), 서부권 `119-147`, 동부권 `119-146`, 제주·도서권 `119-148` 파일을 찾았다. 이번 WSL 실행 환경에서는 HWP 원본을 직접 변환하지 못했다. 네 권역 설명서의 기존 Markdown 변환본은 PR #15에서 `dev`에 병합됐으며 현재 작업 트리의 `docs/data/travel-log-2023/`에 있다.
 
 ### Four-region execution evidence and exits
@@ -117,12 +117,12 @@ Issue #12의 승인 기록과 수도권 승인 filekey는 확인했다. AI Hub �
 | 권역 | archive·download evidence | CSV extraction | profile / EDA status |
 | --- | --- | --- | --- |
 | capital | 승인된 다섯 CSV 역할과 SbL ZIP이 기존 raw root에 있었고 ZIP central directory를 읽었다. 기존 download exit marker는 이번 실행 기록에서 확인하지 않았다. | 과거 추출물 재사용. 다섯 역할 산출물 확인; 이번에는 전체 CRC를 다시 실행하지 않음 | 역사적 profile 완료. 기존 수도권 결과 보존; 수도권 combined traveler/trip cardinality 재계산 안 함 |
-| west | 다섯 CSV 역할과 SbL ZIP 존재 및 central directory 판독 확인. | 다섯 CSV 역할 추출에서 declared size, CRC 및 최종 inventory 검증 완료 | full/TL/VL profile과 West C 완료; 이전 기록의 profile 실행 exit 0. SbL structure/field linkage도 완료 |
+| west | 다섯 CSV 역할과 SbL ZIP 존재 및 central directory 판독 확인. | 다섯 CSV 역할 추출에서 declared size, CRC 및 최종 inventory 검증 완료 | full/TL/VL profile과 West C 완료; 이전 기록의 profile 실행 exit 0. SbL structure/필드 연결도 완료 |
 | east | 다섯 structured CSV 역할의 `ROLE_COMPLETE` 기록과 batch completion marker 확인; SbL ZIP은 직접 구조/필드 분석 가능. numeric downloader exit marker는 보존되지 않음 | 다섯 CSV 역할 추출의 CRC, declared size 및 최종 inventory 검증 완료 | profile completion log marker와 필수 artifact 확인; numeric East profile exit marker는 기록되지 않음. East C exit 0 |
 | jeju-islands | 다섯 structured CSV 역할의 `ROLE_COMPLETE` 기록과 batch completion marker 확인; SbL ZIP은 직접 구조/필드 분석 가능. numeric downloader exit marker는 보존되지 않음 | 다섯 CSV 역할 추출의 CRC, declared size 및 최종 inventory 검증 완료 | 사용자 확인 `JEJU_PROFILE_EXIT=0`; Jeju C exit 0 |
 
 - 사진 archive는 후속 다운로드 역할에 포함하지 않았고 `TS_photo`/`VS_photo` filekey 호출, ZIP 열기, listing, extraction, image payload 접근은 하지 않았다. 기존 수도권 pilot의 사진 메타데이터 결과는 역사적 기록으로만 유지한다.
-- 4개 권역 comparison exit 0 (`comparison-four-region-followup`), integrated C exit 0 (`readiness-four-region-integrated`), SbL field/linkage exit 0 (`sbl-fields-linkage-four-region`), targeted code-table membership exit 0 (`code-table-coverage-summary`). East와 Jeju focused C도 각각 exit 0이다. East profile은 종료 artifact로 완료를 확인했으나 숫자 exit marker는 남지 않았다.
+- 4개 권역 comparison exit 0 (`comparison-four-region-followup`), integrated C exit 0 (`readiness-four-region-integrated`), SbL 필드/연결 exit 0 (`sbl-fields-linkage-four-region`), targeted code-table membership exit 0 (`code-table-coverage-summary`). East와 Jeju focused C도 각각 exit 0이다. East profile은 종료 artifact로 완료를 확인했으나 숫자 exit marker는 남지 않았다.
 - 최종 소규모 검증: extractor/archive unittest 19개 통과, EDA safety smoke 3개 통과, `compileall scripts/eda` 통과, 두 archive CLI `--help` exit 0, `git diff --check` 통과. Ruff는 executable/package가 offline cache에 없어 실행하지 못했다. 기존 read-only reviewer는 최종 수정 diff와 safe aggregate를 확인했고 actionable finding이 없다고 회신했다.
 
 ## 수도권 pilot 실행 순서
@@ -167,7 +167,7 @@ Issue #12의 승인 기록과 수도권 승인 filekey는 확인했다. AI Hub �
 - 컬럼이 200개를 넘는 표는 컬럼명을 `col_NNNN`으로 대체
 - 억제 범주가 하나뿐이어서 합계로 역산되는 경우를 막기 위해 병합 합계가 k 미만이면 가장 작은 공개 범주도 병합
 - exact numeric min/max/mean/stddev/quantile은 어느 값이든 한 관측값과 일치할 수 있어 출력하지 않는다. 검토된 코드북 기반 구간화가 마련되기 전까지는 k 기준으로 억제한 유효·음수·0 counts와 억제 사유만 남긴다.
-- 관계 후보 생성은 정규화한 컬럼명과 테이블별 최고 고유값 수 컬럼을 사용해 lazy heap merge로 제한한다. 전체 cross-table 조합을 생성하거나 정렬하지 않는다. heap frontier는 이름 그룹당 첫 pair 하나만 만들고, 선택된 pair마다 다음 후보 하나만 추가하므로 후보 생성량은 그룹 수 + 처리 상한에 비례하며 메모리는 입력 컬럼 수 + 상한에 비례한다. 최대 `max_relation_pairs` 후보를 처리하고, 상한에 도달하고 추가 후보가 있으면 정확한 조합 수 대신 `at_least_<N>`을 기록한다. 이번 수도권 실행은 `--max-relation-pairs 20`으로 모든 tabular 파일은 계속 분석하되 상위 20개 linkage pair만 확인한다. 나머지 낮은 우선순위 연결 후보는 미검토다. 낮은 우선순위 후보와 같은 테이블의 동명 컬럼 대안은 생략될 수 있다. 후보 값은 비교 시 VARCHAR로 변환하므로 서로 다른 원본 타입의 같은 문자열 표현이 연결 후보로 잡힐 수 있다.
+- 관계 후보 생성은 정규화한 컬럼명과 테이블별 최고 고유값 수 컬럼을 사용해 lazy heap merge로 제한한다. 전체 cross-table 조합을 생성하거나 정렬하지 않는다. heap frontier는 이름 그룹당 첫 pair 하나만 만들고, 선택된 pair마다 다음 후보 하나만 추가하므로 후보 생성량은 그룹 수 + 처리 상한에 비례하며 메모리는 입력 컬럼 수 + 상한에 비례한다. 최대 `max_relation_pairs` 후보를 처리하고, 상한에 도달하고 추가 후보가 있으면 정확한 조합 수 대신 `at_least_<N>`을 기록한다. 이번 수도권 실행은 `--max-relation-pairs 20`으로 모든 tabular 파일은 계속 분석하되 상위 20개 연결 후보 쌍만 확인한다. 나머지 낮은 우선순위 연결 후보는 미검토다. 낮은 우선순위 후보와 같은 테이블의 동명 컬럼 대안은 생략될 수 있다. 후보 값은 비교 시 VARCHAR로 변환하므로 서로 다른 원본 타입의 같은 문자열 표현이 연결 후보로 잡힐 수 있다.
 
 ## 산출물 (Git 제외)
 
@@ -183,7 +183,7 @@ Issue #12의 승인 기록과 수도권 승인 filekey는 확인했다. AI Hub �
 
 ### SbL JSON 메타데이터 검사
 
-`scripts/eda/inspect_travel_log_archives.py`는 명시적으로 지정한 승인 SbL ZIP의 직접 포함된 `.json` 멤버만 ZIP stream에서 메모리로 읽어 파싱한다. 사진 archive role은 지원하지 않는다. 사진 binary는 열거나 추출하지 않는다. JSON 파일도 디스크에 추출하지 않는다. 공개 결과는 최상위 JSON root type, 최상위 object의 key 개수 band(0, 1-4, 5-9, 10+), 최상위 직계 값/array 요소의 generic type 집계다. 실제 JSON key 이름·값·member 이름·경로·per-member 식별자는 저장하지 않는다. 별도 capital-only schema/linkage 검사 범위는 역사적 수도권 결과 절에 기록되어 있으며 후속권역에 그 결과를 일반화하지 않는다.
+`scripts/eda/inspect_travel_log_archives.py`는 명시적으로 지정한 승인 SbL ZIP의 직접 포함된 `.json` 멤버만 ZIP stream에서 메모리로 읽어 파싱한다. 사진 archive role은 지원하지 않는다. 사진 binary는 열거나 추출하지 않는다. JSON 파일도 디스크에 추출하지 않는다. 공개 결과는 최상위 JSON root type, 최상위 object의 key 개수 band(0, 1-4, 5-9, 10+), 최상위 직계 값/array 요소의 generic type 집계다. 실제 JSON key 이름·값·member 이름·경로·per-member 식별자는 저장하지 않는다. 별도 capital-only 스키마/연결 검사 범위는 역사적 수도권 결과 절에 기록되어 있으며 후속권역에 그 결과를 일반화하지 않는다.
 
 안전 한도는 archive당 중앙 디렉터리 최대 20,000 entries 및 32 MiB, 전체 선언 비압축 크기 최대 1 TiB, SbL JSON 최대 10,000 files·합계 1 GiB·파일별 16 MiB다. depth 64 초과, symlink, absolute/traversal 경로, 중복 case-insensitive 경로, 암호화된 JSON member는 거부한다. nested archive는 열지 않는다. 입력 ZIP은 명시적으로 지정하고 raw root 아래의 일반 파일이어야 하며 경로 구성요소 symlink를 거부한다. 출력 디렉터리는 새 경로여야 한다. 오류는 파일명·경로·원본 내용을 출력하지 않고 일반 안전 오류만 보고한다. 이 도구는 SbL package의 구조 요약 용도이며 이미지 존재·형식·크기 분석 도구가 아니다.
 
@@ -198,7 +198,7 @@ Issue #12의 승인 기록과 수도권 승인 filekey는 확인했다. AI Hub �
   --confirm-approved --confirm-terms
 ~~~
 
-동일한 명령을 승인된 east와 jeju-islands에서 각각 별도 output으로 실행한다. 후속 권역에는 capital archive를 다시 넣지 않는다. 이 ZIP report는 SbL JSON의 generic structure만 요약하며 공식 필드별 coverage나 유효한 linkage를 단독으로 입증하지 않는다. 후속 SbL 결과가 준비되면 확인된 권역별 schema에 근거한 field coverage와 명시적인 linkage 후보만 별도 안전 집계로 기록하며 실제 연결 규칙으로 확정하지 않는다. 현재 generic inspector만으로는 field-level coverage/linkage를 측정하지 않는다. 사진 ZIP은 이 command 및 follow-up input 목록에 없다.
+동일한 명령을 승인된 east와 jeju-islands에서 각각 별도 output으로 실행한다. 후속 권역에는 capital archive를 다시 넣지 않는다. 이 ZIP report는 SbL JSON의 generic structure만 요약하며 공식 필드별 coverage나 유효한 연결를 단독으로 입증하지 않는다. 후속 SbL 결과가 준비되면 확인된 권역별 schema에 근거한 필드 커버리지와 명시적인 연결 후보만 별도 안전 집계로 기록하며 실제 연결 규칙으로 확정하지 않는다. 현재 generic inspector만으로는 필드 수준 커버리지/연결를 측정하지 않는다. 사진 ZIP은 이 command 및 follow-up input 목록에 없다.
 
 ### 권역 CSV ZIP 추출
 
@@ -262,7 +262,7 @@ recommendation-fit 통합 후보에는 기존 capital TL/VL 입력과 새 권역
   --confirm-approved --confirm-terms --confirm-poi-candidate
 ```
 
-SbL inspector는 같은 후속 권역별 SbL ZIP을 `--archive "SbL=$AIHUB_<REGION>_SBL_ZIP"`로 한 번씩 직접 지정한다. inspector는 CSV 추출과 별개이며 archive 내 JSON member만 stream 처리한다. 현재 inspector가 제공하는 것은 generic root/key-count/type 요약뿐이며, field-level coverage/linkage를 완료했다고 간주하지 않는다. 이 명령들에 TS_photo/VS_photo 경로 또는 photo archive가 들어가지 않는다.
+SbL inspector는 같은 후속 권역별 SbL ZIP을 `--archive "SbL=$AIHUB_<REGION>_SBL_ZIP"`로 한 번씩 직접 지정한다. inspector는 CSV 추출과 별개이며 archive 내 JSON member만 stream 처리한다. 현재 inspector가 제공하는 것은 generic root/key-count/type 요약뿐이며, 필드 수준 커버리지/연결를 완료했다고 간주하지 않는다. 이 명령들에 TS_photo/VS_photo 경로 또는 photo archive가 들어가지 않는다.
 
 ### ignored EDA 산출물의 안전 출력 계약
 
@@ -363,7 +363,7 @@ SbL inspector는 같은 후속 권역별 SbL ZIP을 `--archive "SbL=$AIHUB_<REGI
   ```
 
 - **[역사적 추론] 추천·TourAPI 활용 후보:** 과거 수도권 문서 검토에서는 `IMG_CAPTION`, `TOKEN`, `PHOTO_FILE_ID`, 방문지명·랜드마크의 잠재 활용을 논의했으나 feature 추출이나 외부 조회는 수행하지 않았다. 이 논의는 현재 후속 범위가 아니다.
-- **[범위 제한] JSON 효용·한계:** 후속 권역 SbL은 JSON schema/structure, 안전한 필드 coverage, 명시된 linkage 후보만 집계한다. 캡션·토큰·장소명·랜드마크·라이선스 값이나 사진 내용은 후속 분석·feature 생성·외부 조회에 사용하지 않는다.
+- **[범위 제한] JSON 효용·한계:** 후속 권역 SbL은 JSON 스키마/구조, 안전한 필드 커버리지, 명시된 연결 후보만 집계한다. 캡션·토큰·장소명·랜드마크·라이선스 값이나 사진 내용은 후속 분석·feature 생성·외부 조회에 사용하지 않는다.
 - **[로컬 집계 관측] 개인정보 보호 검토:** 첫 read-only 리뷰는 여러 산출물에 k 미만 코호트의 정확한 count/rate가 남아 있음을 발견했다. 기존 집계 profile만 사용해 당시 억제 로직을 보완·재생성했으며, 이후에는 별도 focused validation만 수행했다. 현재 serializer는 count를 `0`, `<10`, `10+` bucket으로, rate를 coarse band로 내보내고 `codebook_check.csv`도 같은 count 정책을 적용한다. serializer 변경 전 생성된 legacy inventory와 run metadata에는 exact 크기, 입력 식별 또는 checksum 같은 재현 metadata가 있을 수 있어 기존 결과는 ignored 로컬에 보존하고 공유하지 않는다. 새 focused-validation artifact도 구간 bucket을 사용한다. 이 휴리스틱은 의미 기반 재식별 위험을 보증하지 않는다.
 - **[로컬 집계 관측·역사적 범위] 실행 범위:** 이 문장은 수도권 pilot 당시의 상태 기록이다. 후속 네 권역 프로파일·C·비교 완료 상태는 본 문서의 후속 결과 절을 참조한다.
 
@@ -375,7 +375,7 @@ SbL inspector는 같은 후속 권역별 SbL ZIP을 `--archive "SbL=$AIHUB_<REGI
 - **[로컬 집계 관측] 사용 이력 및 cold-start 후보:** `trips_per_traveler`에서는 `1` 구간이 공개됐고, `visits_per_trip`, `visits_per_traveler`, `visitors_per_poi`, `poi_visit_frequency`에는 하나 이상의 공개 또는 억제된 빈도 구간이 있었다. 단일 방문 POI 후보 비율은 `75-<90%` band로 기록됐다. TL/VL POI 후보 overlap rate는 `25-<50%`, VL cold-start POI share는 `50-<75%`였다. 인기도 long-tail은 구간 빈도만 요약했으며 개별 POI나 exact frequency를 남기지 않았다.
 - **[방법·한계]** 방문지 후보는 distinct `(region, TRAVEL_ID, VISIT_AREA_ID)`, POI 후보는 region-scoped non-null `POI_ID` 컬럼 값으로 계산했다. ID는 빈 값 판정 외에는 원문자열을 보존하며 trim/casefold 정규화를 하지 않는다. 여행자별 집계는 관측된 `TRAVEL_ID`→`TRAVELER_ID` 쌍이 하나로 확인되는 경우만 사용했다. POI overlap은 TL·VL의 region-scoped `POI_ID` 후보 비교다. canonical item 정책이 없으므로 matrix sparsity는 계산하지 않았고 추천 모델, interaction 정의, 결측 처리, canonical POI 또는 서비스 구조를 결정하지 않았다.
 - **[후속 평가 문구]** 이후 추천 실험은 `docs/PRD.md`의 단계적 baseline 접근에 맞춰 popularity baseline을 비교 기준에 포함할 수 있도록 설계한다. 이 Issue의 EDA는 baseline을 구현·평가하거나 추천 알고리즘을 선택하지 않는다.
-- **[범위 상태]** 이 절의 기록은 capital-only 실행 당시의 snapshot이다. 이후 four-region profile/C/comparison 및 SbL coverage/linkage는 아래 후속 절에 기록했다. 기존 수도권의 일부 cardinality는 재계산하지 않았고 다른 권역으로 일반화하지 않는다.
+- **[범위 상태]** 이 절의 기록은 capital-only 실행 당시의 snapshot이다. 이후 four-region profile/C/comparison 및 SbL 커버리지/연결는 아래 후속 절에 기록했다. 기존 수도권의 일부 cardinality는 재계산하지 않았고 다른 권역으로 일반화하지 않는다.
 
 ## 추천 시스템 관점의 제한된 관찰
 
@@ -390,7 +390,7 @@ SbL inspector는 같은 후속 권역별 SbL ZIP을 `--archive "SbL=$AIHUB_<REGI
 - **[이전 로컬 HWP Markdown 기반 비교]** 이전 작업에서 수도권·동부권·서부권·제주/도서권 데이터 설명서의 명시 범위 도메인을 비교했고, West profile의 공개 category aggregate에서 HWP 범위 밖 후보가 `10+` category / `10+` field bucket으로 관측됐다. 일부 범주는 k 억제로 합쳐졌으므로 전체 도메인 검증은 아니다. 공식 문서 출처는 [AI Hub 국내 여행로그 데이터(수도권, 2023) 상세페이지 및 연결된 권역별 데이터 설명서](https://aihub.or.kr/aihubdata/data/view.do?currMenu=115&topMenu=100&dataSetSn=71776)다. 이 과거 category 결과는 별도 관측으로 보존한다. 최초 profile 실행은 `--codebook`을 주지 않아 `codebook_check.csv`가 생성되지 않았지만, 이후 아래의 focused codebook-only 갱신으로 West/East/Jeju의 기존 profile에 허용값 검사 결과를 채웠다. 값 정규화나 원인 추정은 하지 않았다.
 - **[C: split·반복 이력]** TL, VL, combined 각각에서 unique travelers, trips, visits, visit areas, POI 후보의 count bucket은 모두 `10+`였다. `ambiguous_trip_traveler_mappings`는 각 scope에서 `0` bucket이었다. 공개된 trips-per-traveler 분포에는 `1` 구간이 있었고, visits-per-trip 및 visits-per-traveler는 여러 억제·빈도 구간으로만 남겼다. visitors-per-POI와 POI visit frequency에는 `1`, `2–4`, `5–9`, `10–49` 및 일부 scope의 `50+` 구간이 나타났다. 전 count는 bucket, rate는 coarse band이며 분포에는 complementary suppression을 유지했다.
 - **[C: POI 후보·feedback]** `POI_ID`와 방문지 식별 열은 후보 관계로만 계산했다. 둘 다 있는 행의 비율 band는 TL `75–<90%`, VL `50–<75%`, combined `75–<90%`; POI 후보가 비고 방문지 후보가 있는 행은 각각 `10–<25%`, `25–<50%`, `10–<25%`였다. TL/VL POI 후보 overlap은 `50–<75%`, VL cold-start POI share는 `25–<50%`였다. 단일 방문 POI 후보 비율은 TL/combined `50–<75%`, VL `75–<90%`였다. 세 feedback 필드의 코드 `1`–`5` 및 결측 범주는 각 scope에서 공개 count bucket `10+`였다. HWP 및 CLI gate는 `TN_VISIT_AREA_INFO.POI_ID`의 table-specific 의미나 PK/FK를 확정하지 않으므로 canonical POI·관계로 해석하지 않는다.
-- **[SbL JSON 구조·field coverage]** generic inspector의 structural aggregate와 별도 allowlist one-off의 field coverage/linkage를 모두 생성했다. 상세 bucket/band는 Four-region SbL 절을 참조한다.
+- **[SbL JSON 구조·field coverage]** generic inspector의 structural aggregate와 별도 allowlist one-off의 필드 커버리지/연결를 모두 생성했다. 상세 bucket/band는 Four-region SbL 절을 참조한다.
 - **[지리 범위·통합 비교]** 좌표는 공개하지 않았다. 승인된 권역 경계 정의를 확인하지 못해 out-of-region visits는 계산하지 않았다. `compare_regions.py` 4권역 comparison은 완료됐지만, 합산된 row counts는 region 간 비교 자체를 넘어서는 해석에 사용하지 않는다.
 - **[모델링 비결정]** canonical POI, interaction 정의, 결측 처리, 모델/평가 split 및 서비스 구조를 결정하지 않았다. 후속 추천 실험에는 popularity baseline을 비교 기준으로 포함할 수 있다는 기존 평가 문구만 유지한다.
 
@@ -398,13 +398,13 @@ SbL inspector는 같은 후속 권역별 SbL ZIP을 `--archive "SbL=$AIHUB_<REGI
 
 - **[입력 범위]** East와 Jeju/도서권은 승인된 `Other`, `TL_csv`, `TL_gps_data`, `VL_csv`, `VL_gps_data` 역할의 추출 CSV만 사용한다. 사진 archive는 다운로드·열람·추출·분석하지 않는다. 원본 ZIP은 보존한다.
 - **[SbL JSON 구조]** `inspect_travel_log_archives.py`를 각 권역의 승인된 SbL ZIP에 직접 실행했고 두 명령 모두 종료 코드 0이었다. 두 권역 모두 JSON root type `object`가 `10+` bucket, top-level key count band `1–4`의 aggregate가 `10+`, top-level child type `object`가 `10+`로 기록됐다. 원본 key·member 이름·경로·값은 산출물에 없다.
-- **[SbL field coverage/linkage]** generic inspector와 별도의 안전한 one-off 집계로 7개 allowlist field의 타입·key presence·blank/nonblank 상태 및 같은 권역 `TN_TOUR_PHOTO` candidate linkage를 측정했다. 네 권역 결과는 아래 four-region SbL 절에 bucket/band로 기록했다.
+- **[SbL 필드 커버리지/연결]** generic inspector와 별도의 안전한 one-off 집계로 7개 allowlist field의 타입·key presence·blank/nonblank 상태 및 같은 권역 `TN_TOUR_PHOTO` 후보 연결를 측정했다. 네 권역 결과는 아래 four-region SbL 절에 bucket/band로 기록했다.
 - **[C: East·Jeju]** 두 권역의 입력은 각각 `readiness-east-followup/` 및 `readiness-jeju-followup/`에서 안전하게 집계했다. TL, VL, combined scope에서 고유 traveler/trip/visit/visit-area/POI 후보 count가 `10+`였고 모호한 trip-traveler 매핑은 `0`이었다. 세 feedback 필드의 공개 분포 셀은 `10+` bucket이며 결측 셀도 `10+`였다. visits-per-trip/traveler는 빈도 구간과 complementary suppression으로 요약했다. visitors-per-POI와 POI visit frequency는 East에서 TL/combined에 `50+` 빈도 구간, VL에는 `10–49`까지 관측됐다. Jeju는 세 scope에 `50+` 및 억제 구간이 관측됐다. 개별 항목·정확 횟수는 기록하지 않았다.
 - **[C: 후보 관계]** East와 Jeju 모두 POI 후보와 visit-area 후보가 함께 있는 행 비율은 `75–<90%`, POI 후보 결측·visit-area 후보 존재 비율은 `10–<25%`였다. TL/VL POI 후보 overlap은 `50–<75%`, VL cold-start POI share는 `25–<50%`였고 관련 공개 count는 `10+`였다. 이 지표는 관측 컬럼 후보 관계이며 canonical POI나 PK/FK 의미를 확정하지 않는다.
 - **[프로파일 상태]** East 로그에 profiler `완료:` 표식이 있고 오류 표식은 없으며 필수 aggregate artifact가 모두 존재한다. manifest의 시작·완료 시각 및 `east` label을 확인했고 재실행하지 않았다. Jeju는 사용자가 확인한 `JEJU_PROFILE_EXIT=0` marker와 14개 필수 aggregate artifact로 완료를 확인했다. source manifest의 추출 폴더 label은 비교 projection에서만 `jeju-islands`로 매핑했다.
 - **[비교 상태]** `compare_regions.py`의 4개 권역 실행은 exit 0으로 완료됐다. 입력 projection은 run metadata, tables, columns, date-month aggregates만 포함하고 photo summary 및 파일 inventory를 제외했다. 비교 결과 region label은 `capital`, `west`, `east`, `jeju-islands`다. 각 권역에서 공개 테이블/행 수는 `10+` bucket이며 공개 schema type conflict는 `0` bucket이다.
 
-## Four-region SbL allowlist coverage and candidate linkage
+## Four-region SbL allowlist coverage and 후보 연결
 
 - **[로컬 집계 관측]** 네 권역의 승인된 `SbL` JSON에서 `images.PHOTO_FILE_ID`, `images.PHOTO_FILE_NM`, `images.VISIT_AREA_NM`, `images.LANDMARK`, `caption.IMG_CAPTION`, `caption.TOKEN`, `caption.TIME_STAMP`만 대상으로 존재·타입·결측 상태를 집계했다. 모든 권역·필드의 JSON 관측 수는 `10+`, key presence와 nonblank coverage는 각각 `90–100%` band였다. 모든 지정 필드는 string 타입 `10+`였고 `caption.TOKEN`은 number 타입 `10+`였다. `images.VISIT_AREA_NM` 및 `images.LANDMARK` 각각에서 blank와 nonblank 값이 모두 `10+` bucket이었다. 나머지 필드는 공개 분포상 non-null `10+`였다. 값 자체는 공개하지 않았다.
 - **[로컬 집계 관측·후보 연결]** JSON의 `PHOTO_FILE_ID`를 같은 권역 CSV `TN_TOUR_PHOTO` metadata ID와 exact-string으로 메모리 내 비교했다. 네 권역 모두 JSON/CSV 고유 ID, matched 및 양방향 unmatched count는 `10+`; JSON→CSV candidate match rate는 `75–<90%`, CSV→JSON rate는 `10–<25%`였다. non-string JSON ID count는 `0` bucket이었다. 이는 문자열 일치 기반 후보 연결이며 PK/FK 또는 공식 관계를 뜻하지 않는다. ID는 산출물에 기록하지 않았다.

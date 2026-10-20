@@ -1,6 +1,6 @@
-# Recommendation Training Data Contract
+# 추천 학습 데이터 계약
 
-Issue #17의 baseline 실험을 위한 데이터 의미와 사용 경계를 정한다. 이 문서는 추천 알고리즘이나 production serving 구조를 결정하지 않는다.
+Issue #17의 기준 실험(baseline)을 위해 데이터의 의미와 사용 경계를 정한다. 이 문서는 추천 알고리즘이나 운영 서비스 구조를 결정하지 않는다.
 
 ## 근거 표기
 
@@ -22,7 +22,7 @@ AI Hub 필드 표기는 [네 권역 설명서](../data/travel-log-2023/README.md
 
 **[결정]** raw image, image payload, raw image embedding은 baseline에서 제외한다. SbL caption-derived feature도 baseline 입력에서 제외하고 후속 실험 후보로만 둔다. 이는 현재 EDA의 SbL JSON 구조·allowlist 집계가 feature 품질이나 추천 효용 검증은 아니기 때문이다.
 
-## 2. Legacy TravelMate 구조 및 복원
+## 2. 기존 TravelMate 구조 및 복원
 
 **[코드 사실 — 의도된 설계]** 공개 `travelmate-model`의 `app/preprocessing.py`는 `gender`, `age_grp`, `start_month`를 one-hot encode하고 `content_id` 방문 pivot으로 `traveler_id` × `content_id` 방문 행렬을 만든다. 코드는 profile 기반 user-user similarity에 0.7, 방문 기반 user-user similarity에 0.3을 곱해 더하려는 연산을 작성한다.
 
@@ -52,20 +52,20 @@ AI Hub 필드 표기는 [네 권역 설명서](../data/travel-log-2023/README.md
 | `Preference.regionId` / request region | 요청 지역 context | `TRAVEL_STATUS_DESTINATION`, `TN_VISIT_AREA_INFO.SGG_CD`, `TN_POI_MASTER.SGG_CD`, `TN_POI_MASTER` metadata | **변경:** 명시 요청의 목적지 scope 후보; source region code/ID 일치 규칙 미정 | 필드명만으로 regionId와 AI Hub 코드의 동등성 없음. 권역 밖 검증도 미실시 |
 | `Visited(traveler_id, content_id)` | user-item 방문 interaction | `TN_TRAVEL.TRAVELER_ID` + `TRAVEL_ID`; `TN_VISIT_AREA_INFO` 방문 기록 → `POI_ID` 또는 `VISIT_AREA_ID` candidate | **변경:** `(region, TRAVELER_ID)` × 여행 × 방문 기록으로 유지. item identity는 임시 region-scoped `POI_ID` when present; fallback identity 미결정 | `POI_ID`는 canonical PK/FK로 확정되지 않음. EDA에서 POI/visit-area 후보 결측·overlap 관측 |
 | legacy `content_id` / `TourSpot.contentId` | TourAPI item identity | AI Hub `POI_ID`, `VISIT_AREA_ID`, POI name/category/region metadata | **폐기/미매핑:** 직접 ID 등가·TourAPI 연결을 하지 않음 | 외부 canonical mapping과 ID 전략 없음. `VISIT_AREA_ID`는 방문 record identifier 후보로 유지 |
-| `TourSpot` categories, region/district/theme | item metadata | `TN_POI_MASTER.ASORT_LCLASDC`, `ASORT_MLSFCDC`, `ASORT_SDASDC`, `SGG_CD` 및 visit-area `VISIT_AREA_TYPE_CD`, `SGG_CD` | **변경:** metadata 후보; schema-field availability 확인 전 optional item context로만 취급 | 두 테이블의 분류 체계 동일성 미확인. 정규화·crosswalk 미정 |
+| `TourSpot` categories, region/district/theme | item metadata | `TN_POI_MASTER.ASORT_LCLASDC`, `ASORT_MLSFCDC`, `ASORT_SDASDC`, `SGG_CD` 및 visit-area `VISIT_AREA_TYPE_CD`, `SGG_CD` | **변경:** metadata 후보; schema-field availability 확인 전 optional item context로만 취급 | 두 테이블의 분류 체계 동일성 미확인. 정규화·분류 체계 매핑 미정 |
 | `content_embeddings` | item content representation | SbL `caption.IMG_CAPTION`, `images.LANDMARK`/`VISIT_AREA_NM` 또는 POI metadata 후보 | **폐기:** 기존 artifact 미이식. caption-derived text는 후속 실험만 | 생성법·매핑·품질 미확인; baseline은 raw image 및 image embedding 제외 |
 | profile one-hot `gender`, `age_grp`, `start_month` | preprocessing features | `GENDER`, `AGE_GRP`; `TRAVEL_START_YMD` month candidate | **변경:** profile/date context는 availability policy를 통과해야 함; start-month 변환은 확정하지 않음 | legacy preprocessing 구현 사실. 날짜 파생 규칙·제품 필요성 미정 |
 | profile 0.7 + visit 0.3 similarity | user-user recommendation score 의도 | 해당 없음 | **폐기:** 가중치와 계산 방식을 새 baseline으로 전용하지 않음 | 두 similarity dataframe의 column을 `visit_matrix.columns(content_id)`로 재색인하므로 결합 결과를 user-user matrix로 확정할 수 없음 |
 
-## 4. User 정의
+## 4. 사용자 정의
 
 **[임시 결정]** 학습 user key는 `(region, TRAVELER_ID)`로 둔다. 네 권역 간 `TRAVELER_ID` uniqueness나 동일 인물 equivalence는 입증되지 않았으므로 region을 포함하고 cross-region identity merge를 가정하지 않는다. 방문 context는 `TRAVEL_ID`로 구분한다. 이 원본 identifiers는 승인된 처리 중 memory-only join/group keys이며, artifacts나 logs에 저장하지 않는다. 모델 feature와 serving payload에도 넣지 않는다. 온라인 요청의 user identity와 AI Hub 식별자는 같다고 간주하지 않는다.
 
-**[추론]** 이 임시 정의는 공개 schema에서 `TN_TRAVEL.TRAVELER_ID`가 여행객 ID이고 `TN_TRAVEL.TRAVEL_ID`가 여행 ID라고 설명하는 데 따른다. EDA는 분석된 각 region/split scope에서 trip-to-traveler mapping이 모호하지 않았다고 기록하지만, 이는 scope 안의 관계만 뒷받침한다. 네 권역 간 traveler ID의 global uniqueness나 같은 사람 여부, 생산 서비스 identity bridge를 입증하지 않는다.
+**[추론]** 이 임시 정의는 공개 schema에서 `TN_TRAVEL.TRAVELER_ID`가 여행객 ID이고 `TN_TRAVEL.TRAVEL_ID`가 여행 ID라고 설명하는 데 따른다. EDA는 분석된 각 region/split scope에서 trip-to-traveler mapping이 모호하지 않았다고 기록하지만, 이는 scope 안의 관계만 뒷받침한다. 네 권역 간 traveler ID의 global uniqueness나 같은 사람 여부, 운영 서비스의 식별자 연결 방식을 입증하지 않는다.
 
 **[제한]** 반복 trip/user 구조가 legacy의 장기 user-history CF를 정당화하는지 결정할 만큼 문서화된 실험 결과는 없다. 신규 온라인 user는 history 없는 cold-start cohort로 따로 취급한다. AI Hub ID를 서비스 계정에 연결하거나 직접 노출하지 않는다.
 
-## 5. Item 정의
+## 5. 아이템 정의
 
 **[임시 결정]** 실험상 item 후보는 같은 region scope 안에서 비어 있지 않은 `TN_VISIT_AREA_INFO.POI_ID` 원문 값으로 식별한다. 이 값은 오직 임시 candidate key이며 canonical POI, 공식 primary/foreign key, 권역 간 공통 ID로 선언하지 않는다. `region`, `TRAVEL_ID`, `VISIT_AREA_ID`, `POI_ID`, `TRAVELER_ID` 원본 값은 joins/grouping을 위해 처리 중 memory에만 둘 수 있고 artifacts/logs에 persist하지 않는다. Row-level output이 별도 승인된 필요로 생기는 경우에도 원본 식별자 대신 해당 run에서만 유효한 opaque key를 쓴다.
 
@@ -73,7 +73,7 @@ AI Hub 필드 표기는 [네 권역 설명서](../data/travel-log-2023/README.md
 
 **[EDA 관측]** 네 권역 EDA는 `POI_ID`와 visit-area 후보 간 overlap 및 결측, TL/VL 후보 overlap, validation 후보 cold-start를 coarse band로 보고했다. EDA 문서는 이 필드들을 후보 관계로만 다뤘고 canonical identity를 확정하지 않았다. 따라서 canonical item 수, 최종 sparsity, 지역 간 합산 identity는 이 계약에서 산출하지 않는다.
 
-## 6. Interaction 정의
+## 6. 상호작용 정의
 
 **[결정]** 기본 interaction은 관측된 방문지 행을 통한 implicit positive다. 최소 분석 grain은 `(region, TRAVEL_ID, VISIT_AREA_ID)`이며 memory 안에서 `(region, TRAVELER_ID)`와 연결한다. 평가 item key는 §5의 임시 region-scoped `POI_ID` candidate다. 식별자 원문은 artifacts/logs에 persist하지 않는다.
 
@@ -85,7 +85,7 @@ AI Hub 필드 표기는 [네 권역 설명서](../data/travel-log-2023/README.md
 
 schema의 필수 여부 표시는 원문 선언이며 PK/FK·유일성 제약이 아니다.
 
-## 7. Label / Feedback 정의
+## 7. 학습 목표와 사후 피드백 정의
 
 **[결정]** 방문은 관측 positive, `DGSTFN`, `REVISIT_INTENTION`, `RCMDTN_INTENTION`은 분리된 사후 feedback/auxiliary label 후보로 취급한다. 모두 `TN_VISIT_AREA_INFO`의 optional 필드이며 schema는 각 코드 범위를 1–5로 적는다. 방문 후 응답을 추천 시점 입력으로 사용할 수 없다.
 
@@ -108,18 +108,18 @@ Availability는 “수집 가능한가 / 사용자에게 물어야 하는가 / �
 | `TRAVEL_STYL_1`–`TRAVEL_STYL_8` | `TN_TRAVELLER_MASTER` | 장기 preference 후보 | Unavailable as same-value serving input until product collection is defined | 선택 설문이 proxy 후보; legacy는 1–7개 필드여서 직접 등가 미확인 | baseline 필수 입력 아님; 분해·순서·가중치 미결정 |
 | `TRAVEL_MOTIVE_1`–`TRAVEL_MOTIVE_3` | `TN_TRAVELLER_MASTER` | trip context | Unavailable until request collection and timing are defined | 현재 여행 설문 proxy 후보 | 제외; 3번째 필드 blank 관측 포함, normalization 미결정 |
 | Companion features | `TRAVEL_STATUS_ACCOMPANY`, `TRAVEL_COMPANIONS_NUM`, `TN_COMPANION_INFO` (`REL_CD`, gender/age/situation) | trip context | Derivable from survey/history; online equivalent unresolved | 명시 요청 설문만 proxy 후보 | baseline 제외; aggregate/household/member 의미 미결정 |
-| Destination / region | `TRAVEL_STATUS_DESTINATION`; visit/POI `SGG_CD`; region dataset scope | request filter/context or item metadata | Derivable for offline rows; online request region is legacy precedent | User-selected destination/region is serving proxy candidate | Candidate filter may use explicit request scope; mapping/crosswalk and out-of-region behavior unresolved |
+| Destination / region | `TRAVEL_STATUS_DESTINATION`; visit/POI `SGG_CD`; region dataset scope | request filter/context or item metadata | Derivable for offline rows; online request region is legacy precedent | User-selected destination/region is serving proxy candidate | Candidate filter may use explicit request scope; 요청 지역과 데이터 지역 간 매핑 및 권역 밖 처리 규칙 미정 |
 | Trip duration | `TN_TRAVEL.TRAVEL_START_YMD`, `TRAVEL_END_YMD` | trip context | Derivable offline; not known for a new request absent dates | Explicit planned dates are a possible serving proxy | Baseline exclude; duration formula, invalid/missing dates and temporal privacy policy unresolved |
-| POI category | `TN_POI_MASTER.ASORT_*`; visit `VISIT_AREA_TYPE_CD` | item content metadata | Derivable offline if linked; online only with item catalog metadata | Catalog metadata proxy | Optional candidate metadata; category systems are not assumed equivalent; normalization/crosswalk unresolved |
-| POI metadata | `TN_POI_MASTER` names, region, district, category fields; visit-area fields | item content | Derivable offline if candidate linkage is stable | Catalog lookup/proxy | No external lookup; no canonical mapping, normalization, or dedupe |
-| SbL caption-derived text | `caption.IMG_CAPTION`; possible `images.LANDMARK`, `VISIT_AREA_NM` | item content candidate | Offline-only in current evidence | Not a serving proxy in this baseline | Excluded from baseline. EDA coverage/linkage is not semantic validation; raw caption/text is not reproduced |
+| POI category | `TN_POI_MASTER.ASORT_*`; visit `VISIT_AREA_TYPE_CD` | item content metadata | Derivable offline if linked; online only with item catalog metadata | Catalog metadata proxy | Optional candidate metadata; category systems are not assumed equivalent; 정규화·분류 체계 매핑 미정 |
+| POI metadata | `TN_POI_MASTER` names, region, district, category fields; visit-area fields | item content | Derivable offline if candidate 연결 is stable | Catalog lookup/proxy | No external lookup; no canonical mapping, normalization, or dedupe |
+| SbL caption-derived text | `caption.IMG_CAPTION`; possible `images.LANDMARK`, `VISIT_AREA_NM` | item content candidate | Offline-only in current evidence | Not a serving proxy in this baseline | Excluded from baseline. EDA coverage/연결 is not semantic validation; raw caption/text is not reproduced |
 | `DGSTFN` | `TN_VISIT_AREA_INFO.DGSTFN` | post-event label | Offline/post-event only | No valid pre-event proxy | Never input; optional feedback label only |
 | `REVISIT_INTENTION` | `TN_VISIT_AREA_INFO.REVISIT_INTENTION` | post-event label | Offline/post-event only | No valid pre-event proxy | Never input; optional feedback label only |
 | `RCMDTN_INTENTION` | `TN_VISIT_AREA_INFO.RCMDTN_INTENTION` | post-event label | Offline/post-event only | No valid pre-event proxy | Never input; optional feedback label only |
 | `TRAVEL_ID`, `TRAVELER_ID`, `VISIT_AREA_ID` | TN travel / visit tables | row identity / joins | Offline-only IDs | No direct online proxy | Memory-only join/group keys; raw values never persisted to artifacts/logs and never used as model features or serving payload |
 | Raw image / image embedding | photo payload / derived artifact | visual feature | Unavailable in baseline | None | Explicitly excluded; no image opening, extraction, embedding, or use |
 
-## 9. Train / Validation / Test split
+## 9. 학습 / 검증 / 테스트 데이터 분할
 
 **[임시 결정]** 첫 offline baseline은 AI Hub의 source role을 보존해 `TL_csv`를 train, `VL_csv`를 validation으로 읽는다. EDA는 이 두 역할의 scope를 구분해 집계하며 overlap/cold-start를 기록한다. source role명을 split으로 사용한다는 것은 임시 실험 규칙이고, 관측 독립성·공식 무작위화·시간 순서가 보장된다는 뜻은 아니다.
 
@@ -129,17 +129,17 @@ Availability는 “수집 가능한가 / 사용자에게 물어야 하는가 / �
 
 **[미결정]** “사용자 신규성”과 “미등장 item”을 함께 평가하는 cohort, 시간순 holdout, 지역 간 holdout은 별도 실험이다. EDA에 기록된 TL/VL candidate overlap 및 cold-start bands는 split 보증 또는 독립 test 증거가 아니다.
 
-## 10. Candidate universe
+## 10. 오프라인 후보 집합
 
 **[임시 결정]** 초기 ranking의 candidate universe는 명시 요청된 destination/region scope가 있을 때 같은 region scope에서 관측·카탈로그화된 nonblank `POI_ID` item candidates다. 요청 목적지의 더 세밀한 행정구역 범위는 AI Hub `SGG_CD`가 명시적 serving scope와 호환됨을 확인한 후에만 적용한다. 명시 region이 없거나 mapping이 모호한 경우 임의로 전국/권역 후보를 바꾸지 않고 해당 평가 케이스를 unresolved 처리한다.
 
 Candidate universe는 모델별로 변경하지 않고 평가 cohort별로 고정·기록한다. 방문하지 않은 후보를 negative label로 보지 않는다. 실제 방문 positive만 ground truth다. 유효 후보 집합 또는 positive가 후보군 밖일 경우 제외 사유를 집계한다.
 
-**제한:** EDA는 POI candidate overlap 및 cold-start를 요약했지만 canonical POI나 경계/crosswalk 정책을 확정하지 않았다. 이 임시 region-scoped universe는 안정된 장소 identity, 실제 서비스 재고, 이용 가능 상태를 보증하지 않는다.
+**제한:** EDA는 POI candidate overlap 및 cold-start를 요약했지만 canonical POI나 경계·지역 매핑 정책을 확정하지 않았다. 이 임시 region-scoped universe는 안정된 장소 identity, 실제 서비스 재고, 이용 가능 상태를 보증하지 않는다.
 
 **Issue #4 경계:** 위 TL-observed universe는 과거 baseline 재현용 proxy다. 향후 제품 candidate ranking은 [`POI catalog and candidate eligibility contract`](poi-catalog-candidate-contract.md)의 검증된 versioned catalog와 request-time hard constraints를 사용해야 한다. `TN_POI_MASTER`는 별도 historical reference이며 `TN_VISIT_AREA_INFO.POI_ID`와의 관계나 TourAPI canonical identity를 보장하지 않는다. 두 candidate universe의 metric은 동일한 contract가 아닐 때 직접 비교하지 않는다.
 
-## 11. Leakage, cold start, 데이터 한계
+## 11. 데이터 누수, 콜드 스타트, 데이터 한계
 
 - **사후 label leakage:** `DGSTFN`, `REVISIT_INTENTION`, `RCMDTN_INTENTION`은 방문 결과 뒤의 값이므로 입력 금지.
 - **행/여행 leakage:** 동일 `TRAVEL_ID`의 방문 event·feedback은 한 partition에 유지. 동일 traveler/item이 partition 사이 공유되는지 별도 식별해 validation 결과에 표시.
@@ -149,13 +149,13 @@ Candidate universe는 모델별로 변경하지 않고 평가 cohort별로 고�
 - **ID와 개인정보:** 원본 traveler IDs, exact dates, exact coordinates, 장소명, 자유 텍스트, captions, 이미지 내용을 결과·로그·공유물에 싣지 않는다. 모델 feature에서도 raw IDs를 제외한다.
 - **컬럼/코드 품질:** 네 권역 설명서는 컬럼명, 설명, 선언 자료형·범위를 제공하지만 필수 Y/N은 PK/FK·유일성을 뜻하지 않는다. 일부 코드 필드의 복합 표현은 설명서로 해석되지 않았고 normalization 금지.
 - **범위와 선택 편향:** 권역별 TL/VL 구조·coverage는 다를 수 있고, 권역 경계 및 권역 밖 방문은 확인되지 않았다. EDA 숫자는 억제된 coarse buckets/bands라 개별 분포나 사용자 적합성 결론을 대신하지 않는다.
-- **이미지/SbL:** raw image, image embedding 및 caption-derived text는 baseline에서 제외. 구조적 존재나 candidate linkage만으로 내용의 정확성·item 연결·서비스 사용 가능성을 입증하지 않는다.
+- **이미지/SbL:** raw image, image embedding 및 caption-derived text는 baseline에서 제외. 구조적 존재나 candidate 연결만으로 내용의 정확성·item 연결·서비스 사용 가능성을 입증하지 않는다.
 
 ## 12. 미결정 사항과 필요한 근거
 
 | 미결정 사항 | 왜 지금 정하지 않는가 | 필요한 근거 / 다음 판단 |
 | --- | --- | --- |
-| Canonical POI key 및 `POI_ID`와 `VISIT_AREA_ID` 관계 | schema 설명만으로 PK/FK·identity 안정성 미확인; EDA도 후보 관계로만 처리 | 승인 범위 내 source documentation / key semantics 및 검토된 linkage 진단 |
+| Canonical POI key 및 `POI_ID`와 `VISIT_AREA_ID` 관계 | schema 설명만으로 PK/FK·identity 안정성 미확인; EDA도 후보 관계로만 처리 | 승인 범위 내 source documentation / key semantics 및 검토된 연결 진단 |
 | Region scoping 및 지역 간 ID collision | 경계 자료·지역 key uniqueness 검증 없음 | 공식 region mapping/경계, 안전한 충돌 집계 |
 | `POI_ID` 결측 item fallback | name/address/coordinates 조합은 추정 identity를 만들게 됨 | 승인된 canonical mapping/확정된 business rule |
 | TL/VL split의 설계·독립성 및 공식 test source | 문서화된 split guarantee를 확인하지 못함 | AI Hub split description 및 test data 권한/절차 |
@@ -163,10 +163,10 @@ Candidate universe는 모델별로 변경하지 않고 평가 cohort별로 고�
 | 코드 복합표현, 결측·invalid 처리 | 설명서가 구분자/정규화 정의 안 함; EDA unknown은 invalid를 뜻하지 않음 | field owner/codebook clarification 및 승인된 의미 검증 |
 | 반복 방문 집계·visit sequence·interaction weight | 현재 계약은 weight를 두지 않음; 도메인 의미/알고리즘 실험 미정 | 별도 experimental protocol과 metric 목적 |
 | Feedback ordinal semantics 및 threshold | 선언된 1–5 range만으로 응답 방향/label utility 미확정 | 공식 codebook/questionnaire wording, label validation |
-| SbL caption text usage | baseline 제외; content linkage/quality 검증 없음 | text-use permission, data handling review, semantic validation, serving parity |
+| SbL caption text usage | baseline 제외; content 연결/quality 검증 없음 | text-use permission, data handling review, semantic validation, 서비스 시점 호환성 |
 | baseline metrics, negative sampling, exact candidate snapshot | Issue #17 data contract이지 algorithm/metric design issue가 아님 | 후속 experiment issue가 protocol·seed·catalog snapshot을 정함 |
 
-## 13. Baseline 실험 계약
+## 13. 기준 실험 계약
 
 후속 baseline은 이 문서와 구체 실험 설정만으로 재현 가능한 정의를 남긴다.
 
@@ -183,19 +183,19 @@ Candidate universe는 모델별로 변경하지 않고 평가 cohort별로 고�
 
 **Limitation:** 이 계약은 data semantics와 비교 가능한 경계를 정한 것이지, 현재 로컬 자료로 수행 가능한 모델 성능이나 온라인 유효성을 보증하지 않는다. item identity, test split, serving feature availability가 unresolved인 상태에서는 결과를 해당 임시 설정 범위 안에서만 해석한다.
 
-## Decision log
+## 결정 기록
 
 | Decision | Status | Rationale |
 | --- | --- | --- |
-| `(region, TRAVELER_ID)` grouping; retain `TRAVEL_ID` context; raw IDs are memory-only and not features | Provisional | Schema roles are documented; cross-region uniqueness, serving identity bridge, and long-term history utility are not |
-| Region-scoped nonblank `POI_ID` as temporary item candidate | Provisional | Enables bounded experiment without claiming canonical identity; no fallback mapping |
-| Visit event as binary implicit positive; no weight; unvisited unknown | Decided for baseline | Matches observed visit structure while avoiding invented preference strength/negative labels |
-| Feedback fields are post-event labels only | Decided | Their schema location/role is post-visit; leakage otherwise |
-| TL train, VL validation; no test metric | Provisional | Preserves source role split and does not invent test independence/source |
-| Same-region requested candidate scope | Provisional | Bounded scope; official region/ID crosswalk still unresolved |
-| Exclude raw images and image embeddings | Decided | Explicit baseline boundary; no image pipeline or raw image EDA |
-| Exclude caption text from baseline | Decided | Coverage/linkage evidence is not semantic, permission, or serving-parity evidence |
-| Do not transfer legacy 0.7/0.3 weights, similarity calculation, one-hot preprocessing, or TourAPI IDs | Decided | The code expresses an intended weighted user-similarity design, but reindexes similarity columns to `visit_matrix.columns` (`content_id`); downstream consumption also assumes user-user axes. This is not validated behavior or an AI Hub transformation rule |
+| `(region, TRAVELER_ID)`로 사용자를 묶고 `TRAVEL_ID`로 여행 문맥을 유지하며 원본 ID는 메모리 내 조인 키로만 사용 | 임시 결정 | 스키마 역할은 문서화되어 있지만 권역 간 식별자 유일성, 서비스용 식별자 연결 방식, 장기 이력 활용 가능성은 아직 확정되지 않음 |
+| 권역별 nonblank `POI_ID`를 임시 아이템 후보로 사용 | 임시 결정 | 기준 식별자라고 주장하지 않으면서 제한된 실험을 가능하게 하며 대체 식별 규칙은 두지 않음 |
+| 방문 이벤트를 이진 암묵적 양성으로 사용하고 가중치를 두지 않으며 미방문은 알 수 없음으로 처리 | 기준 실험 결정 | 관측 방문 구조를 유지하면서 임의의 선호 강도나 음성 라벨을 만들지 않기 위함 |
+| 피드백 필드는 사후 학습 목표 후보로만 사용 | 결정 | 방문 이후 정보이므로 추천 시점 입력에 넣으면 데이터 누수가 발생함 |
+| TL은 학습, VL은 검증으로 사용하며 독립 테스트 지표는 만들지 않음 | 임시 결정 | 원천 역할을 보존하면서 확인되지 않은 테스트 독립성이나 출처를 가정하지 않기 위함 |
+| Same-region requested candidate scope | Provisional | Bounded scope; official 지역·식별자 매핑 still unresolved |
+| 원본 이미지와 이미지 임베딩 제외 | 결정 | 기준 실험 경계를 명확히 하고 이미지 파이프라인이나 원본 이미지 EDA를 수행하지 않기 위함 |
+| Exclude caption text from baseline | Decided | Coverage/연결 evidence is not semantic, permission, or serving-parity evidence |
+| 기존 0.7/0.3 가중치, 유사도 계산, one-hot 전처리, TourAPI ID를 그대로 이전하지 않음 | 결정 | The code expresses an intended weighted user-similarity design, but reindexes similarity columns to `visit_matrix.columns` (`content_id`); downstream consumption also assumes user-user axes. This is not validated behavior or an AI Hub transformation rule |
 
 ## Appendix A. Public legacy source references
 

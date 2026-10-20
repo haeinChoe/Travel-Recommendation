@@ -1,26 +1,42 @@
-# POI catalog and candidate eligibility contract
+# POI 카탈로그와 후보 자격 계약
 
-## Status
+## 질문과 현재 상태
 
-**최종 판정: 수정.** 이 실험은 TourAPI product catalog 자체가 부적합함을 입증하지 않았다. 다만 현재 AI Hub → TourAPI identity bridge로는 offline observed-positive coverage를 신뢰성 있게 측정할 수 없다. 그러므로 offline 학습·평가는 AI Hub native POI identity로 수행하고, TourAPI `contentid` 기반 product catalog와의 연결은 별도 identity/crosswalk 문제로 분리한다.
+이 문서는 **제품 서비스에서 어떤 POI를 추천 후보로 인정할지**, 그리고 **AI Hub 오프라인 추천 실험과 TourAPI 제품 카탈로그를 어떤 식별자 경계로 분리할지** 정한다.
 
-| canonical D 최종 집계 | count |
+**현재 상태: 수정 후 확정.**
+
+### 한눈에 보는 결론
+
+- TourAPI 카탈로그 자체가 부적합하다는 결과는 나오지 않았다.
+- 현재 AI Hub → TourAPI **식별자 연결**만으로는 오프라인 관측 양성 커버리지를 신뢰성 있게 측정하기 어렵다.
+- 따라서 오프라인 학습·평가는 AI Hub의 원래 POI 식별자를 사용한다.
+- 제품 서비스용 카탈로그는 TourAPI `contentid`를 사용한다.
+- 두 식별자 체계의 연결은 추천 모델 평가와 분리된 별도 문제로 둔다.
+- 단순 문자열 추정 규칙을 더 추가하지 않는다.
+
+아래 표는 이 결론의 근거가 된 canonical D의 핵심 집계를 보여준다.
+
+| canonical D 최종 집계 | 건수 |
 | --- | ---: |
-| all positives | 97,640 |
-| source available | 70,756 |
+| 전체 관측 양성 | 97,640 |
+| 식별 정보 사용 가능 | 70,756 |
 | `identity_source_missing` | 26,884 |
 | MATCHED | 4,696 |
 | AMBIGUOUS | 15,127 |
-| UNMATCHED (source available) | 50,933 |
-| candidate-contained | 2,097 |
-| end-to-end coverage | 2.15% |
+| UNMATCHED (식별 정보 사용 가능) | 50,933 |
+| 후보 집합 포함 | 2,097 |
+| 전체 대비 후보 포함 비율 | 2.15% |
 
-문자열 진단은 종료했다. Name N1/N2는 69/50,933 positives에 diagnostic candidate를 추가했으며, address A1은 단일 title 후보에서 12/14,698 normalized exact, 복수 title 후보에서 유일 선택 0/429였다. 이 값은 identity가 확인된 수가 아니다. **simple string normalization exhausted → 추가 heuristic 중단 → new identity signal 필요**로 결론 내린다. 공식 source-provider crosswalk, 검증된 좌표 호환성, 신뢰 가능한 외부 주소/장소 identifier가 확보되기 전까지 추가 fuzzy threshold, title regex, address heuristic 및 token overlap 기반 MATCHED 승격을 하지 않는다.
+### 결정
 
-Issue #66 승인 계약 v1을 구현했다. 기준 카탈로그는 TourAPI KorService2 v4.4, provider identity는 `(tourapi-korservice2, contentid)`, 추천 지원 type은 `{12,14,28}`이다. 버전 정책은 [`config/recommendation/poi-catalog-policy-v1.json`](../../config/recommendation/poi-catalog-policy-v1.json)에 고정했다. 상세 산출물은 Git-ignored `results/`에 두고, 공유 문서에는 privacy-safe 집계만 기록한다.
+문자열 기반 진단은 종료한다. Name N1/N2는 50,933건 중 69건에서 추가 진단 후보를 만들었고, address A1은 이름 후보가 하나인 14,698건 중 12건만 정규화 후 주소가 일치했다. 이름 후보가 여러 개인 429건에서는 주소 정규화로 후보 하나를 고른 사례가 0건이었다.
 
-AI Hub 네 권역의 공식 metadata는 각 권역을 구성하는 시도 목록을 제공하지 않는다. 사용자가 승인한 공식 광역권 분류를 적용해 deterministic crosswalk를 만들었다. 수도권=서울·인천·경기, 서부=충청권+호남권, 동부=동남권+대경권+강원권, 제주및도서권=제주권이다. 2026년 현행 법정동 상위 시도 코드 16개를 전부 고정 매핑했다. 2026년 전남광주 통합특별시는 `12`, 강원특별자치도는 `51`, 전북특별자치도는 `52`이며, TourAPI가 반환한 세종 코드 `36110`은 공식 법정동 자료와 행정안전부 공지에 따라 충청권에 명시적으로 배정했다. 일괄 prefix 변환은 하지 않는다. AI Hub metadata가 비제주 도서의 소속을 열거하지 않으므로 `jeju-islands`는 공식 제주권 코드 `50`에 매핑하며 다른 도서까지 포함한다고 주장하지 않는다.
+이 값들은 장소 식별이 확인된 수가 아니다. 따라서 **단순 문자열 정규화로 얻을 수 있는 추가 근거는 충분하지 않다**고 판단한다. 공식 원천-제공자 식별자 연결 정보, 검증된 좌표 호환성, 신뢰할 수 있는 외부 주소·장소 식별자가 생기기 전까지 fuzzy threshold, title regex, address heuristic, token overlap을 이용해 `MATCHED`를 늘리지 않는다.
 
+Issue #66에서 승인한 v1의 제품 서비스용 카탈로그는 TourAPI KorService2 v4.4이며, 제공자 식별자는 `(tourapi-korservice2, contentid)`, 추천 지원 유형은 `{12,14,28}`이다. 버전 정책은 [`config/recommendation/poi-catalog-policy-v1.json`](../../config/recommendation/poi-catalog-policy-v1.json)에 고정한다. 상세 산출물은 Git에서 제외된 `results/`에 두고, 공유 문서에는 개인을 식별하지 않는 집계만 기록한다.
+
+AI Hub 네 권역의 공식 메타데이터는 각 권역을 구성하는 시도 목록을 제공하지 않는다. 사용자가 승인한 공식 광역권 분류를 사용해 **지역 코드 매핑**을 고정했다. 수도권=서울·인천·경기, 서부=충청권+호남권, 동부=동남권+대경권+강원권, 제주및도서권=제주권이다. 2026년 현행 법정동 상위 시도 코드 16개를 모두 매핑했다. 2026년 전남광주 통합특별시는 `12`, 강원특별자치도는 `51`, 전북특별자치도는 `52`이며, TourAPI가 반환한 세종 코드 `36110`은 공식 법정동 자료와 행정안전부 공지에 따라 충청권에 배정했다. 일괄 prefix 변환은 하지 않는다. AI Hub 메타데이터가 비제주 도서의 소속을 열거하지 않으므로 `jeju-islands`는 공식 제주권 코드 `50`에 매핑하며 다른 도서까지 포함한다고 주장하지 않는다.
 ## 의미와 평가 경계
 
 `TN_VISIT_AREA_INFO` 관측은 positive observation이다. 방문하지 않은 POI는 unknown/unlabeled이며 negative가 아니다. AI Hub에는 과거 노출 기록이 없으므로 현재 후보군은 요청 시점 정책상 추천 가능했던 가상의 집합이지 과거에 보였거나 선택 가능했던 집합이 아니다.
@@ -44,11 +60,11 @@ AI Hub 네 권역의 공식 metadata는 각 권역을 구성하는 시도 목록
 
 공식 참고: [TourAPI KorService2 listing](https://www.data.go.kr/data/15101578/openapi.do), [행정표준코드관리시스템 법정동 코드](https://www.code.go.kr/stdcode/regCodeL.do), [국토교통부 전국 법정동 2026-06-30 자료](https://www.data.go.kr/data/15063424/fileData.do?recommendDataYn=Y), [행정안전부 2026 전남광주 통합특별시 코드 변경](https://www.mois.go.kr/frt/bbs/type001/commonSelectBoardArticle.do?bbsId=BBSMSTR_000000000052&nttId=127039), [행정안전부 세종 법정동 코드 공지](https://www.mois.go.kr/frt/bbs/type001/commonSelectBoardArticle.do?bbsId=BBSMSTR_000000000052&nttId=127979), [AI Hub 2023 국내 여행로그](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71778), [NABO 2025 권역별 GRDP 분류](https://korea.nabo.go.kr/board/file/down.do?fid=33318639). KorService2 공식 v4.4 manual의 `ldongCode2`는 `lDongListYn=Y`에서 전체 법정동 목록을 돌려주며 `totalCount/pageNo` 기준 페이지 처리가 필요하다. data.go.kr listing은 실시간 제공과 개발계정 1,000회 quota를 표시한다. 이용 가능성만으로 장기 대량 보관 권한이나 2023년 당시 카탈로그 상태를 추론하지 않는다.
 
-## Identity 계약
+## 식별 계약
 
 AI Hub source key는 `(region, nonblank POI_ID)`, provider key는 `(tourapi-korservice2, contentid)`로 분리한다. 문자열 매칭은 실험상의 진단 결과이며 원천 FK 관계를 증명하지 않는다. identity matching은 명시된 권역 매핑 안에서 exact normalized name + exact address 또는 exact reviewed district 신호가 유일하고 다른 exact signal과 모순이 없을 때만 `MATCHED`다. 이름 단독 및 fuzzy 유사도는 `AMBIGUOUS` 진단에만 쓴다. 여러 동률 후보, 충돌, taxonomy veto는 확정하지 않는다. 좌표/거리 matching은 AI Hub와 TourAPI 좌표계 및 encoding 동일성이 검증될 때까지 비활성이다.
 
-## Eligibility와 지역 crosswalk
+## 후보 자격과 지역 코드 매핑
 
 `eligibility_reason`은 고정 snapshot의 membership, 필수 필드 유효성, 지원 type, versioned region policy, 그리고 request에 명시된 경우의 district filter만 적용한다. provider가 보장하지 않는 active/inactive status는 만들지 않는다. AI Hub 네 region과 현행 16개 법정동 지역코드 전체 대응은 정책 JSON을 단일 source of truth로 쓴다.
 
@@ -77,7 +93,7 @@ The historical `TN_POI_MASTER` link diagnostic above is not a serving-catalog id
 
 The approved TL/VL proxy reproduction ran on 2026-10-16 using all four regions, TL-only candidates, VL observed positives, whole-trip units, K=5/10/20, and no sampled negatives. Results are in the Git-ignored `results/experiments/candidate-choice-feasibility/issue4-tl-proxy-reference-20261016/` directory. `TRAVEL_ID` overlap was `0` in every region. In each region, candidate count was `10+`, trip candidate coverage was `90–100%`, and candidate size per trip was `500+`. Positive event coverage was `25–<50%` in capital and `50–<75%` in west/east/jeju-islands; cold-start positive event share was `50–<75%` in capital and `25–<50%` in the other three regions. These are historical TL-catalog proxy results, not evidence of a product catalog, exposure, negative labels, or TourAPI identity.
 
-## Facts, inference, and unresolved decisions
+## 확인된 사실, 해석, 미결정 사항
 
 ### Facts
 
@@ -85,14 +101,14 @@ The approved TL/VL proxy reproduction ran on 2026-10-16 using all four regions, 
 - The data dictionary does not state that the visit-table `POI_ID` is a foreign key to the master or guaranteed to contain identical identifiers.
 - The earlier approved context-POI analysis reports a region-scoped exact-string candidate join between visits and the historical master in `50–<75%` bands for capital, west, and east and `75–<90%` for jeju-islands, across TL and VL. Issue #4 did not re-read that separate table, and the earlier join was explicitly diagnostic rather than canonical identity evidence.
 - 초기 one-result GET은 HTTP 200 / API `0000`와 string response type만 확인한 탐색이었다. 이후 v4.4 전체 법정동 코드 집합을 요청하는 고정 snapshot 수집을 수행했고 실제 후보 규모/커버리지는 아래에 별도 기록했다. 수집 성공은 장기 payload 보관 권한, provider identity의 의미, 2023년 당시 제공 여부를 증명하지 않는다.
-- Issue #66 approves the v1 contract. The AI Hub region labels and TL/VL bindings are used as source cohorts; the product crosswalk is separately versioned in `config/recommendation/poi-catalog-policy-v1.json`.
+- Issue #66에서 v1 계약을 승인했다. AI Hub 권역 라벨과 TL/VL 바인딩은 원천 데이터 집단으로 사용하며, 제품 지역 코드 매핑은 `config/recommendation/poi-catalog-policy-v1.json`에서 별도로 버전 관리한다.
 - Bounded discovery found four `TN_POI_MASTER` candidates, one per explicit region Other-role binding. Repository documentation classifies the table as Other; the bindings and region/year role markers support the Other role and region/year. Current AI Hub usage terms support local read-only AI development with attribution and restrictions. The user explicitly confirmed these four candidates are the approved files for this diagnostic. A dedicated diagnostic read selected columns and the eight bound visit inputs after layout/header checks. The resulting link counts are descriptive within-region evidence only, not a declared foreign key or canonical identity; metadata conflicts were not compared.
 
 #### Official source verification
 
 - The [official data.go.kr listing](https://www.data.go.kr/data/15101578/openapi.do) identifies KorService2, `areaBasedList2`, its response model and formats, free/unrestricted reuse metadata, development auto approval, operational review, and quota 1,000. Its rendered schema does not expose endpoint field names/types.
-- The v4.4 manual documents `ldongCode2` full-list mode and paginated totals; the adapter requests the complete legal-dong set and deduplicates its province codes. The product crosswalk and type policy are fixed by the approved v1 contract, not inferred from API code lists.
-- AI Hub 2023 metadata defines the four region labels but not their province membership. User-approved official seven-region classification supplies the complete deterministic v1 crosswalk; non-Jeju island coverage is not asserted.
+- v4.4 매뉴얼은 `ldongCode2`의 전체 목록 조회와 페이지 단위 총건수 처리를 설명한다. 어댑터는 전체 법정동 집합을 요청하고 시도 코드를 중복 제거한다. 제품 지역 코드 매핑과 콘텐츠 유형 정책은 API 코드 목록에서 추론하지 않고 승인된 v1 계약으로 고정한다.
+- AI Hub 2023 메타데이터는 네 권역 라벨을 정의하지만 각 권역에 포함되는 시도 목록은 제공하지 않는다. 사용자가 승인한 공식 7권역 분류를 사용해 v1 지역 코드 매핑을 완성하며, 제주가 아닌 도서 지역까지 포함한다고 주장하지 않는다.
 - The [official Korean Tourism Organization FAQ](https://api.visitkorea.or.kr/?loginFlag=sso) discusses guide-preview usage. The user authorized one read-only API snapshot run. That authorization does not settle long-term payload retention terms; keep detailed payloads local and ignored.
 
 ### Inference
@@ -106,7 +122,7 @@ The approved TL/VL proxy reproduction ran on 2026-10-16 using all four regions, 
 - Current TourAPI membership does not establish historical 2023 availability, open/bookable status, exposure, or user consideration.
 - The legal meaning of long-term bulk payload retention is not expanded beyond the official listing; retain the collected snapshot only in the approved ignored local results area.
 - Identity match rates depend on the v1 exact-field rule and are not proof of a provider-declared foreign key. Coordinate matching remains disabled.
-- exact aggregate 재실행에서 후보 요청은 모든 권역·TL/VL에서 100% non-empty였지만, 이 결과는 identity bridge를 통한 positive coverage 추정치를 신뢰 가능하게 만들지 않는다. unresolved는 catalog-outside와 다르므로 TourAPI catalog 부재나 부적합을 입증하지 않는다. 위 canonical 요약이 최종 판정이며, identity heuristic은 종료했다.
+- exact aggregate 재실행에서 후보 요청은 모든 권역·TL/VL에서 100% non-empty였지만, 이 결과는 식별자 연결 방식을 통한 positive coverage 추정치를 신뢰 가능하게 만들지 않는다. unresolved는 catalog-outside와 다르므로 TourAPI catalog 부재나 부적합을 입증하지 않는다. 위 canonical 요약이 최종 판정이며, identity heuristic은 종료했다.
 
 ## Issue #4 실제 데이터 실험: 정확 집계 재실행 (2026-10-18)
 
@@ -337,7 +353,7 @@ ROAD_NM_ADDR / LOTNO_ADDR 존재는 해당 POI의 여러 source row 중 공백�
 - exact-title 후보가 2개 이상인 positives는 TL 453/87,010 (0.52%), VL 65/10,630 (0.61%)다.
 - source signal variation은 TL positive 13,936/87,010 (16.02%), VL 695/10,630 (6.54%)에서 관찰됐다. 위 표의 field별 분류는 기존 source_signal_conflict method와 완전히 같지 않다. 기존 판정은 원본 tuple의 distinctness를 사용하고 진단은 필드별 normalization으로 설명한다. whitespace-only도 분리했다.
 - 이 진단으로 미해결의 대부분은 같은 권역 exact-title 후보가 없고, 후보 하나가 있어도 exact-address 검증에서 막힌다는 단계까지 수치화했다. 그러나 title miss가 catalog 부재인지 표기 차이인지 판별할 수 없고, address mismatch도 주소체계/상세주소/실제 장소 차이를 분리하지 못한다. 진단 지표들은 서로 겹치므로 더해 unresolved를 분해하지 않는다. 따라서 97% unresolved의 원인을 전부 설명하지 못하며 나머지는 판정 불가다.
-- 이후 수행한 N1/N2 및 A1/A2 진단을 반영한 종료 판정은 아래에 기록했다. 문자열 heuristic 실험은 종료했으며 다음 identity 작업은 공식 source-provider crosswalk, 검증된 좌표 호환성 또는 신뢰 가능한 외부 address/place identifier가 확보될 때만 진행한다.
+- 이후 수행한 N1/N2 및 A1/A2 진단을 반영한 종료 판정은 아래에 기록했다. 문자열 heuristic 실험은 종료했으며 다음 식별 작업은 공식 원천-제공자 식별자 연결 정보, 검증된 좌표 호환성 또는 신뢰 가능한 외부 주소/장소 식별자가 확보될 때만 진행한다.
 
 #### Name candidate recovery shadow diagnostic
 
@@ -449,7 +465,7 @@ unique `(region, POI_ID)` 단위에서는 D AMBIGUOUS POI가 3,927개다. exact-
 
 weighted 결과와 unique 결과의 차이는 반복 observed positives의 가중 때문이다. 예를 들어 A1 normalized exact는 weighted 12건이지만 unique POI는 5개다. A2의 최대 범주는 양쪽 단위에서 `partial_overlap`이며, 이는 문자열 token 일부가 겹친다는 진단일 뿐 같은 장소라는 확인이 아니다. A0 funnel, A/B/C/D/E, N0–N4는 이전 집계 artifact와 필드별 비교해 모든 기존 필드 값이 같음을 확인했다.
 
-**Identity heuristic 결론:** name N1/N2 candidate generation은 69/50,933에 그쳤고, address A1은 후보가 하나인 경우 12/14,698 normalized exact, 후보가 2+인 경우 유일 선택 0/429였다. 이 결과로 simple string normalization 실험을 종료한다. 추가 fuzzy threshold, title regex, address heuristic, token overlap 기반 MATCHED 승격은 구현하지 않는다. 다음 단계는 공식 source-provider crosswalk, 검증된 좌표 호환성 또는 신뢰 가능한 외부 address/place identifier가 확보될 때만 별도 검토한다.
+**식별 추정 규칙 결론:** Name N1/N2 후보 생성은 69/50,933에 그쳤고, address A1은 후보가 하나인 경우 12/14,698 normalized exact, 후보가 2+인 경우 유일 선택 0/429였다. 이 결과로 단순 문자열 정규화 실험을 종료한다. 추가 fuzzy threshold, title regex, address heuristic, token overlap 기반 MATCHED 승격은 구현하지 않는다. 다음 단계는 공식 원천-제공자 식별자 연결 정보, 검증된 좌표 호환성 또는 신뢰 가능한 외부 주소/장소 식별자가 확보될 때만 별도 검토한다.
 
 #### Branch suffix tag boundary correction
 
@@ -729,7 +745,7 @@ Positive-weighted `identity_source_missing`은 **26,884/97,640 (27.53%)**다. Vi
 
 #### 좌표 검증 및 적용 한계
 
-고정 TourAPI snapshot에 `mapx/mapy`가 없어 좌표 호환성은 **산출 불가**다. AI Hub master에서 X/Y 열을 찾았지만 제공 문서에서 CRS와 축 의미를 확인하지 못했다. TourAPI v4.4 매뉴얼은 `mapX/mapY`를 WGS84 경도/위도로 정의한다. 따라서 `coordinates_for_identity=false`를 유지했다. A1/A2와 N1/N2 진단으로 추가 단순 string heuristic은 소진된 것으로 보고 identity heuristic 실험을 종료한다. 다음 identity signal은 공식 source-provider crosswalk, 검증된 좌표 호환성 또는 신뢰 가능한 외부 주소/장소 identifier로 한정한다. 그 전까지 fuzzy threshold, title regex, address heuristic, token overlap 기반 MATCHED 승격은 중단한다.
+고정 TourAPI snapshot에 `mapx/mapy`가 없어 좌표 호환성은 **산출 불가**다. AI Hub master에서 X/Y 열을 찾았지만 제공 문서에서 CRS와 축 의미를 확인하지 못했다. TourAPI v4.4 매뉴얼은 `mapX/mapY`를 WGS84 경도/위도로 정의한다. 따라서 `coordinates_for_identity=false`를 유지했다. A1/A2와 N1/N2 진단으로 추가 단순 string heuristic은 소진된 것으로 보고 식별 추정 규칙 실험을 종료한다. 다음 식별 근거는 공식 원천-제공자 식별자 연결 정보, 검증된 좌표 호환성 또는 신뢰 가능한 외부 주소/장소 identifier로 한정한다. 그 전까지 fuzzy threshold, title regex, address heuristic, token overlap 기반 MATCHED 승격은 중단한다.
 
 ## Synthetic validation and use
 
