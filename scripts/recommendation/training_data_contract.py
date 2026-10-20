@@ -139,52 +139,53 @@ MOTIVE_DOMAIN: frozenset[str] = frozenset(str(i) for i in range(1, 11))
 COMPANION_REL_DOMAIN: frozenset[str] = frozenset(str(i) for i in range(1, 12))
 FEEDBACK_DOMAIN: frozenset[str] = frozenset(str(i) for i in range(1, 6))
 
-# Tourism Core vs Non-Tourism Visit Area Type Cohorts (TN_VISIT_AREA_INFO.VISIT_AREA_TYPE_CD)
+# Tourism Core vs Non-Tourism Visit Area Type Cohorts (TN_VISIT_AREA_INFO.VISIT_AREA_TYPE_CD, TC_CODEB cd_a='VIS')
 TOURISM_CORE_VISIT_AREA_TYPES: frozenset[str] = frozenset({
-    "1",   # 자연관광지 (Nature)
-    "2",   # 역사/유적/종교시설 (History / Religion)
-    "3",   # 문화시설 (Culture / Art)
-    "5",   # 레저/스포츠 관련 시설 (Leisure / Sports)
-    "6",   # 테마파크/놀이시설 (Theme Park)
-    "7",   # 산책로/둘레길 등 체험/학습 (Trail / Experience)
-    "8",   # 지역 축제/행사 또는 전시/관람 (Exhibition / Museum / Local Event)
-    "12",  # 축제/행사 또는 레저/엔터테인먼트 (Festival / Event)
-    "13",  # 휴양림/수목원/공원/관광단지 (Forest / Park / Resort Complex)
+    "1",   # 자연관광지
+    "2",   # 역사/유적/종교 시설(문화재, 박물관, 촬영지, 절 등)
+    "3",   # 문화 시설(공연장, 영화관, 전시관 등)
+    "5",   # 레저/스포츠 관련 시설(스키, 카트, 수상레저)
+    "6",   # 테마시설(놀이공원, 워터파크)
+    "7",   # 산책로, 둘레길 등
+    "8",   # 지역 축제/행사
+    "12",  # 기타 (TC_CODEB cd_a='VIS' 원문 명칭 '기타'; 순수 관광/비관광 경계에서 주의 필요)
+    "13",  # 체험 활동 관광지
 })
 
 NON_TOURISM_VISIT_AREA_TYPES: frozenset[str] = frozenset({
     "4",   # 상업지구(거리, 시장, 쇼핑시설)
-    "9",   # 역/터미널/고속도로 휴게소 또는 쇼핑/상점
-    "10",  # 상점 또는 숙박시설
-    "11",  # 식당/카페 (Restaurant / Cafe)
-    "21",  # 집 (Home)
-    "22",  # 친구/친지집 또는 고속도로휴게소
-    "23",  # 사무실 또는 기타 일상 공간
-    "24",  # 숙소 또는 기타 이동/체류 시설
+    "9",   # 역, 터미널, 고속도로 휴게소
+    "10",  # 상점
+    "11",  # 식당/카페
+    "21",  # 집
+    "22",  # 친구/친지집
+    "23",  # 사무실
+    "24",  # 숙소
 })
 
 VISIT_AREA_TYPE_DOMAIN: frozenset[str] = (
     TOURISM_CORE_VISIT_AREA_TYPES | NON_TOURISM_VISIT_AREA_TYPES
 )
 
+# Exact official cd_b -> cd_nm mapping from 4-region TC_CODEB (cd_a == 'VIS')
 VISIT_AREA_TYPE_LABELS: dict[str, str] = {
     "1": "자연관광지",
-    "2": "역사/유적/종교시설",
-    "3": "문화시설",
-    "4": "상업지구/거리",
-    "5": "레저/스포츠시설",
-    "6": "테마파크/놀이시설",
-    "7": "산책로/둘레길/체험",
-    "8": "전시/관람/문화행사",
-    "9": "쇼핑/역/터미널",
-    "10": "숙박/상점",
+    "2": "역사/유적/종교 시설(문화재, 박물관, 촬영지, 절 등)",
+    "3": "문화 시설(공연장, 영화관, 전시관 등)",
+    "4": "상업지구(거리, 시장, 쇼핑시설)",
+    "5": "레저/스포츠 관련 시설(스키, 카트, 수상레저)",
+    "6": "테마시설(놀이공원, 워터파크)",
+    "7": "산책로, 둘레길 등",
+    "8": "지역 축제/행사",
+    "9": "역, 터미널, 고속도로 휴게소",
+    "10": "상점",
     "11": "식당/카페",
-    "12": "축제/행사/여가",
-    "13": "휴양림/수목원/공원",
-    "21": "집/일상거주지",
-    "22": "지인집/휴게소",
-    "23": "사무실/기타시설",
-    "24": "숙소/체류시설",
+    "12": "기타",
+    "13": "체험 활동 관광지",
+    "21": "집",
+    "22": "친구/친지집",
+    "23": "사무실",
+    "24": "숙소",
 }
 
 FIELD_CODE_DOMAINS: dict[str, frozenset[str]] = {
@@ -380,6 +381,70 @@ def check_split_trip_leakage(
 ) -> int:
     """Return the count of overlapping `TRAVEL_ID`s between TL and VL."""
     return len(tl_trip_ids & vl_trip_ids)
+
+
+def validate_vis_codebook_rows(
+    rows: Iterable[Mapping[str, object]],
+) -> dict[str, object]:
+    """Validate `TC_CODEB` rows for `cd_a == 'VIS'` against `VISIT_AREA_TYPE_LABELS` and cohort sets.
+
+    Ensures:
+    1. Every `cd_a == 'VIS'` entry in `TC_CODEB` matches `VISIT_AREA_TYPE_LABELS[cd_b]`.
+    2. The union of `TOURISM_CORE_VISIT_AREA_TYPES` and `NON_TOURISM_VISIT_AREA_TYPES`
+       is disjoint and exactly covers all 17 `VIS` codes (`1..13, 21..24`).
+    """
+    observed_vis: dict[str, str] = {}
+    duplicate_codes: list[str] = []
+
+    for row in rows:
+        norm = {
+            str(k).strip().upper(): (str(v).strip() if v is not None else "")
+            for k, v in row.items()
+            if k is not None
+        }
+        if norm.get("CD_A") != "VIS":
+            continue
+        cd_b = norm.get("CD_B", "")
+        cd_nm = norm.get("CD_NM", "")
+        if not cd_b:
+            continue
+        if cd_b in observed_vis and observed_vis[cd_b] != cd_nm:
+            duplicate_codes.append(cd_b)
+        observed_vis[cd_b] = cd_nm
+
+    expected_keys = set(VISIT_AREA_TYPE_LABELS.keys())
+    observed_keys = set(observed_vis.keys())
+    missing_codes = sorted(expected_keys - observed_keys)
+    unexpected_codes = sorted(observed_keys - expected_keys)
+    label_mismatches = sorted(
+        code
+        for code in (expected_keys & observed_keys)
+        if observed_vis[code] != VISIT_AREA_TYPE_LABELS[code]
+    )
+    cohort_overlap = sorted(TOURISM_CORE_VISIT_AREA_TYPES & NON_TOURISM_VISIT_AREA_TYPES)
+    unmapped_in_cohorts = sorted(
+        observed_keys - (TOURISM_CORE_VISIT_AREA_TYPES | NON_TOURISM_VISIT_AREA_TYPES)
+    )
+
+    verified = (
+        len(observed_vis) == len(VISIT_AREA_TYPE_LABELS)
+        and not duplicate_codes
+        and not missing_codes
+        and not unexpected_codes
+        and not label_mismatches
+        and not cohort_overlap
+        and not unmapped_in_cohorts
+    )
+    return {
+        "vis_codebook_verified": verified,
+        "verified_code_count": len(observed_vis),
+        "missing_codes": missing_codes,
+        "unexpected_codes": unexpected_codes,
+        "label_mismatches": label_mismatches,
+        "duplicate_conflicting_codes": duplicate_codes,
+        "cohort_overlap_codes": cohort_overlap,
+        "unmapped_cohort_codes": unmapped_in_cohorts,
+    }
 
 
 def evaluate_visit_observation(
@@ -638,6 +703,16 @@ def _load_sgg_crosswalk_from_env() -> SggCrosswalk:
     return cw
 
 
+def make_master_cache_key(file_path: Path) -> tuple[str, int, int]:
+    """Generate a collision-resistant cache key for TN_POI_MASTER file.
+
+    Includes resolved path, file size in bytes, and nanosecond modification time.
+    """
+    resolved = file_path.resolve()
+    stat = resolved.stat()
+    return (str(resolved), stat.st_size, stat.st_mtime_ns)
+
+
 def audit_training_data_contract(
     *,
     output_dir: Path = RESULTS_ROOT,
@@ -652,7 +727,7 @@ def audit_training_data_contract(
     sgg_crosswalk = _load_sgg_crosswalk_from_env()
 
     # Load shared TN_POI_MASTER once if all regions point to the same file or per region
-    master_cache_by_mtime: dict[tuple[int, int], tuple[set[str], set[str], dict[str, str], int, int]] = {}
+    master_cache_by_mtime: dict[tuple[str, int, int], tuple[set[str], set[str], dict[str, str], int, int]] = {}
 
     split_metrics: dict[str, dict[str, object]] = {}
     tl_trips_by_region: dict[str, set[str]] = {}
@@ -689,7 +764,7 @@ def audit_training_data_contract(
             if not found:
                 raise FileNotFoundError("TN_POI_MASTER file not found")
             master_file = found[0]
-        stat_key = (master_file.stat().st_size, master_file.stat().st_mtime_ns)
+        stat_key = make_master_cache_key(master_file)
         if stat_key not in master_cache_by_mtime:
             master_cache_by_mtime[stat_key] = _load_master_poi_summary(other_path)
         master_unique_ids, master_rich_ids, master_sgg_by_id, master_rows, master_dup_keys = (
@@ -712,9 +787,18 @@ def audit_training_data_contract(
             master_files = _find_csv_case_insensitive(split_dir, "tn_traveller_master")
             companion_files = _find_csv_case_insensitive(split_dir, "tn_companion_info")
             visit_files = _find_csv_case_insensitive(split_dir, "tn_visit_area_info")
+            codeb_files = _find_csv_case_insensitive(split_dir, "codeb")
 
-            if not (travel_files and master_files and visit_files):
+            if not (travel_files and master_files and visit_files and codeb_files):
                 raise FileNotFoundError(f"Required tables missing in {region}:{split}")
+
+            # 0. Verify TC_CODEB (cd_a == 'VIS') against official contract labels
+            with codeb_files[0].open("r", encoding="utf-8-sig", errors="replace") as f:
+                vis_check = validate_vis_codebook_rows(csv.DictReader(f))
+            if not vis_check["vis_codebook_verified"]:
+                raise ValueError(
+                    f"TC_CODEB VIS verification failed for {region}:{split}: {vis_check}"
+                )
 
             # 1. Read TN_TRAVELLER_MASTER
             traveler_rows_by_id: dict[str, list[dict[str, str]]] = defaultdict(list)
@@ -1015,12 +1099,20 @@ def audit_training_data_contract(
                 "distinct_pois_tourism_core": distinct_pois_core,
                 "master_total_rows": master_rows,
                 "master_duplicate_poi_keys": master_dup_keys,
+                "vis_codebook_verified": bool(vis_check["vis_codebook_verified"]),
+                "vis_codebook_verified_code_count": int(vis_check["verified_code_count"]),  # type: ignore[arg-type]
+                "vis_codebook_mismatch_count": len(vis_check["label_mismatches"]),  # type: ignore[arg-type]
             }
             split_metrics[cell_key] = cell_summary
 
             target_counter = agg_tl_totals if split == "TL" else agg_vl_totals
             for metric_name, val in cell_summary.items():
-                if isinstance(val, int) and not metric_name.startswith("master_"):
+                if (
+                    isinstance(val, int)
+                    and not isinstance(val, bool)
+                    and not metric_name.startswith("master_")
+                    and not metric_name.startswith("vis_codebook_")
+                ):
                     agg_totals[metric_name] += val
                     target_counter[metric_name] += val
 
@@ -1101,6 +1193,17 @@ def audit_training_data_contract(
         "script_sha256": script_sha256,
         "contract_version": "issue-71-v1",
         "tourapi_match_status_independent": True,
+        "vis_codebook_verification": {
+            "vis_codebook_verified": all(
+                bool(m.get("vis_codebook_verified")) for m in split_metrics.values()
+            ),
+            "splits_verified": len(split_metrics),
+            "verified_code_count": len(VISIT_AREA_TYPE_LABELS),
+            "cross_region_mismatches": sum(
+                int(m.get("vis_codebook_mismatch_count", 0)) for m in split_metrics.values()  # type: ignore[arg-type]
+            ),
+            "official_cd_b_to_cd_nm": dict(VISIT_AREA_TYPE_LABELS),
+        },
         "observation_grains": {k: list(v) for k, v in OBSERVATION_GRAINS.items()},
         "aggregate_totals": {
             "all_splits": dict(agg_totals),

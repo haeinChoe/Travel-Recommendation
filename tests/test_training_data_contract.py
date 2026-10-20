@@ -6,6 +6,7 @@ from scripts.recommendation.training_data_contract import (
     OBSERVATION_GRAINS,
     PRIMARY_CONTEXT_FEATURES,
     TOURISM_CORE_VISIT_AREA_TYPES,
+    VISIT_AREA_TYPE_LABELS,
     build_trip_poi_positives,
     check_split_trip_leakage,
     derive_companion_relation_codes,
@@ -15,6 +16,8 @@ from scripts.recommendation.training_data_contract import (
     validate_code_domain,
     validate_companions_num,
     validate_feature_contract,
+    validate_vis_codebook_rows,
+    make_master_cache_key,
 )
 
 
@@ -199,6 +202,58 @@ class TrainingDataContractTests(unittest.TestCase):
 
         self.assertEqual(check_split_trip_leakage({"T1", "T2"}, {"T3"}), 0)
         self.assertEqual(check_split_trip_leakage({"T1", "T2"}, {"T2", "T3"}), 1)
+
+    def test_validate_vis_codebook_rows_verified_and_mismatch_detection(self) -> None:
+        valid_rows = [
+            {"cd_a": "VIS", "cd_b": code, "cd_nm": label}
+            for code, label in VISIT_AREA_TYPE_LABELS.items()
+        ] + [{"cd_a": "REN", "cd_b": "1", "cd_nm": "지명도/명소"}]
+        res_ok = validate_vis_codebook_rows(valid_rows)
+        self.assertTrue(res_ok["vis_codebook_verified"])
+        self.assertEqual(res_ok["verified_code_count"], 17)
+        self.assertEqual(res_ok["label_mismatches"], [])
+        self.assertEqual(res_ok["missing_codes"], [])
+        self.assertEqual(res_ok["unexpected_codes"], [])
+
+        mismatched_rows = [
+            {"cd_a": "VIS", "cd_b": code, "cd_nm": ("잘못된명칭" if code == "12" else label)}
+            for code, label in VISIT_AREA_TYPE_LABELS.items()
+            if code != "24"
+        ] + [{"cd_a": "VIS", "cd_b": "99", "cd_nm": "미정의코드"}]
+        res_bad = validate_vis_codebook_rows(mismatched_rows)
+        self.assertFalse(res_bad["vis_codebook_verified"])
+        self.assertEqual(res_bad["label_mismatches"], ["12"])
+        self.assertEqual(res_bad["missing_codes"], ["24"])
+        self.assertEqual(res_bad["unexpected_codes"], ["99"])
+
+
+    def test_master_cache_key_separates_distinct_files_with_same_size_and_mtime(self) -> None:
+        import os
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            p1 = Path(tmpdir) / "reg1" / "tn_poi_master_POIMaster_all.csv"
+            p2 = Path(tmpdir) / "reg2" / "tn_poi_master_POIMaster_all.csv"
+            p1.parent.mkdir(parents=True)
+            p2.parent.mkdir(parents=True)
+            p1.write_text("POI_ID,SGG_CD\nP1,11110\n", encoding="utf-8")
+            p2.write_text("POI_ID,SGG_CD\nP2,22220\n", encoding="utf-8")
+            # Equalize size and mtime
+            os.utime(p2, (1_000_000, 1_000_000))
+            os.utime(p1, (1_000_000, 1_000_000))
+            self.assertEqual(p1.stat().st_size, p2.stat().st_size)
+            self.assertEqual(p1.stat().st_mtime_ns, p2.stat().st_mtime_ns)
+
+            k1 = make_master_cache_key(p1)
+            k2 = make_master_cache_key(p2)
+            k1_again = make_master_cache_key(p1)
+
+            # Different paths with same size and mtime yield different keys
+            self.assertNotEqual(k1, k2)
+            # Same path yields identical key (cache hit)
+            self.assertEqual(k1, k1_again)
+            self.assertEqual(k1[0], str(p1.resolve()))
+            self.assertEqual(k2[0], str(p2.resolve()))
 
 
 if __name__ == "__main__":
