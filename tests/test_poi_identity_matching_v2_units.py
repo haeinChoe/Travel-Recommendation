@@ -131,6 +131,79 @@ class SggCrosswalkTests(unittest.TestCase):
         # Incompatible
         self.assertFalse(cw.is_compatible("1111000000", "41", "110"))
 
+    def test_gwangju_jeonnam_cross_conflict_prevention(self) -> None:
+        cw = SggCrosswalk()
+        # Gwangju Dong-gu (29110) must match TourAPI (12, 210) but NOT (12, 110: Mokpo)
+        self.assertTrue(cw.is_compatible("29110", "12", "210"))
+        self.assertFalse(cw.is_compatible("29110", "12", "110"))
+
+        # Jeonnam Mokpo (46110) must match TourAPI (12, 110) but NOT (12, 210: Gwangju Dong-gu)
+        self.assertTrue(cw.is_compatible("46110", "12", "110"))
+        self.assertFalse(cw.is_compatible("46110", "12", "210"))
+
+        # Gwangju Buk-gu (29170) must match TourAPI (12, 300) but NOT (12, 170: Naju)
+        self.assertTrue(cw.is_compatible("29170", "12", "300"))
+        self.assertFalse(cw.is_compatible("29170", "12", "170"))
+
+        # Jeonnam Naju (46170) must match TourAPI (12, 170) but NOT (12, 300: Gwangju Buk-gu)
+        self.assertTrue(cw.is_compatible("46170", "12", "170"))
+        self.assertFalse(cw.is_compatible("46170", "12", "300"))
+
+        # 2-digit SIDO without signgu must fail-closed (cannot distinguish Gwangju vs Jeonnam)
+        self.assertFalse(cw.is_compatible("29", "12", ""))
+        self.assertFalse(cw.is_compatible("46", "12", ""))
+
+    def test_sejong_special_city_mapping(self) -> None:
+        cw = SggCrosswalk()
+        # Sejong 5-digit 36110 matches TourAPI (36110, 36110)
+        self.assertTrue(cw.is_compatible("36110", "36110", "36110"))
+        # Sejong 2-digit 36 matches TourAPI (36110, 36110)
+        self.assertTrue(cw.is_compatible("36", "36110", "36110"))
+        # Sejong does not match Seoul (11, 110)
+        self.assertFalse(cw.is_compatible("36110", "11", "110"))
+
+    def test_sido_sigungu_code_confusion_prevention(self) -> None:
+        cw = SggCrosswalk()
+        # 2-digit SIDO code 36 should not match random 5-digit code unless valid
+        self.assertFalse(cw.is_compatible("36", "41", "110"))
+        # 5-digit 42110 (Gangwon Chuncheon) should match (51, 110) but not (42, 110) if TourAPI uses 51
+        self.assertTrue(cw.is_compatible("42110", "51", "110"))
+        self.assertFalse(cw.is_compatible("42110", "51", "130"))  # Wonju
+
+    def test_general_district_city_compatibility(self) -> None:
+        cw = SggCrosswalk()
+        # Suwon-si: representative 41110 vs sub-districts 111, 113, 115, 117
+        self.assertTrue(cw.is_compatible("41110", "41", "111"))  # Suwon-si vs Jangan-gu
+        self.assertTrue(cw.is_compatible("41110", "41", "113"))  # Suwon-si vs Gwonseon-gu
+        self.assertTrue(cw.is_compatible("41111", "41", "110"))  # Jangan-gu vs Suwon-si rep
+        # Seongnam-si: representative 41130 vs sub-district 135 (Bundang-gu)
+        self.assertTrue(cw.is_compatible("41130", "41", "135"))
+        # Jeonju-si: migrated 45110 (AI Hub) vs 52111 / 52113 (TourAPI)
+        self.assertTrue(cw.is_compatible("45110", "52", "111"))
+        self.assertTrue(cw.is_compatible("45113", "52", "110"))
+        # Changwon-si: 48120 vs 48121 (Uichang-gu)
+        self.assertTrue(cw.is_compatible("48120", "48", "121"))
+        # Incompatible across different cities
+        self.assertFalse(cw.is_compatible("41110", "41", "131"))  # Suwon rep vs Seongnam sub-district
+        self.assertFalse(cw.is_compatible("41111", "41", "135"))  # Suwon Jangan vs Seongnam Bundang
+
+    def test_multi_csv_loading(self) -> None:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".csv", delete=False) as f1, \
+             tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".csv", delete=False) as f2:
+            f1.write("SGG_CD1,SGG_CD2,SIDO_NM,SGG_NM\n11,110,서울특별시,종로구\n")
+            f2.write("SGG_CD1,SGG_CD2,SIDO_NM,SGG_NM\n41,110,경기도,수원시\n")
+            p1, p2 = f1.name, f2.name
+
+        try:
+            cw = SggCrosswalk([p1, p2])
+            self.assertIn("11110", cw.aihub_to_names)
+            self.assertIn("41110", cw.aihub_to_names)
+            self.assertEqual(cw.aihub_to_names["11110"], ("서울특별시", "종로구"))
+            self.assertEqual(cw.aihub_to_names["41110"], ("경기도", "수원시"))
+        finally:
+            Path(p1).unlink(missing_ok=True)
+            Path(p2).unlink(missing_ok=True)
+
 
 class NameNormalizerTests(unittest.TestCase):
     def test_punctuation_n1(self) -> None:

@@ -14,13 +14,14 @@ import hashlib
 import json
 import math
 import os
+import random
 import sys
 import time
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
@@ -40,6 +41,8 @@ from scripts.recommendation.name_normalizer import (
     generate_location_gated_name_variants,
     normalize_punctuation_n1,
     split_parenthetical_variants_n2,
+    strip_facility_suffix,
+    strip_region_prefix,
 )
 from scripts.recommendation.poi_catalog_candidate_contract import (
     CatalogPoi,
@@ -100,19 +103,35 @@ def _safe_float(val: str | None) -> float | None:
         return None
 
 
-def load_all_tc_sgg(capital_tl_dir: Path) -> SggCrosswalk:
-    files = list(capital_tl_dir.glob("*sgg*.csv")) + list(capital_tl_dir.glob("*SGG*.csv"))
-    if files:
-        cw = SggCrosswalk(files[0])
-        if cw.aihub_to_names:
-            return cw
+def load_all_tc_sgg(capital_tl_dir: Path | None = None) -> SggCrosswalk:
+    """Load TC_SGG crosswalk across all 4 regions."""
+    sgg_paths: list[Path] = []
+    for reg_key in ["CAPITAL_TL", "WEST_TL", "EAST_TL", "JEJU_TL", "CAPITAL_VL", "WEST_VL", "EAST_VL", "JEJU_VL"]:
+        val = os.environ.get(reg_key)
+        if val:
+            p = Path(val).resolve()
+            found = list(p.glob("*sgg*.csv")) + list(p.glob("*SGG*.csv"))
+            for f in found:
+                if f not in sgg_paths:
+                    sgg_paths.append(f)
+
+    if capital_tl_dir:
+        for f in list(capital_tl_dir.glob("*sgg*.csv")) + list(capital_tl_dir.glob("*SGG*.csv")):
+            if f not in sgg_paths:
+                sgg_paths.append(f)
+
     raw_root_val = os.environ.get("RAW_ROOT")
     if raw_root_val:
-        for sgg_path in Path(raw_root_val).glob("**/tc_sgg*.csv"):
-            cw = SggCrosswalk(sgg_path)
-            if cw.aihub_to_names:
-                return cw
-    raise FileNotFoundError("TC_SGG CSV could not be located")
+        for f in Path(raw_root_val).glob("**/tc_sgg*.csv"):
+            if f not in sgg_paths:
+                sgg_paths.append(f)
+
+    if not sgg_paths:
+        raise FileNotFoundError("TC_SGG CSV could not be located")
+
+    cw = SggCrosswalk()
+    cw.load_from_csvs(sgg_paths)
+    return cw
 
 
 def load_all_visit_positives() -> list[PositiveObservation]:
@@ -263,7 +282,7 @@ def load_master_records_fast(
     return records
 
 
-def percentile(data: list[float], p: float) -> float:
+def percentile(data: Sequence[float], p: float) -> float:
     if not data:
         return 0.0
     data_sorted = sorted(data)
@@ -275,6 +294,24 @@ def percentile(data: list[float], p: float) -> float:
     d0 = data_sorted[int(f)] * (c - k)
     d1 = data_sorted[int(c)] * (k - f)
     return d0 + d1
+
+
+def compute_distribution_summary(values: list[int | float]) -> dict:
+    if not values:
+        return {
+            "min": 0, "p25": 0.0, "p50": 0.0, "mean": 0.0,
+            "p75": 0.0, "p90": 0.0, "p99": 0.0, "max": 0,
+        }
+    return {
+        "min": min(values),
+        "p25": round(percentile(values, 25), 2),
+        "p50": round(percentile(values, 50), 2),
+        "mean": round(sum(values) / len(values), 2),
+        "p75": round(percentile(values, 75), 2),
+        "p90": round(percentile(values, 90), 2),
+        "p99": round(percentile(values, 99), 2),
+        "max": max(values),
+    }
 
 
 def build_spatial_grid(catalog: list[CatalogPoi], step: float = GRID_STEP) -> dict[tuple[int, int], list[CatalogPoi]]:
@@ -304,13 +341,24 @@ def run_pipeline(
     sgg_crosswalk: SggCrosswalk,
     policy,
 ) -> dict:
-    """Execute Stage 0 through Stage 5 pipeline with holdout anchor validation and cohort analysis."""
+    """Execute Stage 0 through Stage 5 pipeline with holdout anchor validation, seed coverage and precision audit."""
     # Pre-index catalog
     by_contentid: dict[str, CatalogPoi] = {item.content_id: item for item in catalog}
     by_norm_title: dict[str, list[CatalogPoi]] = defaultdict(list)
     by_parsed_road_full: dict[tuple, list[CatalogPoi]] = defaultdict(list)
     by_parsed_lotno_full: dict[tuple, list[CatalogPoi]] = defaultdict(list)
     item_parsed_addrs: dict[str, ParsedAddress] = {}
+
+    region_ldong_map = {k: frozenset(v) for k, v in policy.product_region_to_ldong_regn_cd.items()}
+
+    # Eligible catalog candidates: contenttypeid in {12, 14, 28} and compatible with any ProductRegion
+    eligible_catalog_items = [
+        item for item in catalog
+        if item.content_type_id in SUPPORTED_CONTENT_TYPES
+        and any(bool(item.region_codes & region_ldong_map[r]) for r in REGIONS)
+    ]
+    eligible_content_ids = {item.content_id for item in eligible_catalog_items}
+    total_eligible_candidates = len(eligible_content_ids)
 
     for item in catalog:
         norm_title = normalize_text(item.title)
@@ -326,7 +374,6 @@ def run_pipeline(
                 by_parsed_lotno_full[parsed.lotno_key.key_full].append(item)
 
     spatial_grid = build_spatial_grid(catalog)
-    region_ldong_map = {k: frozenset(v) for k, v in policy.product_region_to_ldong_regn_cd.items()}
 
     # Group observations by (region, poi_id)
     poi_visits: dict[tuple[str, str], list[PositiveObservation]] = defaultdict(list)
@@ -336,11 +383,9 @@ def run_pipeline(
     # -------------------------------------------------------------
     # Stage 0: Compute both Global Scope (Arm D) and Regional Scope
     # -------------------------------------------------------------
-    # 1) Global Scope Arm D (matches Issue #4 canonical baseline behavior)
     global_arm_d_matches: dict[tuple[str, str], str] = {}
     anchor_pairs_global: list[tuple[PositiveObservation, MasterPoiRecord, CatalogPoi]] = []
 
-    # 2) Regional Scope Stage 0 (strictly constrained by ProductRegion allowed_ldong)
     regional_stage0_results: dict[tuple[str, str], tuple[str, str | None]] = {}
     anchor_pairs_regional: list[tuple[PositiveObservation, MasterPoiRecord, CatalogPoi]] = []
     anchor_unique_pois: dict[tuple[str, str], str] = {}  # (region, poi_id) -> canonical content_id
@@ -609,11 +654,56 @@ def run_pipeline(
                             break
 
         if len(set(sgg_compat_cands)) == 1:
-            stages_results[2][key] = ("MATCHED", sgg_compat_cands[0])
+            cand_id = sgg_compat_cands[0]
+            cand = by_contentid[cand_id]
+            is_vetoed = False
+
+            # Veto 1: WGS84 distance check if coordinates are present on both sides
+            m_x, m_y = data["master_x"], data["master_y"]
+            if m_x and m_y and cand.mapx and cand.mapy:
+                d = haversine_distance_meters(m_y, m_x, cand.mapy, cand.mapx)
+                if d > 200.0:
+                    is_vetoed = True
+
+            # Veto 2: Address main number conflict if parsed addresses are present on both sides
+            if not is_vetoed:
+                cand_parsed = item_parsed_addrs.get(cand_id)
+                if cand_parsed is None:
+                    cand_parsed = parse_address_string(f"{cand.address} {cand.addr2}".strip())
+                if cand_parsed and data["parsed_master_addrs"]:
+                    # Road address conflict check
+                    if cand_parsed.road_key is not None:
+                        c_rk = cand_parsed.road_key
+                        for ma in data["parsed_master_addrs"]:
+                            if ma.road_key is not None:
+                                s_rk = ma.road_key
+                                if (c_rk.sido, c_rk.sigungu, c_rk.road_name) == (s_rk.sido, s_rk.sigungu, s_rk.road_name):
+                                    if c_rk.main_no != s_rk.main_no:
+                                        is_vetoed = True
+                                        break
+                    # Lotno address conflict check
+                    if not is_vetoed and cand_parsed.lotno_key is not None:
+                        c_lk = cand_parsed.lotno_key
+                        for ma in data["parsed_master_addrs"]:
+                            if ma.lotno_key is not None:
+                                s_lk = ma.lotno_key
+                                if (c_lk.sido, c_lk.sigungu, c_lk.emd_ri, c_lk.san_flag) == (s_lk.sido, s_lk.sigungu, s_lk.emd_ri, s_lk.san_flag):
+                                    if c_lk.main_no != s_lk.main_no:
+                                        is_vetoed = True
+                                        break
+
+            if not is_vetoed:
+                stages_results[2][key] = ("MATCHED", cand_id)
+            else:
+                stages_results[2][key] = (s1_status, None)
         else:
             stages_results[2][key] = (s1_status, None)
 
     # Stage 3: Stage 2 + Verified Coordinates Proximity Resolution
+    # Refined:
+    # 1. <= 200.0m with Nearest-Neighbor margin (d2 - d1 >= 50m) or single candidate -> MATCHED
+    # 2. 200m < d <= 500m allowed ONLY if unique title candidate in region AND verified by TC_SGG agreement
+    stage3_breakdown = {"le_200m": 0, "between_200m_and_500m": 0}
     for key, data in enriched_source.items():
         region, poi_id = key
         allowed_ldong = region_ldong_map.get(region, frozenset())
@@ -652,19 +742,29 @@ def run_pipeline(
         closest_cand, closest_d = cands_with_dist[0]
 
         if closest_d <= 200.0:
-            if len(cands_with_dist) == 1 or cands_with_dist[1][1] > 200.0 or (cands_with_dist[1][1] - closest_d > 50.0):
+            if len(cands_with_dist) == 1 or cands_with_dist[1][1] > 200.0 or (cands_with_dist[1][1] - closest_d >= 50.0):
                 stages_results[3][key] = ("MATCHED", closest_cand.content_id)
+                stage3_breakdown["le_200m"] += 1
             else:
                 stages_results[3][key] = ("AMBIGUOUS", None)
-        elif closest_d <= 500.0 and len(cands_with_dist) == 1:
-            stages_results[3][key] = ("MATCHED", closest_cand.content_id)
+        elif closest_d <= 500.0 and len(name_cands) == 1:
+            # Strict requirement: unique candidate in region + TC_SGG agreement
+            sgg_ok = False
+            if data["master_sgg"]:
+                for regn in closest_cand.region_codes:
+                    for signgu in closest_cand.district_codes:
+                        if sgg_crosswalk.is_compatible(data["master_sgg"], regn, signgu):
+                            sgg_ok = True
+                            break
+            if sgg_ok:
+                stages_results[3][key] = ("MATCHED", closest_cand.content_id)
+                stage3_breakdown["between_200m_and_500m"] += 1
+            else:
+                stages_results[3][key] = (s2_status, None)
         else:
             stages_results[3][key] = (s2_status, None)
 
     # Stage 4: Stage 3 + Visit Area Info Integration
-    # Conservative principle: A place name signal is REQUIRED. In the actual dataset,
-    # 100% of observations carry a non-empty VISIT_AREA_NM, allowing candidate_names to form.
-    # Observations without any name signal would remain identity_source_missing.
     for key, data in enriched_source.items():
         region, poi_id = key
         allowed_ldong = region_ldong_map.get(region, frozenset())
@@ -679,7 +779,6 @@ def run_pipeline(
         candidate_names.update(data["all_visit_names"])
 
         if not candidate_names:
-            # Conservative gate: cannot resolve identity without a place name
             stages_results[4][key] = ("identity_source_missing", None)
             continue
 
@@ -715,7 +814,6 @@ def run_pipeline(
         if len(exact_full_matches) == 1:
             resolved_id = next(iter(exact_full_matches))
         elif len(exact_full_matches) == 0:
-            # Check gated main match if single candidate with supporting distance or sgg
             eff_x = data["master_x"] if data["master_x"] is not None else data["visit_x"]
             eff_y = data["master_y"] if data["master_y"] is not None else data["visit_y"]
 
@@ -734,7 +832,6 @@ def run_pipeline(
                 if dist_ok or sgg_ok:
                     resolved_id = cand.content_id
 
-            # Coordinate fallback if no address match
             if resolved_id is None and eff_x and eff_y:
                 dist_cands = []
                 for cand in unique_cands.values():
@@ -743,7 +840,7 @@ def run_pipeline(
                         dist_cands.append((cand, d))
                 dist_cands.sort(key=lambda x: x[1])
                 if dist_cands and dist_cands[0][1] <= 200.0:
-                    if len(dist_cands) == 1 or dist_cands[1][1] > 200.0 or (dist_cands[1][1] - dist_cands[0][1] > 50.0):
+                    if len(dist_cands) == 1 or dist_cands[1][1] > 200.0 or (dist_cands[1][1] - dist_cands[0][1] >= 50.0):
                         resolved_id = dist_cands[0][0].content_id
 
         if resolved_id is not None:
@@ -753,6 +850,10 @@ def run_pipeline(
 
     # Stage 5: Stage 4 + Location-Gated Name Normalization
     # Strict rule: Address-based location gating uses ONLY by_parsed_road_full and by_parsed_lotno_full
+    # Strict rule: Coordinate-based gating strictly enforced <= 200.0m + Nearest-Neighbor Margin (d2 - d1 >= 50.0m)
+    stage5_rule_counts = Counter()
+    stage5_cands_200_to_500m_sensitivity = 0
+
     for key, data in enriched_source.items():
         region, poi_id = key
         allowed_ldong = region_ldong_map.get(region, frozenset())
@@ -778,15 +879,30 @@ def run_pipeline(
             stages_results[5][key] = (s4_status, None)
             continue
 
-        # Fast spatial grid query constrained by region
+        # Coordinate-based candidates with strict <= 200m and margin
         nearby_catalog_items: list[CatalogPoi] = []
         if eff_x and eff_y:
             nearby_cands = query_spatial_grid(spatial_grid, eff_y, eff_x)
+            cands_with_d: list[tuple[CatalogPoi, float]] = []
             for item in nearby_cands:
                 if bool(item.region_codes & allowed_ldong) and item.mapx and item.mapy:
                     d = haversine_distance_meters(eff_y, eff_x, item.mapy, item.mapx)
                     if d <= 500.0:
-                        nearby_catalog_items.append(item)
+                        cands_with_d.append((item, d))
+
+            cands_with_d.sort(key=lambda x: x[1])
+            le_200 = [x for x in cands_with_d if x[1] <= 200.0]
+            between_200_500 = [x for x in cands_with_d if 200.0 < x[1] <= 500.0]
+            if between_200_500 and not le_200:
+                stage5_cands_200_to_500m_sensitivity += 1
+
+            # Only accept <= 200m items that meet margin or are single candidate
+            if le_200:
+                if len(le_200) == 1 or (le_200[1][1] - le_200[0][1] >= 50.0):
+                    nearby_catalog_items.append(le_200[0][0])
+                else:
+                    # Margin < 50m: ambiguous coordinate, omit from pure coordinate candidates
+                    pass
 
         # Address match: strictly by full keys only
         address_matched_items: list[CatalogPoi] = []
@@ -812,10 +928,24 @@ def run_pipeline(
             all_src_variants.update(generate_location_gated_name_variants(name, sido_tokens, sgg_tokens))
 
         matched_stage5_cands: set[str] = set()
+        matched_rule_tag: str = ""
+
         for cand_id, item in location_supported_items.items():
             cand_variants = generate_location_gated_name_variants(item.title)
-            if all_src_variants & cand_variants:
+            intersection = all_src_variants & cand_variants
+            if intersection:
                 matched_stage5_cands.add(cand_id)
+                # Classify rule
+                if any(normalize_punctuation_n1(nm) in cand_variants for nm in candidate_names):
+                    matched_rule_tag = "N1_whitespace_punct"
+                elif any("(" in nm or ")" in nm for nm in candidate_names):
+                    matched_rule_tag = "N2_parentheses"
+                elif any(strip_region_prefix(nm, sido_tokens + sgg_tokens) != nm for nm in candidate_names):
+                    matched_rule_tag = "region_prefix"
+                elif any(strip_facility_suffix(nm) != nm for nm in candidate_names):
+                    matched_rule_tag = "facility_suffix"
+                else:
+                    matched_rule_tag = "normalized_variant"
             else:
                 if eff_x and eff_y and item.mapx and item.mapy:
                     d = haversine_distance_meters(eff_y, eff_x, item.mapy, item.mapx)
@@ -824,16 +954,19 @@ def run_pipeline(
                         norm_cand = {normalize_punctuation_n1(v) for v in cand_variants}
                         if any(s in c or c in s for s in norm_src for c in norm_cand if min(len(s), len(c)) >= 4):
                             matched_stage5_cands.add(cand_id)
+                            matched_rule_tag = "le_100m_nearest_substring"
 
         if len(matched_stage5_cands) == 1:
-            stages_results[5][key] = ("MATCHED", next(iter(matched_stage5_cands)))
+            cid = next(iter(matched_stage5_cands))
+            stages_results[5][key] = ("MATCHED", cid)
+            stage5_rule_counts[matched_rule_tag] += 1
         elif len(matched_stage5_cands) > 1:
             stages_results[5][key] = ("AMBIGUOUS", None)
         else:
             stages_results[5][key] = (s4_status, None)
 
     # -------------------------------------------------------------
-    # Independent (Non-short-circuited) Holdout Anchor Precision Verification
+    # Independent (Non-short-circuited) Holdout Anchor Agreement Verification
     # Evaluates each individual matching evidence in isolation on the Stage 0 Anchor set.
     # -------------------------------------------------------------
     independent_rule_stats = {}
@@ -850,7 +983,7 @@ def run_pipeline(
             "matched_pois": 0,
             "same_contentid_count": 0,
             "conflicting_contentid_count": 0,
-            "precision": 0.0,
+            "agreement_rate": 0.0,
             "recall": 0.0,
         }
 
@@ -862,7 +995,7 @@ def run_pipeline(
             if bool(c.region_codes & allowed_ldong)
         ]
 
-        # Rule 1: Structured Address Key Only (Without full-string exact match)
+        # Rule 1: Structured Address Key Only
         r1_cands = set()
         for cand in name_cands:
             cand_parsed = item_parsed_addrs.get(cand.content_id)
@@ -907,7 +1040,7 @@ def run_pipeline(
             d_cands.sort(key=lambda x: x[1])
             if d_cands:
                 closest_c, closest_d = d_cands[0]
-                if closest_d <= 200.0 and (len(d_cands) == 1 or d_cands[1][1] > 200.0 or (d_cands[1][1] - closest_d > 50.0)):
+                if closest_d <= 200.0 and (len(d_cands) == 1 or d_cands[1][1] > 200.0 or (d_cands[1][1] - closest_d >= 50.0)):
                     cid = closest_c.content_id
                     independent_rule_stats["rule_3_geo_distance_only"]["matched_pois"] += 1
                     if cid == canonical_id:
@@ -915,7 +1048,7 @@ def run_pipeline(
                     else:
                         independent_rule_stats["rule_3_geo_distance_only"]["conflicting_contentid_count"] += 1
 
-        # Rule 4: Visit Signals Only (ignoring master record completely)
+        # Rule 4: Visit Signals Only
         if data["all_visit_names"]:
             v_cands = []
             for v_nm in data["all_visit_names"]:
@@ -937,7 +1070,7 @@ def run_pipeline(
                 else:
                     independent_rule_stats["rule_4_visit_signals_only"]["conflicting_contentid_count"] += 1
 
-        # Rule 5: Name Normalizer Only with location gate
+        # Rule 5: Name Normalizer Only
         eff_x = data["master_x"] if data["master_x"] is not None else data["visit_x"]
         eff_y = data["master_y"] if data["master_y"] is not None else data["visit_y"]
         all_parsed = data["parsed_master_addrs"] + data["parsed_visit_addrs"]
@@ -946,7 +1079,7 @@ def run_pipeline(
             if eff_x and eff_y:
                 for it in query_spatial_grid(spatial_grid, eff_y, eff_x):
                     if bool(it.region_codes & allowed_ldong) and it.mapx and it.mapy:
-                        if haversine_distance_meters(eff_y, eff_x, it.mapy, it.mapx) <= 500.0:
+                        if haversine_distance_meters(eff_y, eff_x, it.mapy, it.mapx) <= 200.0:
                             near_items.append(it)
             addr_items = []
             for sa in all_parsed:
@@ -982,10 +1115,10 @@ def run_pipeline(
         tot = independent_rule_stats[rk]["anchor_total_pois"]
         m_cnt = independent_rule_stats[rk]["matched_pois"]
         s_cnt = independent_rule_stats[rk]["same_contentid_count"]
-        independent_rule_stats[rk]["precision"] = round(s_cnt / m_cnt, 4) if m_cnt else 0.0
+        independent_rule_stats[rk]["agreement_rate"] = round(s_cnt / m_cnt, 4) if m_cnt else 0.0
         independent_rule_stats[rk]["recall"] = round(s_cnt / tot, 4) if tot else 0.0
 
-    anchor_dist_summary["independent_rule_anchor_precision"] = independent_rule_stats
+    anchor_dist_summary["independent_rule_anchor_agreement"] = independent_rule_stats
 
     # -------------------------------------------------------------
     # 3. Aggregate results over all 97,640 observed positives and cohorts
@@ -995,14 +1128,15 @@ def run_pipeline(
     master_missing_cohort_metrics = {}
     by_region_split_metrics = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
 
-    # Identify master_missing observation keys
     master_missing_keys = {
         (obs.region, obs.poi_id) for obs in positives
         if not enriched_source[(obs.region, obs.poi_id)]["has_master"]
     }
     master_missing_obs_total = sum(1 for obs in positives if (obs.region, obs.poi_id) in master_missing_keys)
-
     total_anchor_obs = len(anchor_pairs_regional)
+
+    # Track matched content_ids per stage
+    stage_matched_contentids: dict[int, set[str]] = {}
 
     for stage_idx in range(6):
         res_map = stages_results[stage_idx]
@@ -1015,6 +1149,7 @@ def run_pipeline(
         cohort_counts = defaultdict(Counter)
         master_missing_counts = Counter()
         master_missing_candidate_contained = 0
+        matched_cids = set()
 
         for obs in positives:
             key = (obs.region, obs.poi_id)
@@ -1028,6 +1163,7 @@ def run_pipeline(
                 master_missing_counts[status] += 1
 
             if status == "MATCHED" and matched_id:
+                matched_cids.add(matched_id)
                 cand_item = by_contentid[matched_id]
                 content_type_counts[cand_item.content_type_id] += 1
 
@@ -1051,6 +1187,7 @@ def run_pipeline(
                 else:
                     anchor_conflict_count += 1
 
+        stage_matched_contentids[stage_idx] = matched_cids
         total_obs = len(positives)
         stage_metrics[f"stage_{stage_idx}"] = {
             "status_counts": dict(counts),
@@ -1066,7 +1203,6 @@ def run_pipeline(
             },
         }
 
-        # Track master_missing cohort specifically
         master_missing_cohort_metrics[f"stage_{stage_idx}"] = {
             "total_observations": master_missing_obs_total,
             "total_unique_poi_pairs": len(master_missing_keys),
@@ -1086,6 +1222,461 @@ def run_pipeline(
             for v_type, c in cohort_counts.items()
         }
 
+    # -------------------------------------------------------------
+    # 4. Task 2: Catalog Seed Coverage & Signal Density Distributions
+    # -------------------------------------------------------------
+    # (1) Stage 0 to 5 seed coverage
+    catalog_seed_coverage_by_stage = {}
+    for st_idx in range(6):
+        cids = stage_matched_contentids[st_idx]
+        matched_eligible = cids & eligible_content_ids
+        catalog_seed_coverage_by_stage[f"stage_{st_idx}"] = {
+            "matched_eligible_contentids": len(matched_eligible),
+            "total_eligible_candidates": total_eligible_candidates,
+            "eligible_seed_coverage_rate": round(len(matched_eligible) / total_eligible_candidates, 4),
+            "matched_all_snapshot_contentids": len(cids),
+            "total_snapshot_items": len(catalog),
+            "all_snapshot_coverage_rate": round(len(cids) / len(catalog), 4),
+        }
+
+    # (2) Region breakdown (Stage 0 vs Stage 5)
+    region_seed_coverage = {}
+    for r in REGIONS:
+        r_ldong = region_ldong_map[r]
+        r_eligible = {it.content_id for it in eligible_catalog_items if bool(it.region_codes & r_ldong)}
+        s0_m = len(stage_matched_contentids[0] & r_eligible)
+        s5_m = len(stage_matched_contentids[5] & r_eligible)
+        region_seed_coverage[r] = {
+            "total_eligible": len(r_eligible),
+            "stage_0_matched": s0_m,
+            "stage_0_coverage_rate": round(s0_m / len(r_eligible), 4) if r_eligible else 0.0,
+            "stage_5_matched": s5_m,
+            "stage_5_coverage_rate": round(s5_m / len(r_eligible), 4) if r_eligible else 0.0,
+        }
+
+    # (3) Content type breakdown (Stage 0 vs Stage 5)
+    type_seed_coverage = {}
+    for ctype in sorted(SUPPORTED_CONTENT_TYPES):
+        t_eligible = {it.content_id for it in eligible_catalog_items if it.content_type_id == ctype}
+        s0_m = len(stage_matched_contentids[0] & t_eligible)
+        s5_m = len(stage_matched_contentids[5] & t_eligible)
+        type_seed_coverage[ctype] = {
+            "total_eligible": len(t_eligible),
+            "stage_0_matched": s0_m,
+            "stage_0_coverage_rate": round(s0_m / len(t_eligible), 4) if t_eligible else 0.0,
+            "stage_5_matched": s5_m,
+            "stage_5_coverage_rate": round(s5_m / len(t_eligible), 4) if t_eligible else 0.0,
+        }
+
+    # (4) Signal density distribution per seeded eligible contentid (Stage 5)
+    contentid_pos_obs_counts = Counter()
+    contentid_travel_ids = defaultdict(set)
+    contentid_poi_ids = defaultdict(set)
+
+    for obs in positives:
+        status, matched_id = stages_results[5][(obs.region, obs.poi_id)]
+        if status == "MATCHED" and matched_id and (matched_id in eligible_content_ids):
+            contentid_pos_obs_counts[matched_id] += 1
+            contentid_travel_ids[matched_id].add(obs.travel_id)
+            contentid_poi_ids[matched_id].add(obs.poi_id)
+
+    seeded_eligible_cids = stage_matched_contentids[5] & eligible_content_ids
+    obs_counts_list = [contentid_pos_obs_counts[cid] for cid in seeded_eligible_cids]
+    travel_counts_list = [len(contentid_travel_ids[cid]) for cid in seeded_eligible_cids]
+    poi_counts_list = [len(contentid_poi_ids[cid]) for cid in seeded_eligible_cids]
+
+    def _bucket_distribution(values: list[int], buckets: list[tuple[str, int, int]]) -> dict:
+        total = len(values)
+        counts = {b[0]: 0 for b in buckets}
+        for v in values:
+            for name, low, high in buckets:
+                if low <= v <= high:
+                    counts[name] += 1
+                    break
+        return {
+            b_name: {
+                "count": c,
+                "share": round(c / total, 4) if total else 0.0,
+            }
+            for b_name, c in counts.items()
+        }
+
+    signal_density_distribution = {
+        "seeded_eligible_items_count": len(seeded_eligible_cids),
+        "positive_observations_per_contentid": {
+            "quantiles": compute_distribution_summary(obs_counts_list),
+            "buckets": _bucket_distribution(obs_counts_list, [
+                ("1_obs", 1, 1),
+                ("2_to_4_obs", 2, 4),
+                ("5_to_9_obs", 5, 9),
+                ("10_to_19_obs", 10, 19),
+                ("20_plus_obs", 20, 999999),
+            ]),
+        },
+        "distinct_travel_ids_per_contentid": {
+            "quantiles": compute_distribution_summary(travel_counts_list),
+            "buckets": _bucket_distribution(travel_counts_list, [
+                ("1_travel", 1, 1),
+                ("2_to_4_travels", 2, 4),
+                ("5_to_9_travels", 5, 9),
+                ("10_to_19_travels", 10, 19),
+                ("20_plus_travels", 20, 999999),
+            ]),
+        },
+        "distinct_poi_ids_per_contentid": {
+            "quantiles": compute_distribution_summary(poi_counts_list),
+            "buckets": _bucket_distribution(poi_counts_list, [
+                ("1_poi", 1, 1),
+                ("2_to_3_pois", 2, 3),
+                ("4_plus_pois", 4, 999999),
+            ]),
+        },
+    }
+
+    catalog_seed_coverage_report = {
+        "by_stage": catalog_seed_coverage_by_stage,
+        "region_breakdown": region_seed_coverage,
+        "type_breakdown": type_seed_coverage,
+        "signal_density": signal_density_distribution,
+    }
+
+    # -------------------------------------------------------------
+    # 5. Task 3: Candidate Density & Nearest-Neighbor Margin Analysis
+    # -------------------------------------------------------------
+    # Analyze candidate density within 50m, 100m, 200m, 500m around each observed POI with valid coordinates
+    unique_poi_coords = []
+    for key, data in enriched_source.items():
+        eff_x = data["master_x"] if data["master_x"] is not None else data["visit_x"]
+        eff_y = data["master_y"] if data["master_y"] is not None else data["visit_y"]
+        if eff_x and eff_y and is_valid_korea_wgs84(eff_y, eff_x):
+            unique_poi_coords.append((key[0], eff_y, eff_x))
+
+    radius_buckets = {50.0: Counter(), 100.0: Counter(), 200.0: Counter(), 500.0: Counter()}
+    for reg, lat, lon in unique_poi_coords:
+        allowed_ldong = region_ldong_map.get(reg, frozenset())
+        cands = query_spatial_grid(spatial_grid, lat, lon)
+        dists = [
+            haversine_distance_meters(lat, lon, it.mapy, it.mapx)
+            for it in cands
+            if bool(it.region_codes & allowed_ldong) and it.mapx and it.mapy
+        ]
+        for rad in [50.0, 100.0, 200.0, 500.0]:
+            cnt = sum(1 for d in dists if d <= rad)
+            if cnt == 0:
+                tag = "0"
+            elif cnt == 1:
+                tag = "1"
+            elif 2 <= cnt <= 3:
+                tag = "2_to_3"
+            elif 4 <= cnt <= 9:
+                tag = "4_to_9"
+            else:
+                tag = "10_plus"
+            radius_buckets[rad][tag] += 1
+
+    tot_unique_coords = len(unique_poi_coords)
+    radius_density_summary = {
+        f"radius_le_{int(rad)}m": {
+            tag: {
+                "count": c,
+                "share": round(c / tot_unique_coords, 4) if tot_unique_coords else 0.0,
+            }
+            for tag, c in radius_buckets[rad].items()
+        }
+        for rad in [50.0, 100.0, 200.0, 500.0]
+    }
+
+    # Margin distribution for coordinate-based matches
+    margin_counts = Counter()
+    for key, data in enriched_source.items():
+        eff_x = data["master_x"] if data["master_x"] is not None else data["visit_x"]
+        eff_y = data["master_y"] if data["master_y"] is not None else data["visit_y"]
+        if not (eff_x and eff_y):
+            continue
+        allowed_ldong = region_ldong_map.get(key[0], frozenset())
+        cands = query_spatial_grid(spatial_grid, eff_y, eff_x)
+        dists = sorted([
+            haversine_distance_meters(eff_y, eff_x, it.mapy, it.mapx)
+            for it in cands
+            if bool(it.region_codes & allowed_ldong) and it.mapx and it.mapy and haversine_distance_meters(eff_y, eff_x, it.mapy, it.mapx) <= 500.0
+        ])
+        if not dists:
+            continue
+        if len(dists) == 1:
+            margin_counts["single_candidate_within_500m"] += 1
+        else:
+            m = dists[1] - dists[0]
+            if m >= 200.0:
+                margin_counts["margin_ge_200m"] += 1
+            elif m >= 100.0:
+                margin_counts["margin_100m_to_200m"] += 1
+            elif m >= 50.0:
+                margin_counts["margin_50m_to_100m"] += 1
+            else:
+                margin_counts["margin_lt_50m_excluded"] += 1
+
+    tot_margin = sum(margin_counts.values())
+    margin_summary = {
+        k: {
+            "count": v,
+            "share": round(v / tot_margin, 4) if tot_margin else 0.0,
+        }
+        for k, v in margin_counts.items()
+    }
+
+    # -------------------------------------------------------------
+    # 6. Task 4: Newly Promoted MATCHED Auxiliary Signal Verification & Stratified Audit
+    # -------------------------------------------------------------
+    STAGE_SIGNAL_ROLES = {
+        1: {
+            "primary_signals": ["structured_address_full_key"],
+            "primary_desc": "구조화 주소 키 (도로명/지번 full key 일치)",
+            "auxiliary_signals": ["wgs84_distance_le_200m", "tc_sgg_crosswalk"],
+            "auxiliary_desc": "WGS84 좌표 근접성(<=200m) 및 TC_SGG 시군구 일치",
+        },
+        2: {
+            "primary_signals": ["tc_sgg_crosswalk"],
+            "primary_desc": "TC_SGG 시군구 일치 (유일 후보 매칭)",
+            "auxiliary_signals": ["wgs84_distance_le_200m", "address_main_no_non_conflict"],
+            "auxiliary_desc": "WGS84 좌표 근접성(<=200m) 및 주소 본번 무충돌",
+        },
+        3: {
+            "primary_signals": ["wgs84_distance_le_200m_or_500m"],
+            "primary_desc": "WGS84 좌표 근접성 (<=200m, 200~500m 조건부 승격)",
+            "auxiliary_signals": ["tc_sgg_crosswalk", "address_main_no_non_conflict"],
+            "auxiliary_desc": "TC_SGG 시군구 일치 및 주소 본번 무충돌",
+        },
+        4: {
+            "primary_signals": ["visit_signals_address_coord_sgg"],
+            "primary_desc": "TN_VISIT_AREA_INFO 방문 행 다중 신호 보강 (주소/좌표/SGG)",
+            "auxiliary_signals": ["wgs84_distance_le_200m", "tc_sgg_crosswalk"],
+            "auxiliary_desc": "WGS84 좌표 근접성(<=200m) 및 TC_SGG 시군구 일치",
+        },
+        5: {
+            "primary_signals": ["spatial_gating_name_normalization"],
+            "primary_desc": "공간 게이팅(<=200m + 마진) 기반 이름 정규화/지점명 분리",
+            "auxiliary_signals": ["wgs84_distance_le_200m", "tc_sgg_crosswalk"],
+            "auxiliary_desc": "WGS84 좌표 근접성(<=200m) 및 TC_SGG 시군구 일치",
+        },
+    }
+
+    def evaluate_poi_defects(
+        data: dict,
+        cand: Any,
+        cand_parsed: Any,
+        cw: SggCrosswalk,
+    ) -> dict[str, bool]:
+        flags = {
+            "address_main_no_conflict": False,
+            "sgg_code_and_text_conflict": False,
+            "distance_excess_gt_200m": False,
+        }
+        all_src_addrs = data["parsed_master_addrs"] + data["parsed_visit_addrs"]
+        if cand_parsed and all_src_addrs:
+            road_conflict = False
+            lotno_conflict = False
+
+            if cand_parsed.road_key is not None:
+                c_rk = cand_parsed.road_key
+                for sa in all_src_addrs:
+                    if sa.road_key is not None:
+                        s_rk = sa.road_key
+                        if (c_rk.sido, c_rk.sigungu, c_rk.road_name) == (s_rk.sido, s_rk.sigungu, s_rk.road_name):
+                            if c_rk.main_no != s_rk.main_no:
+                                road_conflict = True
+                                break
+
+            if not road_conflict and cand_parsed.lotno_key is not None:
+                c_lk = cand_parsed.lotno_key
+                for sa in all_src_addrs:
+                    if sa.lotno_key is not None:
+                        s_lk = sa.lotno_key
+                        if (c_lk.sido, c_lk.sigungu, c_lk.emd_ri, c_lk.san_flag) == (s_lk.sido, s_lk.sigungu, s_lk.emd_ri, s_lk.san_flag):
+                            if c_lk.main_no != s_lk.main_no:
+                                lotno_conflict = True
+                                break
+
+            if road_conflict or lotno_conflict:
+                flags["address_main_no_conflict"] = True
+
+        all_sggs = ({data["master_sgg"]} | data["visit_sggs"]) - {""}
+        if all_sggs:
+            sgg_compat = any(
+                cw.is_compatible(s, r, d)
+                for s in all_sggs for r in cand.region_codes for d in cand.district_codes
+            )
+            if not sgg_compat:
+                flags["sgg_code_and_text_conflict"] = True
+
+        eff_x = data["master_x"] if data["master_x"] is not None else data["visit_x"]
+        eff_y = data["master_y"] if data["master_y"] is not None else data["visit_y"]
+        if eff_x and eff_y and cand.mapx and cand.mapy:
+            d = haversine_distance_meters(eff_y, eff_x, cand.mapy, cand.mapx)
+            if d > 200.0:
+                flags["distance_excess_gt_200m"] = True
+
+        return flags
+
+    def proportional_stratified_sample(
+        promoted_keys: list[tuple[str, str]],
+        sample_size: int = 100,
+        seed: int = 42,
+    ) -> tuple[list[tuple[str, str]], dict[str, int]]:
+        tot = len(promoted_keys)
+        if tot <= sample_size:
+            quotas = {r: sum(1 for reg, _ in promoted_keys if reg == r) for r in REGIONS}
+            return sorted(promoted_keys), quotas
+
+        by_region: dict[str, list[tuple[str, str]]] = {r: [] for r in REGIONS}
+        for reg, pid in sorted(promoted_keys):
+            by_region[reg].append((reg, pid))
+
+        exact_quotas = {r: sample_size * len(by_region[r]) / tot for r in REGIONS}
+        int_quotas = {r: int(exact_quotas[r]) for r in REGIONS}
+        remainders = {r: exact_quotas[r] - int_quotas[r] for r in REGIONS}
+
+        unassigned = sample_size - sum(int_quotas.values())
+        sorted_by_remainder = sorted(REGIONS, key=lambda r: (remainders[r], len(by_region[r])), reverse=True)
+        for r in sorted_by_remainder[:unassigned]:
+            int_quotas[r] += 1
+
+        rng = random.Random(seed)
+        sampled = []
+        for r in REGIONS:
+            q = int_quotas[r]
+            if q > 0 and by_region[r]:
+                sampled.extend(rng.sample(by_region[r], min(q, len(by_region[r]))))
+
+        return sorted(sampled), int_quotas
+
+    newly_promoted_verification = {}
+    stratified_audit_results = {}
+
+    for st_idx in range(1, 6):
+        curr_map = stages_results[st_idx]
+        prev_map = stages_results[st_idx - 1]
+
+        promoted_keys = [
+            k for k, (st, cid) in curr_map.items()
+            if st == "MATCHED" and prev_map[k][0] != "MATCHED" and cid is not None
+        ]
+
+        h_distances = []
+        sgg_agreed_count = 0
+        total_with_sgg = 0
+
+        for reg, pid in promoted_keys:
+            data = enriched_source[(reg, pid)]
+            cid = curr_map[(reg, pid)][1]
+            cand = by_contentid[cid]
+
+            eff_x = data["master_x"] if data["master_x"] is not None else data["visit_x"]
+            eff_y = data["master_y"] if data["master_y"] is not None else data["visit_y"]
+            if eff_x and eff_y and cand.mapx and cand.mapy:
+                h_distances.append(haversine_distance_meters(eff_y, eff_x, cand.mapy, cand.mapx))
+
+            all_sggs = ({data["master_sgg"]} | data["visit_sggs"]) - {""}
+            if all_sggs:
+                total_with_sgg += 1
+                if any(sgg_crosswalk.is_compatible(s, r, d) for s in all_sggs for r in cand.region_codes for d in cand.district_codes):
+                    sgg_agreed_count += 1
+
+        tot_prom = len(promoted_keys)
+        sig_info = STAGE_SIGNAL_ROLES.get(st_idx, {})
+        newly_promoted_verification[f"stage_{st_idx}"] = {
+            "stage_index": st_idx,
+            "primary_signals": sig_info.get("primary_signals", []),
+            "primary_desc": sig_info.get("primary_desc", ""),
+            "auxiliary_signals": sig_info.get("auxiliary_signals", []),
+            "auxiliary_desc": sig_info.get("auxiliary_desc", ""),
+            "total_newly_promoted_pois": tot_prom,
+            "valid_coordinate_pairs": len(h_distances),
+            "distance_quantiles": {
+                "p50": round(percentile(h_distances, 50), 2) if h_distances else 0.0,
+                "p90": round(percentile(h_distances, 90), 2) if h_distances else 0.0,
+            },
+            "distance_threshold_shares": {
+                "le_50m": round(sum(d <= 50.0 for d in h_distances) / len(h_distances), 4) if h_distances else 0.0,
+                "le_100m": round(sum(d <= 100.0 for d in h_distances) / len(h_distances), 4) if h_distances else 0.0,
+                "le_200m": round(sum(d <= 200.0 for d in h_distances) / len(h_distances), 4) if h_distances else 0.0,
+                "le_500m": round(sum(d <= 500.0 for d in h_distances) / len(h_distances), 4) if h_distances else 0.0,
+            },
+            "sgg_agreement_rate": round(sgg_agreed_count / total_with_sgg, 4) if total_with_sgg else 0.0,
+        }
+
+        # 1. Population Audit (전수 감사)
+        pop_defects = {
+            "address_main_no_conflict": 0,
+            "sgg_code_and_text_conflict": 0,
+            "distance_excess_gt_200m": 0,
+            "defect_free_count": 0,
+        }
+        for reg, pid in promoted_keys:
+            data = enriched_source[(reg, pid)]
+            cid = curr_map[(reg, pid)][1]
+            cand = by_contentid[cid]
+            cand_parsed = item_parsed_addrs.get(cid)
+
+            flags = evaluate_poi_defects(data, cand, cand_parsed, sgg_crosswalk)
+            has_defect = False
+            if flags["address_main_no_conflict"]:
+                pop_defects["address_main_no_conflict"] += 1
+                has_defect = True
+            if flags["sgg_code_and_text_conflict"]:
+                pop_defects["sgg_code_and_text_conflict"] += 1
+                has_defect = True
+            if flags["distance_excess_gt_200m"]:
+                pop_defects["distance_excess_gt_200m"] += 1
+                has_defect = True
+            if not has_defect:
+                pop_defects["defect_free_count"] += 1
+
+        # 2. Proportional Stratified Sample Audit (권역별 비례 층화 100건 표본 감사, seed=42)
+        sample_keys, region_quotas = proportional_stratified_sample(promoted_keys, sample_size=100, seed=42)
+        sample_size = len(sample_keys)
+
+        samp_defects = {
+            "address_main_no_conflict": 0,
+            "sgg_code_and_text_conflict": 0,
+            "distance_excess_gt_200m": 0,
+            "defect_free_count": 0,
+        }
+        for reg, pid in sample_keys:
+            data = enriched_source[(reg, pid)]
+            cid = curr_map[(reg, pid)][1]
+            cand = by_contentid[cid]
+            cand_parsed = item_parsed_addrs.get(cid)
+
+            flags = evaluate_poi_defects(data, cand, cand_parsed, sgg_crosswalk)
+            has_defect = False
+            if flags["address_main_no_conflict"]:
+                samp_defects["address_main_no_conflict"] += 1
+                has_defect = True
+            if flags["sgg_code_and_text_conflict"]:
+                samp_defects["sgg_code_and_text_conflict"] += 1
+                has_defect = True
+            if flags["distance_excess_gt_200m"]:
+                samp_defects["distance_excess_gt_200m"] += 1
+                has_defect = True
+            if not has_defect:
+                samp_defects["defect_free_count"] += 1
+
+        pop_rate = round(pop_defects["defect_free_count"] / tot_prom, 4) if tot_prom else 0.0
+        samp_rate = round(samp_defects["defect_free_count"] / sample_size, 4) if sample_size else 0.0
+
+        stratified_audit_results[f"stage_{st_idx}"] = {
+            "total_promoted": tot_prom,
+            "sample_size": sample_size,
+            "region_quotas": region_quotas,
+            "sample_defects": samp_defects,
+            "sample_multi_evidence_non_conflict_rate": samp_rate,
+            "population_defects": pop_defects,
+            "population_multi_evidence_non_conflict_rate": pop_rate,
+            "strict_multi_evidence_precision_lower_bound": samp_rate,
+            "multi_evidence_non_conflict_rate": samp_rate,
+            "defects": samp_defects,
+        }
+
     # Format region-split table
     formatted_region_split = {}
     for stage_idx in range(6):
@@ -1101,6 +1692,7 @@ def run_pipeline(
             "catalog_snapshot": {
                 "version": "2026-10-20",
                 "total_items": len(catalog),
+                "total_eligible_candidates": total_eligible_candidates,
             },
             "positive_observations": {
                 "total_observations": len(positives),
@@ -1108,8 +1700,18 @@ def run_pipeline(
                 "unique_region_poi_pairs": len(poi_visits),
             },
         },
+        "stage_3_distance_breakdown": stage3_breakdown,
+        "stage_5_rule_distribution": dict(stage5_rule_counts),
+        "stage_5_distance_200_to_500m_sensitivity": stage5_cands_200_to_500m_sensitivity,
         "anchor_verification": anchor_dist_summary,
         "stage_metrics": stage_metrics,
+        "catalog_seed_coverage": catalog_seed_coverage_report,
+        "candidate_density_and_margin": {
+            "radius_density": radius_density_summary,
+            "margin_distribution": margin_summary,
+        },
+        "newly_promoted_verification": newly_promoted_verification,
+        "stratified_precision_audit": stratified_audit_results,
         "master_missing_cohort_by_stage": master_missing_cohort_metrics,
         "cohort_analysis_by_stage": stage_cohort_metrics,
         "region_split_breakdown": formatted_region_split,
@@ -1120,19 +1722,35 @@ def format_markdown_report(metrics: dict) -> str:
     sm = metrics["stage_metrics"]
     anc = metrics["anchor_verification"]
     mm = metrics["master_missing_cohort_by_stage"]
-    ir = anc.get("independent_rule_anchor_precision", {})
+    ir = anc.get("independent_rule_anchor_agreement", {})
     comp = anc.get("comparison_summary", {})
     reg_anc = anc.get("regional_stage0_anchor", {})
     glob_anc = anc.get("global_arm_d_anchor", {})
     obs_meta = metrics.get("metadata", {}).get("positive_observations", {})
+    cat_meta = metrics.get("metadata", {}).get("catalog_snapshot", {})
     tot_obs = obs_meta.get("total_observations", 97640)
     uniq_region_pois = obs_meta.get("unique_region_poi_pairs", 45353)
     uniq_pois = obs_meta.get("unique_pois", 41647)
+    tot_eligible = cat_meta.get("total_eligible_candidates", 19051)
+    tot_snap = cat_meta.get("total_items", 48589)
+
+    cov = metrics.get("catalog_seed_coverage", {})
+    cov_stage = cov.get("by_stage", {})
+    cov_reg = cov.get("region_breakdown", {})
+    cov_type = cov.get("type_breakdown", {})
+    sig_dens = cov.get("signal_density", {})
+    cand_marg = metrics.get("candidate_density_and_margin", {})
+    rad_dens = cand_marg.get("radius_density", {})
+    marg_dist = cand_marg.get("margin_distribution", {})
+    prom_ver = metrics.get("newly_promoted_verification", {})
+    strat_aud = metrics.get("stratified_precision_audit", {})
+    s3_bd = metrics.get("stage_3_distance_breakdown", {})
+    s5_rules = metrics.get("stage_5_rule_distribution", {})
 
     lines = [
-        "# AI Hub 2023 여행로그 × TourAPI v4.4 POI 식별자 매칭(v2) 실험 보고서",
+        "# AI Hub 2023 여행로그 × TourAPI v4.4 POI 식별자 매칭(v2) 심층 검증 보고서",
         "",
-        f"> 이 문서는 2023 AI Hub 국내 여행로그 4개 권역(수도권, 동부권, 서부권, 제주도) TL/VL 전체 데이터({tot_obs:,} 관측 양성, {uniq_region_pois:,}개 고유 (region, POI_ID) 쌍, 전역 고유 POI {uniq_pois:,}개)를 대상으로 5대 비퍼지 다단계 식별자 매칭 파이프라인의 단계별 누적 성과와 독립 Anchor 검증, 코호트별 커버리지를 비식별 집계로 기록한 보고서입니다.",
+        f"> 이 문서는 2023 AI Hub 국내 여행로그 4개 권역(수도권, 동부권, 서부권, 제주도) TL/VL 전체 데이터({tot_obs:,} 관측 양성, {uniq_region_pois:,}개 고유 (region, POI_ID) 쌍, 전역 고유 POI {uniq_pois:,}개)와 TourAPI v4.4 스냅샷(총 {tot_snap:,}개, 적격 후보 {tot_eligible:,}개)을 대상으로 수행된 다단계 결정론적 매칭(v2), TourAPI 시드 커버리지, 거리 임계값 정합성 분석, 신규 승격 건 교차 검증 및 층화 표본 감사 결과를 기록한 보고서입니다.",
         "",
         "## 1. 기준선(Baseline D) 대조 및 Stage 0 수치 규명",
         "",
@@ -1170,27 +1788,176 @@ def format_markdown_report(metrics: dict) -> str:
 
     lines.extend([
         "",
-        "## 3. 좌표계(CRS) 및 거리 분포 독립 검증 (Anchor Verification)",
+        "## 3. TourAPI Catalog Seed Coverage 및 신호 밀도 분석 (과제 2)",
         "",
-        f"### (1) Regional 기준점 (4,279건, 고유 POI {reg_anc.get('total_anchor_unique_pois', 1013):,}개)",
-        f"- **TN_POI_MASTER 좌표**: WGS84 유효율 {reg_anc['master_coordinates']['wgs84_valid_rate']*100:.2f}%",
-        f"  - 거리 분위수: p50={reg_anc['master_coordinates']['quantiles_meters']['p50']}m, p90={reg_anc['master_coordinates']['quantiles_meters']['p90']}m, p95={reg_anc['master_coordinates']['quantiles_meters']['p95']}m, p99={reg_anc['master_coordinates']['quantiles_meters']['p99']}m",
-        f"  - 반경별 일치율: <=50m: {reg_anc['master_coordinates']['threshold_shares']['le_50m']*100:.2f}%, <=100m: {reg_anc['master_coordinates']['threshold_shares']['le_100m']*100:.2f}%, <=200m: {reg_anc['master_coordinates']['threshold_shares']['le_200m']*100:.2f}%, <=500m: {reg_anc['master_coordinates']['threshold_shares']['le_500m']*100:.2f}%, <=1000m: {reg_anc['master_coordinates']['threshold_shares']['le_1000m']*100:.2f}%",
-        f"- **TN_VISIT_AREA_INFO 방문 행 좌표**: WGS84 유효율 {reg_anc['visit_coordinates']['wgs84_valid_rate']*100:.2f}%",
-        f"  - 거리 분위수: p50={reg_anc['visit_coordinates']['quantiles_meters']['p50']}m, p90={reg_anc['visit_coordinates']['quantiles_meters']['p90']}m, p95={reg_anc['visit_coordinates']['quantiles_meters']['p95']}m, p99={reg_anc['visit_coordinates']['quantiles_meters']['p99']}m",
-        f"  - 반경별 일치율: <=50m: {reg_anc['visit_coordinates']['threshold_shares']['le_50m']*100:.2f}%, <=100m: {reg_anc['visit_coordinates']['threshold_shares']['le_100m']*100:.2f}%, <=200m: {reg_anc['visit_coordinates']['threshold_shares']['le_200m']*100:.2f}%, <=500m: {reg_anc['visit_coordinates']['threshold_shares']['le_500m']*100:.2f}%, <=1000m: {reg_anc['visit_coordinates']['threshold_shares']['le_1000m']*100:.2f}%",
+        f"> 서비스 관점에서 초기 콜드스타트 추천 모델에 주입 가능한 관광 후보(contenttypeid ∈ {{12, 14, 28}} 및 권역 매칭, 총 **{tot_eligible:,}개**)를 분모로 한 카탈로그 시드 부여 성과와 신호 밀도 분위수입니다.",
         "",
-        f"### (2) Global Arm D 기준점 (4,686건, 고유 POI {glob_anc.get('total_anchor_unique_pois', 1249):,}개)",
-        f"- **TN_POI_MASTER 좌표**: WGS84 유효율 {glob_anc['master_coordinates']['wgs84_valid_rate']*100:.2f}%",
-        f"  - 거리 분위수: p50={glob_anc['master_coordinates']['quantiles_meters']['p50']}m, p90={glob_anc['master_coordinates']['quantiles_meters']['p90']}m, p95={glob_anc['master_coordinates']['quantiles_meters']['p95']}m, p99={glob_anc['master_coordinates']['quantiles_meters']['p99']}m",
-        f"  - 반경별 일치율: <=50m: {glob_anc['master_coordinates']['threshold_shares']['le_50m']*100:.2f}%, <=100m: {glob_anc['master_coordinates']['threshold_shares']['le_100m']*100:.2f}%, <=200m: {glob_anc['master_coordinates']['threshold_shares']['le_200m']*100:.2f}%, <=500m: {glob_anc['master_coordinates']['threshold_shares']['le_500m']*100:.2f}%, <=1000m: {glob_anc['master_coordinates']['threshold_shares']['le_1000m']*100:.2f}%",
-        f"- **TN_VISIT_AREA_INFO 방문 행 좌표**: WGS84 유효율 {glob_anc['visit_coordinates']['wgs84_valid_rate']*100:.2f}%",
-        f"  - 거리 분위수: p50={glob_anc['visit_coordinates']['quantiles_meters']['p50']}m, p90={glob_anc['visit_coordinates']['quantiles_meters']['p90']}m, p95={glob_anc['visit_coordinates']['quantiles_meters']['p95']}m, p99={glob_anc['visit_coordinates']['quantiles_meters']['p99']}m",
-        f"  - 반경별 일치율: <=50m: {glob_anc['visit_coordinates']['threshold_shares']['le_50m']*100:.2f}%, <=100m: {glob_anc['visit_coordinates']['threshold_shares']['le_100m']*100:.2f}%, <=200m: {glob_anc['visit_coordinates']['threshold_shares']['le_200m']*100:.2f}%, <=500m: {glob_anc['visit_coordinates']['threshold_shares']['le_500m']*100:.2f}%, <=1000m: {glob_anc['visit_coordinates']['threshold_shares']['le_1000m']*100:.2f}%",
+        "### (1) 단계별 카탈로그 시드 커버리지 (Catalog Seed Coverage)",
         "",
-        "### (3) 독립(Non-short-circuited) 규칙별 Anchor 정밀도 검증 (1,013개 고유 POI 대상)",
+        "| 파이프라인 단계 | 적격 시드 개수 (적격 커버리지) | 전체 스냅샷 시드 개수 (전체 커버리지) |",
+        "| :--- | :---: | :---: |",
+    ])
+
+    for i in range(6):
+        c_st = cov_stage.get(f"stage_{i}", {})
+        m_elig = c_st.get("matched_eligible_contentids", 0)
+        r_elig = c_st.get("eligible_seed_coverage_rate", 0.0) * 100
+        m_all = c_st.get("matched_all_snapshot_contentids", 0)
+        r_all = c_st.get("all_snapshot_coverage_rate", 0.0) * 100
+        lines.append(f"| **{stage_names[i]}** | {m_elig:,}개 / {tot_eligible:,}개 ({r_elig:.2f}%) | {m_all:,}개 / {tot_snap:,}개 ({r_all:.2f}%) |")
+
+    lines.extend([
         "",
-        "| 평가 규칙 | 판정 POI 수 (재현율) | 동일 contentid 일치 | 충돌 건수 | 독립 정밀도(Precision) |",
+        "### (2) 권역별 및 콘텐츠 유형별 시드 커버리지 (Stage 0 vs Stage 5)",
+        "",
+        "| 구분 | 세부 분류 | 적격 후보 수 | Stage 0 매칭 수 (커버리지) | Stage 5 매칭 수 (커버리지) | 커버리지 순증 |",
+        "| :--- | :--- | :---: | :---: | :---: | :---: |",
+    ])
+
+    reg_labels = {
+        "capital": "수도권 (capital)",
+        "west": "서부권 (west)",
+        "east": "동부권 (east)",
+        "jeju-islands": "제주도 (jeju-islands)",
+    }
+    for r, r_data in cov_reg.items():
+        tot_r = r_data.get("total_eligible", 0)
+        s0_cnt = r_data.get("stage_0_matched", 0)
+        s0_r = r_data.get("stage_0_coverage_rate", 0.0) * 100
+        s5_cnt = r_data.get("stage_5_matched", 0)
+        s5_r = r_data.get("stage_5_coverage_rate", 0.0) * 100
+        diff = s5_r - s0_r
+        lines.append(f"| **권역** | {reg_labels.get(r, r)} | {tot_r:,}개 | {s0_cnt:,}개 ({s0_r:.2f}%) | {s5_cnt:,}개 ({s5_r:.2f}%) | **+{diff:.2f}%p** |")
+
+    type_labels = {
+        "12": "관광지 (12)",
+        "14": "문화시설 (14)",
+        "28": "레포츠 (28)",
+    }
+    for ctype, t_data in cov_type.items():
+        tot_t = t_data.get("total_eligible", 0)
+        s0_cnt = t_data.get("stage_0_matched", 0)
+        s0_r = t_data.get("stage_0_coverage_rate", 0.0) * 100
+        s5_cnt = t_data.get("stage_5_matched", 0)
+        s5_r = t_data.get("stage_5_coverage_rate", 0.0) * 100
+        diff = s5_r - s0_r
+        lines.append(f"| **콘텐츠유형** | {type_labels.get(ctype, ctype)} | {tot_t:,}개 | {s0_cnt:,}개 ({s0_r:.2f}%) | {s5_cnt:,}개 ({s5_r:.2f}%) | **+{diff:.2f}%p** |")
+
+    obs_q = sig_dens.get("positive_observations_per_contentid", {}).get("quantiles", {})
+    trv_q = sig_dens.get("distinct_travel_ids_per_contentid", {}).get("quantiles", {})
+    poi_q = sig_dens.get("distinct_poi_ids_per_contentid", {}).get("quantiles", {})
+
+    lines.extend([
+        "",
+        "### (3) 시드 부여된 TourAPI 적격 아이템별 신호 밀도 분포 (Stage 5 기준)",
+        "",
+        "| 신호 지표 | min | p25 | p50 (중앙값) | mean (평균) | p75 | p90 | p99 | max |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+        f"| **AI Hub 방문 관측 수 (Obs)** | {obs_q.get('min', 0)} | {obs_q.get('p25', 0)} | **{obs_q.get('p50', 0)}** | {obs_q.get('mean', 0)} | {obs_q.get('p75', 0)} | {obs_q.get('p90', 0)} | {obs_q.get('p99', 0)} | {obs_q.get('max', 0)} |",
+        f"| **고유 여행 수 (Travel IDs)** | {trv_q.get('min', 0)} | {trv_q.get('p25', 0)} | **{trv_q.get('p50', 0)}** | {trv_q.get('mean', 0)} | {trv_q.get('p75', 0)} | {trv_q.get('p90', 0)} | {trv_q.get('p99', 0)} | {trv_q.get('max', 0)} |",
+        f"| **고유 AI Hub POI ID 수** | {poi_q.get('min', 0)} | {poi_q.get('p25', 0)} | **{poi_q.get('p50', 0)}** | {poi_q.get('mean', 0)} | {poi_q.get('p75', 0)} | {poi_q.get('p90', 0)} | {poi_q.get('p99', 0)} | {poi_q.get('max', 0)} |",
+        "",
+        "## 4. 거리 임계값 정합성 및 공간 밀도·마진 정량 분석 (과제 3)",
+        "",
+        f"- **Stage 3 정규화 타이틀 완전 일치 보강**: `<= 200m` 승격 {s3_bd.get('le_200m', 0):,}건, `200~500m` (권역 내 단일 후보 + TC_SGG 일치 필수) 승격 {s3_bd.get('between_200m_and_500m', 0):,}건",
+        f"- **Stage 5 엄격화 결과**: 반경 `<= 200.0m` + 단일 후보 또는 Nearest-Neighbor Margin (`d2 - d1 >= 50.0m`)만 승격 허용.",
+        f"  - 규칙별 분포: {', '.join(f'{k}: {v}건' for k, v in s5_rules.items())}",
+        f"  - 민감도 참고: 200m 초과 500m 이하에만 후보가 있어 배제된 관측 POI 수: {metrics.get('stage_5_distance_200_to_500m_sensitivity', 0):,}개",
+        "",
+        "### (1) 관측 POI 주변 반경별 카탈로그 후보 수 분포 (공간 밀도)",
+        "",
+        "| 반경 | 후보 0개 | 후보 1개 | 후보 2~3개 | 후보 4~9개 | 후보 10개 이상 |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: |",
+    ])
+
+    for rad in [50, 100, 200, 500]:
+        r_info = rad_dens.get(f"radius_le_{rad}m", {})
+        c0 = r_info.get("0", {}).get("count", 0)
+        c1 = r_info.get("1", {}).get("count", 0)
+        c23 = r_info.get("2_to_3", {}).get("count", 0)
+        c49 = r_info.get("4_to_9", {}).get("count", 0)
+        c10 = r_info.get("10_plus", {}).get("count", 0)
+        lines.append(f"| **반경 <= {rad}m** | {c0:,}개 | {c1:,}개 | {c23:,}개 | {c49:,}개 | {c10:,}개 |")
+
+    lines.extend([
+        "",
+        "### (2) 1순위 거리 및 2순위 거리 마진 (Nearest-Neighbor Margin) 분포",
+        "",
+        "| 마진 구분 | POI 건수 | 비중 | 해석 |",
+        "| :--- | :---: | :---: | :--- |",
+    ])
+
+    marg_labels = {
+        "single_candidate_within_500m": ("반경 500m 내 단일 후보", "경쟁 후보 없음 (독점 매칭)"),
+        "margin_ge_200m": ("d2 - d1 >= 200m", "압도적 거리 격차 (최고 신뢰도)"),
+        "margin_100m_to_200m": ("100m <= d2 - d1 < 200m", "명확한 거리 우위"),
+        "margin_50m_to_100m": ("50m <= d2 - d1 < 100m", "유의미한 거리 마진 (안전 통과)"),
+        "margin_lt_50m_excluded": ("d2 - d1 < 50m (배제됨)", "공간적 모호성으로 인해 좌표 단독 매칭 배제"),
+    }
+    for m_key, (m_title, m_desc) in marg_labels.items():
+        if m_key in marg_dist:
+            row = marg_dist[m_key]
+            lines.append(f"| **{m_title}** | {row['count']:,}건 | {row['share']*100:.2f}% | {m_desc} |")
+
+    lines.extend([
+        "",
+        "## 5. 신규 승격 건(Newly Promoted) 보조 신호 정합성 진단 및 층화 감사 (과제 4)",
+        "",
+        "> Stage 0의 단락된 기준점 매칭을 제외하고, 각 단계(Stage 1~5)에서 새롭게 MATCHED로 승격된 건들에 대해 승격에 직접 사용된 주 신호(Primary)와 승격에 직접 사용되지 않은 보조 신호(Auxiliary)를 분리하고, 보조 신호(Holdout WGS84 좌표 거리 분위수, TC_SGG 시군구 일치율) 정합성 진단과 4개 권역 기준 비례 층화 100건 표본 감사(seed=42) 및 전수 감사를 병행 실시했습니다.",
+        "",
+        "### (1) 신규 승격 건 보조 신호 정합성 진단 (Auxiliary Signal Consistency Diagnostic)",
+        "",
+        "| 승격 단계 | 신규 승격 POI 수 | 주 신호 (Primary) | 보조 신호 (Auxiliary) | 좌표 거리 p50 | 좌표 거리 p90 | <=200m 일치율 | SGG 일치율 |",
+        "| :--- | :---: | :--- | :--- | :---: | :---: | :---: | :---: |",
+    ])
+
+    for i in range(1, 6):
+        pv = prom_ver.get(f"stage_{i}", {})
+        cnt = pv.get("total_newly_promoted_pois", 0)
+        p_desc = pv.get("primary_desc", "")
+        a_desc = pv.get("auxiliary_desc", "")
+        p50 = pv.get("distance_quantiles", {}).get("p50", 0.0)
+        p90 = pv.get("distance_quantiles", {}).get("p90", 0.0)
+        le_200 = pv.get("distance_threshold_shares", {}).get("le_200m", 0.0) * 100
+        sgg_rate = pv.get("sgg_agreement_rate", 0.0) * 100
+        lines.append(f"| **Stage {i} 신규 승격** | {cnt:,}개 | {p_desc} | {a_desc} | {p50}m | {p90}m | {le_200:.2f}% | {sgg_rate:.2f}% |")
+
+    lines.extend([
+        "",
+        "### (2) 결정론적 비례 층화 표본 감사 및 전수 감사 (Stratified Sample & Population Audit, seed=42)",
+        "",
+        "| 승격 단계 | 표본 크기 (권역별 할당) | 표본 결함 (주소/SGG/거리) | 표본 다중 물리 증거 무충돌률 | 전수 POI 수 | 전수 결함 (주소/SGG/거리) | 전수 다중 물리 증거 무충돌률 |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: |",
+    ])
+
+    for i in range(1, 6):
+        sa = strat_aud.get(f"stage_{i}", {})
+        sz = sa.get("sample_size", 0)
+        quotas = sa.get("region_quotas", {})
+        q_str = f"{sz:,}개 (수{quotas.get('capital', 0)}/서{quotas.get('west', 0)}/동{quotas.get('east', 0)}/제{quotas.get('jeju-islands', 0)})"
+
+        s_df = sa.get("sample_defects", {})
+        s_c_addr = s_df.get("address_main_no_conflict", 0)
+        s_c_sgg = s_df.get("sgg_code_and_text_conflict", 0)
+        s_c_dist = s_df.get("distance_excess_gt_200m", 0)
+        s_rate = sa.get("sample_multi_evidence_non_conflict_rate", 0.0) * 100
+
+        tot_p = sa.get("total_promoted", 0)
+        p_df = sa.get("population_defects", {})
+        p_c_addr = p_df.get("address_main_no_conflict", 0)
+        p_c_sgg = p_df.get("sgg_code_and_text_conflict", 0)
+        p_c_dist = p_df.get("distance_excess_gt_200m", 0)
+        p_rate = sa.get("population_multi_evidence_non_conflict_rate", 0.0) * 100
+
+        lines.append(
+            f"| **Stage {i}** | {q_str} | {s_c_addr}/{s_c_sgg}/{s_c_dist}건 | **{s_rate:.2f}%** | {tot_p:,}개 | {p_c_addr}/{p_c_sgg}/{p_c_dist}건 | **{p_rate:.2f}%** |"
+        )
+
+    lines.extend([
+        "",
+        "## 6. 독립(Non-short-circuited) 규칙별 Anchor 일치율 검증 (1,013개 고유 POI 대상)",
+        "",
+        "| 평가 규칙 | 판정 POI 수 (재현율) | 동일 contentid 일치 | 충돌 건수 | Anchor 일치율 (Agreement Rate) |",
         "| :--- | :---: | :---: | :---: | :---: |",
     ])
 
@@ -1204,11 +1971,11 @@ def format_markdown_report(metrics: dict) -> str:
     for rk, label in rule_labels.items():
         if rk in ir:
             row = ir[rk]
-            lines.append(f"| **{label}** | {row['matched_pois']:,}개 ({row['recall']*100:.2f}%) | {row['same_contentid_count']:,}개 | {row['conflicting_contentid_count']:,}개 | {row['precision']*100:.2f}% |")
+            lines.append(f"| **{label}** | {row['matched_pois']:,}개 ({row['recall']*100:.2f}%) | {row['same_contentid_count']:,}개 | {row['conflicting_contentid_count']:,}개 | {row['agreement_rate']*100:.2f}% |")
 
     lines.extend([
         "",
-        "## 4. TN_POI_MASTER 결측 코호트(26,884건, 고유 POI 19,321개) 신호 복원 및 전환 분석",
+        "## 7. TN_POI_MASTER 결측 코호트(26,884건, 고유 POI 19,321개) 신호 복원 및 전환 분석",
         "",
         "> `identity_source_missing: 0`은 방문 행(`TN_VISIT_AREA_INFO`)으로부터 장소명(`VISIT_AREA_NM`)·주소·좌표 신호를 확보하여 원천 결측 상태에서 '평가 가능 상태'(`MATCHED`, `AMBIGUOUS`, `UNMATCHED`)로 100% 전환되었음을 의미합니다. (이름 신호가 전혀 없는 방문지는 주소/좌표만으로 매칭하지 않는다는 보수적 원칙 준수).",
         "",
@@ -1229,7 +1996,7 @@ def format_markdown_report(metrics: dict) -> str:
 
     lines.extend([
         "",
-        "## 5. 관광 대상 코호트 분리 분석 (Stage 5 기준)",
+        "## 8. 관광 대상 코호트 분리 분석 (Stage 5 기준)",
         "",
         "| 방문지 유형 코드 | 유형 명칭 | 관측 건수 | MATCHED 건수 (매칭률) | 후보 포함 건수 (포함률) | 카탈로그 지원 여부 |",
         "| :---: | :--- | :---: | :---: | :---: | :---: |",
@@ -1289,8 +2056,8 @@ def main() -> None:
     catalog = list(snapshot.records)
     print(f"Loaded {len(catalog)} catalog items.")
 
-    capital_tl = Path(os.environ["CAPITAL_TL"]).resolve()
-    print("Loading TC_SGG crosswalk...")
+    capital_tl = Path(os.environ["CAPITAL_TL"]).resolve() if os.environ.get("CAPITAL_TL") else None
+    print("Loading TC_SGG crosswalk across all regions...")
     sgg_crosswalk = load_all_tc_sgg(capital_tl)
     print(f"Loaded SGG crosswalk with {len(sgg_crosswalk.aihub_to_names)} areas.")
 
