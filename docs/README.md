@@ -28,7 +28,7 @@
 
 추천 관련 문서는 [recommendation/README.md](recommendation/README.md)의 읽기 순서를 먼저 확인한다.
 
-- [recommendation/training-data-contract.md](recommendation/training-data-contract.md) — Legacy TravelMate와 AI Hub 2023 근거에 기반한 추천 학습 데이터 계약 (Issue #17)
+- [recommendation/training-data-contract.md](recommendation/training-data-contract.md) — 추천 학습 데이터 구성·포함 기준(순수 관광 코호트 분리, TourAPI 매칭 독립성) 및 Feature/Label 계약 (Issue #17, #71)
 - [recommendation/experiments/candidate-choice-feasibility.md](recommendation/experiments/candidate-choice-feasibility.md) — 후보 집합과 평가 가능성 검증
 - [recommendation/experiments/context-poi-signal-feasibility.md](recommendation/experiments/context-poi-signal-feasibility.md) — 여행 문맥과 POI 사이의 예측 신호 검증 (Issue #45)
 - [recommendation/poi-catalog-candidate-contract.md](recommendation/poi-catalog-candidate-contract.md) — 서비스 카탈로그(TourAPI KorService2 v4.4) 기반 POI 후보 생성 및 식별자 매칭 계약 (Issue #67, #69)
