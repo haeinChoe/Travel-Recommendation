@@ -25,7 +25,7 @@
 ### 현재 결정된 것
 
 - `TRAVELER_ID`, `TRAVEL_ID`, `VISIT_AREA_ID`, `POI_ID`, TourAPI `contentid`는 **메모리 내 조인·집계·중복 제거·분할 검증 및 후보 식별용 구분자(key)로는 사용할 수 있으나, 기계학습 모델의 입력 특성(feature)이나 ID 임베딩 학습 대상으로는 사용하지 않는다.**
-- TourAPI 매칭 여부(`MATCHED` 필터 등)로 학습 코호트를 제한하는 설계는 선택 편향(selection bias)을 유발하므로 금지한다(`experiment_design_audit.py`에서 자동 차단).
+- 학습 관측치 자격은 AI Hub 내부의 데이터 유효성과 관광 도메인 규칙으로 결정하므로, TourAPI 식별자 매칭 상태를 학습 코호트 필터로 사용하지 않는다(`experiment_design_audit.py`에서 자동 차단).
 - 핵심 여행 문맥 5대 그룹(`STYLE`, `MOTIVE`, `DESTINATION`, `COMPANION`, `TEMPORAL`)의 도메인·결측·파생 규칙을 고정하고, 동반자 관계(`companion_relation_codes`)는 기록된 여행(81.21%)만 보는 민감도 분석 전용으로 분리한다.
 - 방문 후 생성되는 모든 필드(`DGSTFN`, `REVISIT_INTENTION`, `RCMDTN_INTENTION`, `REVISIT_YN`, `VISIT_CHC_REASON_CD`, `RESIDENCE_TIME_MIN`, `VISIT_ORDER`, `VISIT_START_YMD`, `VISIT_END_YMD`)는 추천 요청 시점에 알 수 없으므로 입력 특성 사용을 금지한다.
 - 미방문(unobserved) POI는 `unknown`으로 유지하며, 명시적 노출 가정이나 음성 표본 추출(negative sampling) 프로토콜·시드(seed) 없이 `0`(음성)으로 자동 변환하지 않는다.
@@ -63,10 +63,10 @@ Issue #69의 다단계 식별자 매칭 파이프라인(Stage 5)은 AI Hub 방�
 
 ### 1.2 아키텍처 원칙: ID 암기가 아닌 속성 기반(Attribute-Based) 학습 설계
 
-추천 모델이 만약 `POI_ID`나 `contentid` 자체를 기계학습 입력 특성(feature)으로 받아 개별 ID마다 임베딩 벡터를 암기하는 방식(순수 ID 기반 협업 필터링)이라면 다음 두 가지 구조적 문제가 발생한다.
+이 계약은 ID 기반 표현의 한계와 외부 식별자 연결의 역할을 다음과 같이 구분한다.
 
 1. **운영 카탈로그의 85.55%가 ID 학습 이력 부재(Item Cold-Start)**: TourAPI 적격 관광 후보 19,051개 중 AI Hub 방문 이력과 직접 매칭되지 않은 **16,298개(85.55%)** 후보에는 학습된 ID 임베딩이 존재하지 않아 ID 기반 모델로는 추천 점수를 계산할 수 없다.
-2. **심각한 선택 편향(Selection Bias)과 데이터 손실**: AI Hub에서 `UNMATCHED`로 분류된 방문은 "장소가 존재하지 않거나 잘못된 데이터"가 아니라, 보수적인 5단계 물리 신호 규칙으로 외부 카탈로그 식별자 동등성을 확정하지 못한 상태(`UNMATCHED != catalog-outside`)다. 이를 학습에서 버리면 유효한 관광지 방문의 과반수를 잃고 도로명 주소·표준 명칭이 잘 정비된 대형 시설 위주로 학습 분포가 왜곡된다.
+2. **외부 식별자 연결과 학습 관측치 자격의 분리**: `UNMATCHED`는 현재 매칭 규칙으로 외부 카탈로그 식별자와의 동등성을 확정하지 못했다는 뜻이다. 이 상태만으로 장소의 존재 여부나 AI Hub 관측치의 유효성을 판정할 수 없으므로, 학습 자격은 AI Hub 내부 유효성과 관광 도메인 규칙으로 별도 판단한다.
 
 따라서 본 프로젝트의 추천 학습 계약은 원시 ID를 조인·집계·후보 식별용 키(key)로만 사용하고, 모델 입력 특성(feature)은 속성 공간으로 구성하는 아래 설계를 따른다.
 
@@ -375,7 +375,7 @@ uv run python scripts/recommendation/training_data_contract.py \
 | `Preference.travel_style_1..7` | 선호 context | `TN_TRAVELLER_MASTER.TRAVEL_STYL_1..8` | **유지/확장:** 8개 문항(도메인 `1..7`)을 `STYLE` 핵심 문맥 그룹으로 사용하되 기존 1–7과 직접 동등시하지 않음 | 4권역 여행 단위 완비율 100.00% |
 | legacy companion fields | trip companion context | `TRAVEL_STATUS_ACCOMPANY`, `TRAVEL_COMPANIONS_NUM`, `TN_COMPANION_INFO.REL_CD` | **변경:** 동반 현황과 동반자 수는 `COMPANION` 핵심 문맥으로 채택, `REL_CD`는 `recorded_only` 민감도 분석으로 분리 | 동반자 테이블 미기록과 1인 여행 구분 한계 반영 |
 | `Preference.regionId` / request region | 요청 지역 context | `region` 스코프, `TRAVEL_STATUS_DESTINATION`, `SGG_CD` | **변경:** `region`은 `poi-catalog-policy-v1.json`으로 TourAPI와 100% 매핑; `SGG_CD`는 `SggCrosswalk`로 법정동 호환되나 AI Hub 측 결측(75.52%) 고려 필요 | 권역 호환 확립, 시군구는 결측 허용 처리 필요 |
-| `Visited(traveler_id, content_id)` | user-item 방문 interaction | `(region, TRAVEL_ID, POI_ID)` (`trip_poi_grain`) | **변경:** `POI_ID`와 `contentid`는 조인·집계·후보 식별용 구분자(key)로만 쓰고 기계학습 입력 특성(feature)에서 제외하며 학습 자격은 TourAPI 매칭과 독립으로 유지 | `UNMATCHED` 배제 시 발생하는 선택 편향 방지 |
+| `Visited(traveler_id, content_id)` | user-item 방문 interaction | `(region, TRAVEL_ID, POI_ID)` (`trip_poi_grain`) | **변경:** `POI_ID`와 `contentid`는 조인·집계·후보 식별용 구분자(key)로만 쓰고 기계학습 입력 특성(feature)에서 제외하며 학습 자격은 TourAPI 매칭과 독립으로 유지 | 외부 카탈로그 연결과 학습 관측치 자격의 분리 |
 | `TourSpot` categories, region/district/theme | item metadata | `VISIT_AREA_TYPE_CD`, `SGG_CD`, `TN_POI_MASTER.ASORT_*` | **변경:** `VISIT_AREA_TYPE_CD`로 `tourism_core_cohort`를 분리하고 오프라인 속성 학습에 사용 | 미매칭 TourAPI 후보 서빙에 쓰려면 별도 카테고리 crosswalk 정의 선행 필요 |
 | `content_embeddings` | item content representation | SbL `caption.IMG_CAPTION`, 원시 이미지 | **폐기:** 기존 임베딩 미이식, 원시 이미지 및 캡션 텍스트는 기본 계약에서 제외 | 생성 출처 미확인 및 서빙 시점 호환성 미검증 |
 | profile 0.7 + visit 0.3 similarity | user-user recommendation score 의도 | 해당 없음 | **폐기:** 가중치와 계산 방식을 새 시스템으로 이전하지 않음 | 재색인 축 오류 확인 |
