@@ -10,16 +10,19 @@
 2. [추천 학습 데이터 구성·포함 기준 및 Feature/Label 계약](training-data-contract.md)
    TourAPI 식별자 매칭 상태와 학습 데이터 자격의 독립성, 3단계 관측 단위(`visit_event_grain`, `trip_poi_grain`, `trip_request_grain`), 순수 관광 코호트(`tourism_core_cohort`) 분리 기준, 입력 특성·라벨 계약 및 4개 권역 코호트 퍼널 집계(Issue #17, #71)를 확인한다.
 
-3. [후보 집합 타당성 실험](experiments/candidate-choice-feasibility.md)
+3. [표준 학습 데이터셋 스키마](training-dataset-schema.md)
+   Issue #71 계약을 세 Parquet 출력과 재현 가능한 변환 CLI에 적용한 컬럼·타입·nullability·원천 매핑과 SGG 감사를 확인한다.
+
+4. [후보 집합 타당성 실험](experiments/candidate-choice-feasibility.md)
    과거 여행로그만으로 평가 가능한 추천 후보를 어떻게 정의했으며 왜 현재 결론이 판정 보류인지 확인한다.
 
-4. [여행 문맥 × POI 신호 타당성 실험](experiments/context-poi-signal-feasibility.md)
+5. [여행 문맥 × POI 신호 타당성 실험](experiments/context-poi-signal-feasibility.md)
    여행 문맥이 POI 선택과 관련된 예측 신호를 제공하는지, 무엇까지 확인했고 무엇은 아직 추천 순위 품질로 해석할 수 없는지 확인한다.
 
-5. [서비스 카탈로그 기반 후보 계약](poi-catalog-candidate-contract.md)
+6. [서비스 카탈로그 기반 후보 계약](poi-catalog-candidate-contract.md)
    한국관광공사 TourAPI KorService2 v4.4 서비스 카탈로그와 AI Hub 여행로그 간 POI 후보 집합 정의, 식별자 매칭 계약 및 위치 조건부 5단계 매칭 기준을 확인한다.
 
-6. [POI 식별자 매칭 및 코호트 커버리지 실험](experiments/poi-identity-matching-v2.md)
+7. [POI 식별자 매칭 및 코호트 커버리지 실험](experiments/poi-identity-matching-v2.md)
    5대 비퍼지 다단계 식별자 매칭 파이프라인의 단계별 누적 성과와 관광 대상 코호트 분리 분석 결과를 확인한다.
 
 ## 새 연구·실험 문서를 작성할 때

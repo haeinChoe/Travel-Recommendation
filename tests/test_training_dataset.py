@@ -1,0 +1,269 @@
+from __future__ import annotations
+
+import csv
+import contextlib
+import hashlib
+import io
+import json
+import tempfile
+import unittest
+from collections import Counter
+from pathlib import Path
+
+from scripts.recommendation.training_data_contract import REGIONS, SPLITS, VISIT_AREA_TYPE_LABELS
+from scripts.recommendation.training_dataset import (
+    MODEL_FEATURE_ALLOWLIST,
+    _sgg_outcome,
+    resolve_item_sgg,
+    strict_sgg,
+    surrogate_key,
+    transform,
+    validate_dataset_keys,
+    validate_feature_allowlist,
+    validate_sgg_reconciliation,
+    main,
+)
+
+
+def write_csv(path: Path, headers: list[str], rows: list[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=headers, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def create_fixture(root: Path, *, bad_codebook: tuple[str, str] | None = None,
+                   malformed_visit: bool = False,
+                   multi_trip_sgg_conflict: bool = False) -> tuple[dict[tuple[str, str], Path], dict[str, Path]]:
+    inputs: dict[tuple[str, str], Path] = {}
+    masters: dict[str, Path] = {}
+    for region in REGIONS:
+        master_dir = root / f"{region}-other"
+        masters[region] = master_dir / "tn_poi_master_POIMaster_all.csv"
+        write_csv(master_dir / "tn_poi_master_POIMaster_all.csv",
+            ["POI_ID", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC"], [
+                {"POI_ID": "POI1", "SGG_CD": "11110", "ASORT_LCLASDC": "L1", "ASORT_MLSFCDC": "M1", "ASORT_SDASDC": "S1"},
+                {"POI_ID": "POI3", "SGG_CD": "11110", "ASORT_LCLASDC": "L3", "ASORT_MLSFCDC": "M3", "ASORT_SDASDC": "S3"},
+                {"POI_ID": "POI5", "SGG_CD": "", "ASORT_LCLASDC": "", "ASORT_MLSFCDC": "", "ASORT_SDASDC": ""},
+                {"POI_ID": "POI6", "SGG_CD": "11200", "ASORT_LCLASDC": "L6", "ASORT_MLSFCDC": "M6", "ASORT_SDASDC": "S6"},
+                {"POI_ID": "POI9", "SGG_CD": "11110", "ASORT_LCLASDC": "L9", "ASORT_MLSFCDC": "M9", "ASORT_SDASDC": "S9"},
+                {"POI_ID": "POI10", "SGG_CD": "11110", "ASORT_LCLASDC": "L10", "ASORT_MLSFCDC": "M10", "ASORT_SDASDC": "S10"},
+            ])
+        for split in SPLITS:
+            folder = root / f"{region}-{split}"
+            inputs[(region, split)] = folder
+            traveler = {"TRAVELER_ID": "RAW_TRAVELER", "TRAVEL_STATUS_DESTINATION": "DEST",
+                "TRAVEL_STATUS_ACCOMPANY": "1", "TRAVEL_COMPANIONS_NUM": "2"}
+            traveler.update({f"TRAVEL_STYL_{i}": "1" for i in range(1, 9)})
+            traveler.update({f"TRAVEL_MOTIVE_{i}": "2" for i in range(1, 4)})
+            write_csv(folder / "tn_traveller_master.csv", list(traveler), [traveler])
+            write_csv(folder / "tn_travel.csv",
+                ["TRAVEL_ID", "TRAVELER_ID", "TRAVEL_START_YMD", "TRAVEL_END_YMD"],
+                [{"TRAVEL_ID": f"RAW_TRIP_{split}", "TRAVELER_ID": "RAW_TRAVELER",
+                  "TRAVEL_START_YMD": "2023-04-01", "TRAVEL_END_YMD": "2023-04-03"},
+                 *([{"TRAVEL_ID": "RAW_TRIP_TL_2", "TRAVELER_ID": "RAW_TRAVELER",
+                     "TRAVEL_START_YMD": "2023-04-04", "TRAVEL_END_YMD": "2023-04-05"}]
+                   if multi_trip_sgg_conflict and region == "capital" and split == "TL" else [])])
+            codebook = [{"cd_a": "VIS", "cd_b": code,
+                "cd_nm": ("wrong" if bad_codebook == (region, split) and code == "12" else label)}
+                for code, label in VISIT_AREA_TYPE_LABELS.items()]
+            write_csv(folder / "tc_codeb.csv", ["cd_a", "cd_b", "cd_nm"], codebook)
+            write_csv(folder / "tc_sgg.csv", ["SGG_CD", "SGG_CD1", "SGG_CD2", "SIDO_NM", "SGG_NM"], [
+                {"SGG_CD": "11110", "SGG_CD1": "11", "SGG_CD2": "110", "SIDO_NM": "S", "SGG_NM": "A"},
+                {"SGG_CD": "11200", "SGG_CD1": "11", "SGG_CD2": "200", "SIDO_NM": "S", "SGG_NM": "B"},
+            ])
+            visits = [
+                {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V1", "POI_ID": "POI1", "VISIT_AREA_TYPE_CD": "1", "SGG_CD": "11110", "ROAD_NM_ADDR": "street", "LOTNO_ADDR": "", "X_COORD": "1", "Y_COORD": "2"},
+                {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V2", "POI_ID": "POI1", "VISIT_AREA_TYPE_CD": "1", "SGG_CD": "11200", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "lot", "X_COORD": "", "Y_COORD": ""},
+                {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V3", "POI_ID": "POI3", "VISIT_AREA_TYPE_CD": "13", "SGG_CD": "", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V3N", "POI_ID": "POI3", "VISIT_AREA_TYPE_CD": "11", "SGG_CD": "11200", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V4", "POI_ID": "POI4", "VISIT_AREA_TYPE_CD": "2", "SGG_CD": "99999", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V5", "POI_ID": "POI5", "VISIT_AREA_TYPE_CD": "11", "SGG_CD": "", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+            ]
+            if split == "VL":
+                visits = [
+                    {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V1", "POI_ID": "POI1", "VISIT_AREA_TYPE_CD": "1", "SGG_CD": "11110", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                    {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V6", "POI_ID": "VL_ONLY", "VISIT_AREA_TYPE_CD": "13", "SGG_CD": "11200", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                ]
+            elif multi_trip_sgg_conflict and region == "capital":
+                visits[2]["SGG_CD"] = "11110"
+                visits.append({"TRAVEL_ID": "RAW_TRIP_TL_2", "VISIT_AREA_ID": "V7", "POI_ID": "POI3",
+                    "VISIT_AREA_TYPE_CD": "13", "SGG_CD": "11200", "ROAD_NM_ADDR": "",
+                    "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""})
+                visits.extend([
+                    {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V8", "POI_ID": "POI6", "VISIT_AREA_TYPE_CD": "13", "SGG_CD": "11110", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                    {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V9", "POI_ID": "POI6", "VISIT_AREA_TYPE_CD": "13", "SGG_CD": "", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                    {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V10", "POI_ID": "POI7", "VISIT_AREA_TYPE_CD": "", "SGG_CD": "", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                    {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V11", "POI_ID": "POI8", "VISIT_AREA_TYPE_CD": "99", "SGG_CD": "", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                    {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V12", "POI_ID": "", "VISIT_AREA_TYPE_CD": "13", "SGG_CD": "", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                    {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V13", "POI_ID": "POI9", "VISIT_AREA_TYPE_CD": "13", "SGG_CD": "11110", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                    {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V14", "POI_ID": "POI10", "VISIT_AREA_TYPE_CD": "13", "SGG_CD": "", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                    {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V15", "POI_ID": "POI11", "VISIT_AREA_TYPE_CD": "13", "SGG_CD": "11110", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                    {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V16", "POI_ID": "POI11", "VISIT_AREA_TYPE_CD": "13", "SGG_CD": "", "ROAD_NM_ADDR": "", "LOTNO_ADDR": "", "X_COORD": "", "Y_COORD": ""},
+                ])
+            for visit in visits:
+                if visit["TRAVEL_ID"] == "RAW_TRIP":
+                    visit["TRAVEL_ID"] = f"RAW_TRIP_{split}"
+            headers = ["TRAVEL_ID", "VISIT_AREA_ID", "POI_ID", "VISIT_AREA_TYPE_CD", "SGG_CD", "ROAD_NM_ADDR", "LOTNO_ADDR", "X_COORD", "Y_COORD"]
+            if malformed_visit:
+                headers.remove("POI_ID")
+            write_csv(folder / "tn_visit_area_info.csv", headers, visits)
+    return inputs, masters
+
+
+class TrainingDatasetTests(unittest.TestCase):
+    def test_mapping_schema_keys_tl_isolation_and_reconciliation(self) -> None:
+        import duckdb
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs, masters = create_fixture(root)
+            output = root / "out"
+            manifest = transform(inputs, masters, output, "synthetic-run")
+            self.assertEqual(manifest["outputs"]["trip_item_interaction"], 20)
+            con = duckdb.connect()
+            items = con.execute("SELECT * FROM read_parquet(?) ORDER BY region, item_key", [str(output / "item_features.parquet")]).fetchall()
+            columns = [r[0] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(output / "item_features.parquet")]).fetchall()]
+            schema = {r[0]: r[1] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(output / "item_features.parquet")]).fetchall()}
+            interactions = con.execute("SELECT * FROM read_parquet(?)", [str(output / "trip_item_interaction.parquet")]).fetchall()
+            ctx_schema = {r[0]: r[1] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(output / "trip_context.parquet")]).fetchall()}
+            con.close()
+            self.assertEqual(schema["VISIT_AREA_TYPE_CODES"], "VARCHAR[]")
+            self.assertEqual(schema["tl_popularity"], "BIGINT")
+            self.assertIn("region", columns)
+            self.assertIn("region", ctx_schema)
+            self.assertEqual(ctx_schema["elapsed_days"], "INTEGER")
+            self.assertNotIn("POI_ID", columns)
+            self.assertEqual(len(items), 16)  # three TL tourist items and one VL-only per region
+            self.assertEqual(len(interactions), 20)
+            self.assertTrue(all(row[4] == 1 for row in interactions))
+            self.assertTrue(all(k not in json.dumps(manifest) for k in ("RAW_TRIP", "RAW_TRAVELER", "POI1", temporary, "synthetic-run")))
+            for entry in manifest["sgg_audit"]["by_region_split_cohort"].values():
+                self.assertEqual(sum(entry["resolved_outcome_counts"].values()), entry["denominator"])
+            self.assertIn("value_conflicts", manifest["sgg_audit"]["by_region_split_cohort"]["capital:TL:all_valid_visits"]["resolved_outcome_counts"])
+            self.assertIn("master_filled", manifest["sgg_audit"]["by_region_split_cohort"]["capital:TL:tourism_core"]["resolved_outcome_counts"])
+            self.assertIn("sgg_unavailable_location_presence_counts", manifest["sgg_audit"]["by_region_split_cohort"]["capital:TL:all_valid_visits"])
+            audit = manifest["sgg_audit"]["by_region_split_cohort"]
+            self.assertGreaterEqual(audit["capital:TL:tourism_core"]["resolved_outcome_counts"].get("master_filled", 0), 1)
+            self.assertGreaterEqual(audit["capital:TL:non_tourism"]["resolved_outcome_counts"].get("value_conflicts", 0), 1)
+            self.assertEqual(len({row[0] for row in interactions}), 8)  # trip keys are split/region scoped
+            self.assertEqual(len({row[1] for row in interactions}), 16) # item keys are region-scoped
+            first_hash = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in output.glob("*.parquet")}
+            transform(inputs, masters, output, "synthetic-run")
+            second_hash = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in output.glob("*.parquet")}
+            self.assertEqual(first_hash, second_hash)
+
+    def test_feature_allowlist_rejects_keys_labels_and_metadata(self) -> None:
+        self.assertIn("tl_popularity", MODEL_FEATURE_ALLOWLIST)
+        self.assertIn("region", MODEL_FEATURE_ALLOWLIST)
+        validate_feature_allowlist({"region"})
+        for bad in ("trip_key", "item_key", "split", "observed_positive", "repeat_visit_count", "POI_ID", "TRAVEL_START_YMD", "ROAD_NM_ADDR", "X_COORD"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                validate_feature_allowlist({bad})
+
+    def test_run_scoped_keys_and_exact_sgg_membership(self) -> None:
+        self.assertEqual(surrogate_key("r1", "trip", "capital", "raw"),
+                         surrogate_key("r1", "trip", "capital", "raw"))
+        self.assertNotEqual(surrogate_key("r1", "trip", "capital", "raw"),
+                            surrogate_key("r2", "trip", "capital", "raw"))
+        self.assertEqual(strict_sgg("11110", {"11110"}), "11110")
+        self.assertIsNone(strict_sgg("111100", {"11110"}))
+        self.assertIsNone(strict_sgg("11111", {"11110"}))
+
+    def test_sgg_audit_distinguishes_current_visit_from_poi_aggregate(self) -> None:
+        master = {"p1": {"SGG_CD": "11110"}}
+        outcome = _sgg_outcome(None, None, {"11110"}, "p1", master,
+                               Counter({"p1": 1}), {"11110"})
+        self.assertEqual(outcome[:2], ("poi_aggregate_filled", "11110"))
+        direct = _sgg_outcome("11110", "11110", {"11110"}, "p1", master,
+                              Counter({"p1": 1}), {"11110"})
+        self.assertEqual(direct[:2], ("direct", "11110"))
+        conflict = _sgg_outcome(None, None, {"11110", "11200"}, "p1", master,
+                                Counter({"p1": 1}), {"11110", "11200"})
+        self.assertEqual(conflict[:2], ("value_conflicts", None))
+
+    def test_shared_item_sgg_conflict_policy(self) -> None:
+        self.assertEqual(resolve_item_sgg({"11110"}, "11200"), ("value_conflicts", None))
+        self.assertEqual(resolve_item_sgg({"11110"}, "11110"), ("direct", "11110"))
+        self.assertEqual(resolve_item_sgg(set(), "11110"), ("master_filled", "11110"))
+        self.assertEqual(resolve_item_sgg({"11110", "11200"}, "11110"), ("value_conflicts", None))
+
+    def test_nullability_key_integrity_and_sgg_denominator(self) -> None:
+        context = [{"trip_key": "t1", "region": "capital", "split": "TL", "TRAVEL_STYL_1": None}]
+        items = [{"item_key": "i1", "region": "capital", "split_presence": ["TL"],
+                  "VISIT_AREA_TYPE_CODES": [], "SGG_CD": None, "tl_popularity": 0}]
+        interactions = [{"trip_key": "t1", "item_key": "i1", "region": "capital", "split": "TL",
+                         "observed_positive": 1, "repeat_visit_count": 2}]
+        validate_dataset_keys(context, items, interactions)
+        validate_sgg_reconciliation({"direct": 1, "both_missing": 2}, 3)
+        with self.assertRaisesRegex(ValueError, "foreign key"):
+            validate_dataset_keys(context, items, [{**interactions[0], "item_key": "unknown"}])
+        with self.assertRaisesRegex(ValueError, "split leakage"):
+            validate_dataset_keys(context, items, [{**interactions[0], "split": "VL"}])
+        with self.assertRaisesRegex(ValueError, "denominator"):
+            validate_sgg_reconciliation({"direct": 1}, 2)
+
+    def test_codebook_mismatch_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs, masters = create_fixture(root, bad_codebook=("jeju-islands", "VL"))
+            with self.assertRaisesRegex(ValueError, "TC_CODEB VIS mismatch"):
+                transform(inputs, masters, root / "out", "synthetic-run")
+
+    def test_malformed_required_columns_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs, masters = create_fixture(root, malformed_visit=True)
+            with self.assertRaisesRegex(ValueError, "Required columns"):
+                transform(inputs, masters, root / "out", "synthetic-run")
+
+    def test_tl_item_sgg_aggregates_all_trips_and_nulls_conflicts(self) -> None:
+        import duckdb
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs, masters = create_fixture(root, multi_trip_sgg_conflict=True)
+            output = root / "out"
+            manifest = transform(inputs, masters, output, "synthetic-run")
+            con = duckdb.connect()
+            result = con.execute(
+                "SELECT item_key, SGG_CD FROM read_parquet(?) WHERE region='capital'",
+                [str(output / "item_features.parquet")],
+            ).fetchall()
+            con.close()
+            sgg_by_key = dict(result)
+            item_key = lambda poi: surrogate_key("synthetic-run", "item", "capital", poi)
+            self.assertIsNone(sgg_by_key[item_key("POI3")])  # conflicting valid TL visits
+            self.assertIsNone(sgg_by_key[item_key("POI6")])  # one valid visit conflicts with Master
+            self.assertEqual(sgg_by_key[item_key("POI9")], "11110")  # visit and Master agree
+            self.assertEqual(sgg_by_key[item_key("POI10")], "11110")  # Master fills absent visits
+            self.assertEqual(sgg_by_key[item_key("POI11")], "11110")  # one TL value fills the sibling row
+            self.assertNotIn("synthetic-run", json.dumps(manifest))
+            audit = manifest["sgg_audit"]["by_region_split_cohort"]["capital:TL:all_valid_visits"]
+            self.assertEqual(audit["resolved_outcome_counts"].get("direct"), 2)
+            self.assertEqual(audit["resolved_outcome_counts"].get("poi_aggregate_filled"), 1)
+            self.assertEqual(audit["resolved_outcome_counts"].get("value_conflicts"), 7)
+            self.assertEqual(audit["current_visit_strict_valid_count"], 8)
+            self.assertEqual(sum(audit["poi_aggregate_event_state_counts"].values()), audit["denominator"])
+            self.assertEqual(sum(audit["poi_aggregate_distinct_state_counts"].values()), audit["distinct_poi_denominator"])
+            self.assertEqual(sum(audit["sgg_unavailable_poi_presence_counts"].values()), audit["sgg_unavailable_observation_count"])
+            self.assertEqual(sum(audit["sgg_unavailable_master_join_state_counts"].values()), audit["sgg_unavailable_observation_count"])
+            type_audit = manifest["sgg_audit"]["visit_type_reconciliation"]["capital:TL"]
+            self.assertEqual(sum(type_audit["visit_type_classification_counts"].values(),), type_audit["all_valid_visits_denominator"])
+            self.assertEqual(type_audit["visit_type_classification_counts"]["missing_visit_type"], 1)
+            self.assertEqual(type_audit["visit_type_classification_counts"]["unsupported_visit_type"], 1)
+            self.assertEqual(audit["sgg_unavailable_poi_presence_counts"]["missing"], 1)
+            self.assertEqual(audit["sgg_unavailable_master_join_state_counts"]["not_applicable"], 1)
+
+    def test_argparse_errors_do_not_echo_supplied_arguments(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+            main(["--run-id", "safe-run", "--raw-id", "PRIVATE_SENTINEL"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertNotIn("PRIVATE_SENTINEL", stderr.getvalue())
+        self.assertNotIn("--raw-id", stderr.getvalue())
+
+
+if __name__ == "__main__":
+    unittest.main()
