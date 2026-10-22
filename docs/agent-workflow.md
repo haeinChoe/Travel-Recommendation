@@ -273,7 +273,7 @@ git diff --name-only -z origin/dev...HEAD \
 
 ### 병합 후 작업 재개
 
-유지보수 PR이 별도 승인으로 `dev`에 병합된 뒤에는 maintenance worktree에서 원래 작업을 계속하지 않는다. 현재 세션에서 허용된 도구와 Git 상태로 중단된 Issue 번호, `agent/<N>-<issue-slug>` branch, 기존 worktree가 정확히 매핑되는지 확인한 다음 **그 원래 Issue worktree**로 돌아간다.
+유지보수 PR이 별도 승인으로 `dev`에 병합된 뒤에는 maintenance worktree에서 원래 작업을 계속하지 않는다. 담당 agent가 현재 세션에서 허용된 Herdr 또는 repository 도구와 Git 상태를 사용해 중단된 Issue 번호, `agent/<N>-<issue-slug>` branch, 기존 worktree를 정확히 식별하고 **그 원래 Issue worktree**를 대상으로 작업을 재개한다. 사용자에게 branch나 worktree를 직접 checkout하라고 요청하지 않는다.
 
 아래 `$BLOCKED_ISSUE_WORKTREE`는 추측한 경로가 아니라 현재 세션의 허용된 worktree 도구와 Git 매핑에서 확인한 기존 Issue worktree의 절대 경로를 의미한다.
 
@@ -288,6 +288,16 @@ git -C "$BLOCKED_ISSUE_WORKTREE" merge origin/dev
 원래 Issue worktree의 미커밋 변경 때문에 merge가 안전하게 진행되지 않으면 이를 숨기기 위해 임의로 reset, stash, 강제 commit하지 않는다. 기존 Issue 권한과 현재 작업 상태에 맞는 안전한 방법을 선택하고, 자동으로 해결할 수 없으면 정확한 blocker를 보고한다. merge 후 원래 Issue 관련 검증을 다시 실행한 뒤 작업을 재개한다.
 
 로컬 `dev` 자체를 갱신해야 할 때는 예상치 못한 merge commit 생성을 피하기 위해 `git pull --ff-only`를 권장한다.
+
+### Issue 작업 공간 정리와 산출물 보존
+
+workspace, worktree, local branch 또는 연결된 파일을 정리할 때도 담당 agent가 허용된 도구와 Git 상태로 대상을 식별하고 직접 해당 worktree를 선택해 절차를 수행한다. 사용자가 직접 branch/worktree를 checkout하거나 파일을 옮기도록 요청하지 않는다. 정리는 사용자 또는 Issue의 명시적 권한이 있을 때만 시작하며, 병합되지 않은 PR이 열려 있다는 이유만으로 작업을 폐기하지 않는다.
+
+정리 전에 tracked, untracked, ignored 항목을 읽기 전용으로 목록화하고 각 항목의 소유자, Issue와의 관계, 민감도, 재생성 가능성을 확인한다. 목록만으로 확인할 수 없는 출처·권한·민감도는 추측하지 않는다. 원본·제한 데이터, 비밀정보, 개인정보, 출처나 이용 권한이 확인되지 않은 항목은 열거나 복사하지 말고 정리를 멈춘다. 사용자 소유이거나 소유자가 불명확한 항목도 보존하고 결정을 요청한다. 재생성 가능한 cache와 environment는 가치 있는 산출물과 구분하며, 명시적으로 승인된 정리에서만 버릴 수 있다.
+
+보존이 필요한 것으로 확인된 Issue 소유 산출물, 특히 untracked/ignored 산출물은 출처와 이용 조건이 활성 dev worktree로 옮기는 것을 허용하고 민감하지 않은 경우에만, 그 worktree의 Git-ignored `results/issue-<N>/` 아래로 복사한다. 명시된 cleanup 승인은 확인된 비민감 Issue 산출물의 로컬 복사를 포함할 수 있다. 저장 전에 해당 위치가 ignore 규칙에 포함되는지 확인하고, 복사 후 원본과 대상의 파일 목록 및 크기 또는 hash를 대조하고 대상 파일을 읽을 수 있는지와 접근 정책이 맞는지 확인한다. 이 위치는 로컬 보존용이며 산출물을 Git에 추가하지 않는다. 실제 데이터에서 파생된 파일은 `.gitignore`와 `docs/data/aihub-workflow.md`의 제한을 따른다. 파생 데이터, 특히 dataset Parquet 파일은 Git에 저장하지 않는다. 데이터 정책과 Issue의 명시적 권한이 실제 데이터 파생 파일의 로컬 이동을 허용하는지 확인할 수 없으면 복사하지 말고 정리를 멈춘다.
+
+확인된 산출물의 원본 복사본은 복사 검증 후에만 명시적으로 승인된 정리의 일부로 제거할 수 있다. 그 외 항목은 대상 상태를 다시 확인한 뒤 guarded worktree removal 조건을 만족하지 않으면 삭제를 시도하지 않는다. Herdr workspace session을 닫는 것은 checkout을 보존하는 별도 작업이며 worktree나 branch 정리 완료로 간주하지 않는다. local branch는 작업 트리가 제거되고 branch가 병합된 경우에만 정책에 따라 non-force 삭제할 수 있다. remote branch 삭제는 별도 명시 승인이 필요하다. 세부 결정 흐름과 guarded Herdr 조건은 [Issue workspace cleanup 절차](../.agents/skills/travel-issue-agent-loop/references/agent-loop.md#authorized-issue-workspace-cleanup)를 따른다.
 
 ### dry-run 기준
 
