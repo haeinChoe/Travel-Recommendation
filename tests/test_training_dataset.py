@@ -5,12 +5,14 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from collections import Counter
 from pathlib import Path
+from unittest.mock import patch
 
-from scripts.recommendation.training_data_contract import REGIONS, SPLITS, VISIT_AREA_TYPE_LABELS
+from scripts.recommendation.training_data_contract import REGION_ENV_PREFIX, REGIONS, SPLITS, VISIT_AREA_TYPE_LABELS
 from scripts.recommendation.training_dataset import (
     MODEL_FEATURE_ALLOWLIST,
     _sgg_outcome,
@@ -263,6 +265,38 @@ class TrainingDatasetTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         self.assertNotIn("PRIVATE_SENTINEL", stderr.getvalue())
         self.assertNotIn("--raw-id", stderr.getvalue())
+
+    def test_missing_region_master_binding_does_not_fallback_or_transform(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs, masters = create_fixture(root)
+            environment = {
+                f"{REGION_ENV_PREFIX[region]}_{split}": str(path)
+                for (region, split), path in inputs.items()
+            }
+            environment.update({
+                f"{REGION_ENV_PREFIX[region]}_OTHER": str(path.parent)
+                for region, path in masters.items()
+                if region != "west"
+            })
+            self.assertIn("CAPITAL_OTHER", environment)
+            self.assertNotIn("WEST_OTHER", environment)
+
+            output = root / "must-not-be-created"
+            stderr = io.StringIO()
+            with patch.dict(os.environ, environment, clear=True), \
+                 patch("scripts.recommendation.training_dataset.transform") as transform_mock, \
+                 contextlib.redirect_stderr(stderr):
+                result = main(["--run-id", "no-fallback", "--output-dir", str(output)])
+
+            self.assertEqual(result, 2)
+            transform_mock.assert_not_called()
+            self.assertFalse(output.exists())
+            self.assertEqual(
+                stderr.getvalue(),
+                "Training dataset transformation failed; diagnostic details are suppressed for privacy.\n",
+            )
+            self.assertNotIn(str(root), stderr.getvalue())
 
 
 if __name__ == "__main__":

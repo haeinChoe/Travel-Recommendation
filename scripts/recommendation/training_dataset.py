@@ -596,7 +596,7 @@ def _resolve_env_inputs() -> tuple[dict[tuple[str, str], Path], dict[str, Path]]
     masters = {}
     for region in REGIONS:
         prefix = REGION_ENV_PREFIX[region]
-        value = os.environ.get(f"{prefix}_OTHER") or os.environ.get("CAPITAL_OTHER")
+        value = os.environ.get(f"{prefix}_OTHER")
         if not value: raise ValueError(f"Missing required master binding {prefix}_OTHER")
         masters[region] = _master_path(Path(value))
     return inputs, masters
