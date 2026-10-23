@@ -132,13 +132,17 @@ test("plan mode reports the proposed sync and cleanup without mutating refs or w
   assert.equal(readFileSync(join(fixture.dev, "keep.local"), "utf8"), "keep me\n");
 });
 
-test("apply fast-forwards dev from origin/dev without cleaning unrelated branches", (context) => {
+test("apply fast-forwards dev from FETCH_HEAD without updating origin/dev tracking ref", (context) => {
   const fixture = makeFixture(context);
+  const beforeOriginDev = git(fixture.dev, ["rev-parse", "refs/remotes/origin/dev"]);
   const remoteDev = advanceRemoteDev(fixture);
   const result = runCli(fixture.dev, ["--apply"]);
 
   assert.equal(result.status, 0, result.output);
   assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), remoteDev);
+  assert.equal(git(fixture.dev, ["rev-parse", "FETCH_HEAD"]), remoteDev);
+  assert.equal(git(fixture.dev, ["rev-parse", "refs/remotes/origin/dev"]), beforeOriginDev);
+  assert.notEqual(beforeOriginDev, remoteDev);
   assert.equal(git(fixture.dev, ["branch", "--show-current"]), "dev");
   assert.match(result.output, /fast-forwarded/i);
 });

@@ -145,7 +145,7 @@ function printPlan(primary: string, options: Options): void {
   const head = git(primary, ["rev-parse", "HEAD"]).trim();
   const originDev = currentOriginDev(primary);
   console.log(`Primary dev HEAD: ${head}`);
-  console.log(`origin/dev: ${originDev ?? "missing; apply would fetch origin dev"}`);
+  console.log(`Existing refs/remotes/origin/dev snapshot (may be stale): ${originDev ?? "missing; apply would fetch origin dev"}`);
   console.log(`dev worktree status: ${isClean(primary) ? "clean" : "dirty (apply refused)"}`);
   console.log("Mode: plan only; no changes made.");
 
@@ -188,23 +188,22 @@ function applyPlan(primary: string, options: Options): void {
     throw new Error("primary dev worktree is dirty; refusing apply before fetch or cleanup");
   }
 
-  git(primary, ["fetch", "--no-tags", "origin", "dev"]);
-  const originDev = currentOriginDev(primary);
-  if (!originDev) throw new Error("origin/dev is unavailable after fetch; refusing cleanup");
+  git(primary, ["fetch", "--no-tags", "--refmap=", "origin", "dev"]);
+  const fetchedDev = git(primary, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]).trim();
 
   const devHead = git(primary, ["rev-parse", "HEAD"]).trim();
-  if (!isAncestor(primary, devHead, originDev)) {
-    throw new Error("local dev is not an ancestor of origin/dev; refusing non-fast-forward update");
+  if (!isAncestor(primary, devHead, fetchedDev)) {
+    throw new Error("local dev is not an ancestor of fetched origin dev; refusing non-fast-forward update");
   }
 
   const worktrees = parseWorktrees(git(primary, ["worktree", "list", "--porcelain"]));
-  const localPlans = prepareLocalTargets(primary, options.localBranches, originDev, worktrees);
+  const localPlans = prepareLocalTargets(primary, options.localBranches, fetchedDev, worktrees);
 
-  if (devHead !== originDev) {
-    git(primary, ["merge", "--ff-only", "refs/remotes/origin/dev"]);
+  if (devHead !== fetchedDev) {
+    git(primary, ["merge", "--ff-only", fetchedDev]);
   }
   const updatedHead = git(primary, ["rev-parse", "HEAD"]).trim();
-  if (updatedHead !== originDev) throw new Error("dev fast-forward readback did not match origin/dev");
+  if (updatedHead !== fetchedDev) throw new Error("dev fast-forward readback did not match fetched origin dev");
   if (!isClean(primary)) throw new Error("primary dev became dirty after fast-forward; refusing branch cleanup");
 
   for (const plan of localPlans) {
