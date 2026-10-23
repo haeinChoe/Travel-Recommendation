@@ -24,6 +24,7 @@ test("maintenance fast path accepts only the initial repository allowlist", () =
     ".github/PULL_REQUEST_TEMPLATE/maintenance.md",
     "scripts/maintenance/validate-fast-path-scope.ts",
     "tests/maintenance-fast-path.test.ts",
+    "tests/test_agent_loop_cleanup_docs.py",
     "package.json",
   ] as const;
 
@@ -39,6 +40,7 @@ test("maintenance fast path rejects product, data, recommendation, and unknown p
     "data/raw/example.csv",
     "apps/api/src/main.ts",
     "services/recommender/model.py",
+    "tests/test_agent_loop_cleanup_docs_extended.py",
     "../AGENTS.md",
     "/tmp/AGENTS.md",
     "C:\\repo\\AGENTS.md",

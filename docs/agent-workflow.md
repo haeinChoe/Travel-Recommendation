@@ -221,6 +221,7 @@ PR에는 실제 데이터 행, 개인 식별 가능 정보, 토큰·비밀값, �
 - 유지보수 신속 경로 자체의 계약 검증 파일
   - `scripts/maintenance/validate-fast-path-scope.ts`
   - `tests/maintenance-fast-path.test.ts`
+  - `tests/test_agent_loop_cleanup_docs.py`
   - `package.json`의 관련 테스트 스크립트
 
 현재 Issue를 직접 막는 좁은 CI/개발 도구 설정이 필요하더라도 위 allowlist 밖이면 자동으로 통과시키지 않는다. 해당 정확한 경로와 비의미 변경임을 먼저 검토하고, 필요하면 일반 Issue 또는 별도 승인으로 범위를 확장한다.
@@ -295,7 +296,13 @@ workspace, worktree, local branch 또는 연결된 파일을 정리할 때도 �
 
 정리 전에 tracked, untracked, ignored 항목을 읽기 전용으로 목록화하고 각 항목의 소유자, Issue와의 관계, 민감도, 재생성 가능성을 확인한다. 목록만으로 확인할 수 없는 출처·권한·민감도는 추측하지 않는다. 원본·제한 데이터, 비밀정보, 개인정보, 출처나 이용 권한이 확인되지 않은 항목은 열거나 복사하지 말고 정리를 멈춘다. 사용자 소유이거나 소유자가 불명확한 항목도 보존하고 결정을 요청한다. 재생성 가능한 cache와 environment는 가치 있는 산출물과 구분하며, 명시적으로 승인된 정리에서만 버릴 수 있다.
 
-보존이 필요한 것으로 확인된 Issue 소유 산출물, 특히 untracked/ignored 산출물은 출처와 이용 조건이 활성 dev worktree로 옮기는 것을 허용하고 민감하지 않은 경우에만, 그 worktree의 Git-ignored `results/issue-<N>/` 아래로 복사한다. 명시된 cleanup 승인은 확인된 비민감 Issue 산출물의 로컬 복사를 포함할 수 있다. 저장 전에 해당 위치가 ignore 규칙에 포함되는지 확인하고, 복사 후 원본과 대상의 파일 목록 및 크기 또는 hash를 대조하고 대상 파일을 읽을 수 있는지와 접근 정책이 맞는지 확인한다. 이 위치는 로컬 보존용이며 산출물을 Git에 추가하지 않는다. 실제 데이터에서 파생된 파일은 `.gitignore`와 `docs/data/aihub-workflow.md`의 제한을 따른다. 파생 데이터, 특히 dataset Parquet 파일은 Git에 저장하지 않는다. 데이터 정책과 Issue의 명시적 권한이 실제 데이터 파생 파일의 로컬 이동을 허용하는지 확인할 수 없으면 복사하지 말고 정리를 멈춘다.
+확인된 비민감 Issue 산출물의 명시적 cleanup 승인은 primary `dev` checkout으로의 로컬 복사를 포함할 수 있다. 실제 데이터 파생 파일은 `docs/data/aihub-workflow.md`와 Issue에 기록된 권한을 충족해야 하며, dataset Parquet 등 파생 데이터는 Git에 추가하지 않는다. 출처, 이용 조건, 민감도 또는 로컬 이동 권한을 확인할 수 없으면 복사하지 말고 정리를 멈춘다.
+
+복사 전에 repository/worktree 상태에서 확인한 primary `dev` checkout의 정확한 destination에 `git check-ignore -q -- <destination>` 또는 지정 도구의 동등 기능을 실행한다. destination이 Git-ignore되지 않으면 어떤 파일도 쓰기 전에 멈춘다. 사전 확인이 통과한 뒤에만 지정 경로로 복사하며, 아래 복사 후 Git-ignore 재확인도 계속 수행한다.
+
+보존 목적지는 임의의 worktree가 아니라 **repository/worktree 상태에서 확인한 실제 로컬 primary `dev` checkout**이다. 담당 산출물 생성 agent는 각 Issue 산출물의 정확한 파일 집합과 Issue 상대 위치를 기록한 manifest를 소유하고, 생성 후 산출물을 다시 열어 schema, row count, key integrity, readability 및 해당 Issue의 semantic acceptance check를 확인한다. 파일명·크기·hash만 검사한 것은 내용 검증이 아니다. 현재 세션에서는 등록된 local-file 작업 경로 `functions.exec` → `tools.exec_command`를 지정 복사 도구로 사용한다. 다른 세션에서는 그 세션에 등록된 지정 static file/workspace 도구를 사용한다. 원본 worktree를 정리하기 전에 확인된 primary `dev` checkout의 `results/issue-<N>/`에만 복사하며 임의로 추측한 목적지에는 쓰지 않는다. 복사 후 manifest와 destination의 정확한 file set을 대조하고, 각 파일의 content equality를 확인하며, 실제 destination의 Git-ignore 상태와 destination artifact를 다시 열어 Issue별 semantic check 및 readability를 확인한다. source와 destination의 내용·의미가 모두 일치하고 ignore 및 접근 정책이 확인되기 전에는 source copy/cache 삭제나 worktree cleanup을 하지 않는다.
+
+현재 세션의 `functions.exec` → `tools.exec_command` 또는 다른 세션의 등록된 지정 도구가 실제 primary `dev` checkout을 식별·작성하지 못하면 정확한 도구/capability blocker를 기록하고 원본 산출물과 source worktree를 보존한 채 멈춘다. 별도 branch archive, 직접 Git write, 또는 사용자에게 checkout/copy를 요청하는 방법으로 대체하지 않는다. 원본·제한 데이터와 identifying value는 열거나 hash·복사·공유하지 않는다. Issue와 데이터 정책이 허용하는 비민감 산출물만 로컬 이동한다. PR과 로그에는 경로, 식별값, raw rows 대신 안전한 aggregate evidence만 기록한다.
 
 확인된 산출물의 원본 복사본은 복사 검증 후에만 명시적으로 승인된 정리의 일부로 제거할 수 있다. 그 외 항목은 대상 상태를 다시 확인한 뒤 guarded worktree removal 조건을 만족하지 않으면 삭제를 시도하지 않는다. Herdr workspace session을 닫는 것은 checkout을 보존하는 별도 작업이며 worktree나 branch 정리 완료로 간주하지 않는다. local branch는 작업 트리가 제거되고 branch가 병합된 경우에만 정책에 따라 non-force 삭제할 수 있다. remote branch 삭제는 별도 명시 승인이 필요하다. 세부 결정 흐름과 guarded Herdr 조건은 [Issue workspace cleanup 절차](../.agents/skills/travel-issue-agent-loop/references/agent-loop.md#authorized-issue-workspace-cleanup)를 따른다.
 

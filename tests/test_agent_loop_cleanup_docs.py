@@ -58,6 +58,7 @@ class CleanupDocumentationTests(unittest.TestCase):
             {
                 "target",
                 "authorization",
+                "outputs_preserved",
                 "workspace",
                 "git_clean",
                 "protected_branch",
@@ -127,6 +128,50 @@ class CleanupDocumentationTests(unittest.TestCase):
         self.assertIn("remote branch", branch)
         self.assertIn("`-D`", branch)
         self.assertIn("git worktree list --porcelain", readback)
+
+    def test_issue_outputs_are_semantically_validated_and_preserved_via_designated_tool(self) -> None:
+        condition = self.matrix[("linked worktree removal", "outputs_preserved")].casefold()
+        for phrase in (
+            "output-producing agent's manifest",
+            "semantically validated",
+            "functions.exec` → `tools.exec_command",
+            "repository/worktree state",
+            "other sessions use their registered designated static tool",
+            "actual primary `dev` checkout",
+            "never guess or choose an arbitrary destination",
+            "exact file set",
+            "content equality",
+            "run `git check-ignore -q -- <destination>` or its designated-tool equivalent before writing",
+            "stop if not ignored",
+            "verify destination git-ignore status again after copy",
+            "reopen/read semantic checks",
+        ):
+            self.assertIn(phrase, condition)
+        for text in (self.skill, self.reference):
+            folded = text.casefold()
+            self.assertIn("branch archive", folded)
+            self.assertIn("direct git writes", folded)
+            self.assertIn("schema", folded)
+            self.assertIn("row counts", folded)
+            self.assertIn("key integrity", folded)
+        workflow = (ROOT / "docs/agent-workflow.md").read_text(encoding="utf-8").casefold()
+        instructions = (ROOT / "AGENTS.md").read_text(encoding="utf-8").casefold()
+        self.assertIn("static file/workspace", workflow)
+        self.assertIn("functions.exec` → `tools.exec_command", workflow)
+        self.assertIn("다른 세션에서는", workflow)
+        self.assertIn("`git check-ignore -q -- <destination>`", workflow)
+        self.assertIn("git-ignore되지 않으면 어떤 파일도 쓰기 전에 멈춘다", workflow)
+        self.assertIn("복사 후 git-ignore 재확인", workflow)
+        self.assertNotIn("일반 shell copy", workflow)
+        self.assertIn("functions.exec` → `tools.exec_command", instructions)
+        self.assertIn("다른 세션에서는", instructions)
+        self.assertIn("`git check-ignore -q -- <destination>`", instructions)
+        self.assertIn("ignore되지 않으면 쓰기 전에 중단", instructions)
+        self.assertIn("identifying value", workflow)
+        self.assertIn("aggregate evidence", workflow)
+        self.assertIn("안전한 aggregate evidence", workflow)
+        self.assertIn("사용자 수동 checkout/copy", instructions)
+        self.assertIn("임의로 추측한 목적지", workflow)
 
     def test_refusal_procedure_names_the_observed_blocker_and_forbids_bypass(self) -> None:
         self.assertIn("Caller pane identity is unavailable; refusing teardown", self.reference)

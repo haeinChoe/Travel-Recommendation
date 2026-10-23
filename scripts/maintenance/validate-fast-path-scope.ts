@@ -7,6 +7,7 @@ const EXACT_ALLOWED_PATHS = new Set([
   "package.json",
   "scripts/maintenance/validate-fast-path-scope.ts",
   "tests/maintenance-fast-path.test.ts",
+  "tests/test_agent_loop_cleanup_docs.py",
 ]);
 
 const ALLOWED_PREFIXES = [
