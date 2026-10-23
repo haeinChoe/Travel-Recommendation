@@ -58,6 +58,7 @@ class CleanupDocumentationTests(unittest.TestCase):
             {
                 "target",
                 "authorization",
+                "outputs_preserved",
                 "workspace",
                 "git_clean",
                 "protected_branch",
@@ -127,6 +128,90 @@ class CleanupDocumentationTests(unittest.TestCase):
         self.assertIn("remote branch", branch)
         self.assertIn("`-D`", branch)
         self.assertIn("git worktree list --porcelain", readback)
+
+    def test_issue_outputs_are_semantically_validated_and_preserved_via_designated_tool(self) -> None:
+        condition = self.matrix[("linked worktree removal", "outputs_preserved")].casefold()
+        for phrase in (
+            "output-producing agent's manifest",
+            "semantically validated",
+            "functions.exec` → `tools.exec_command",
+            "repository/worktree state",
+            "other sessions use their registered designated static tool",
+            "actual primary `dev` checkout",
+            "never guess or choose an arbitrary destination",
+            "exact file set",
+            "content equality",
+            "run `git check-ignore -q -- <destination>` or its designated-tool equivalent before writing",
+            "stop if not ignored",
+            "verify destination git-ignore status again after copy",
+            "reopen/read semantic checks",
+        ):
+            self.assertIn(phrase, condition)
+        for text in (self.skill, self.reference):
+            folded = text.casefold()
+            self.assertIn("branch archive", folded)
+            self.assertIn("direct git writes", folded)
+            self.assertIn("schema", folded)
+            self.assertIn("row counts", folded)
+            self.assertIn("key integrity", folded)
+        workflow = (ROOT / "docs/agent-workflow.md").read_text(encoding="utf-8").casefold()
+        instructions = (ROOT / "AGENTS.md").read_text(encoding="utf-8").casefold()
+        self.assertIn("static file/workspace", workflow)
+        self.assertIn("functions.exec` → `tools.exec_command", workflow)
+        self.assertIn("다른 세션에서는", workflow)
+        self.assertIn("`git check-ignore -q -- <destination>`", workflow)
+        self.assertIn("git-ignore되지 않으면 어떤 파일도 쓰기 전에 멈춘다", workflow)
+        self.assertIn("복사 후 git-ignore 재확인", workflow)
+        self.assertNotIn("일반 shell copy", workflow)
+        self.assertIn("functions.exec` → `tools.exec_command", instructions)
+        self.assertIn("다른 세션에서는", instructions)
+        self.assertIn("`git check-ignore -q -- <destination>`", instructions)
+        self.assertIn("ignore되지 않으면 쓰기 전에 중단", instructions)
+        self.assertIn("identifying value", workflow)
+        self.assertIn("aggregate evidence", workflow)
+        self.assertIn("안전한 aggregate evidence", workflow)
+        self.assertIn("사용자 수동 checkout/copy", instructions)
+        self.assertIn("임의로 추측한 목적지", workflow)
+
+    def test_finished_branch_cleanup_uses_the_bounded_local_cli(self) -> None:
+        workflow = (ROOT / "docs/agent-workflow.md").read_text(encoding="utf-8")
+        reference = self.reference
+        cli = (ROOT / "scripts/maintenance/sync-finished-branches.ts").read_text(encoding="utf-8")
+        for text in (workflow, reference):
+            self.assertIn("scripts/maintenance/sync-finished-branches.ts", text)
+            self.assertIn("--apply", text)
+            self.assertIn("origin/dev", text)
+            self.assertIn("git branch -d", text)
+            self.assertIn("plan-only", text)
+            self.assertRegex(text.casefold(), r"only when requesting (?:local )?branch cleanup|정리를 요청할 때만")
+            self.assertIn("remote branch deletion is outside this tool's scope", text.casefold())
+        self.assertIn("branch 인자 없이 `--apply`", workflow.casefold())
+        self.assertIn("`--apply` alone is supported", reference.casefold())
+        self.assertIn("target remote refs for merged prs #74 and #75 were already absent", reference.casefold())
+        for text in (workflow, reference):
+            self.assertIn("`git fetch --no-tags --refmap= origin dev`", text)
+            self.assertIn("`FETCH_HEAD`", text)
+            self.assertIn("`refs/remotes/origin/dev`", text)
+            self.assertIn("remote branch refs", text.casefold())
+            self.assertIn("local remote-tracking refs", text.casefold())
+        self.assertIn("잠재적으로 오래된 snapshot", workflow)
+        self.assertIn("potentially stale", reference.casefold())
+        self.assertIn("Apply 중에는 `refs/remotes/origin/dev`를 읽거나 갱신하지 않는다", workflow)
+        self.assertIn("apply does not read or update `refs/remotes/origin/dev`", reference)
+        self.assertIn("`FETCH_HEAD`에서 읽은 commit SHA", workflow)
+        self.assertIn("reads the fetched commit SHA from `FETCH_HEAD`", reference)
+        self.assertIn('"--ff-only"', cli)
+        self.assertIn('["fetch", "--no-tags", "--refmap=", "origin", "dev"]', cli)
+        self.assertIn('["rev-parse", "--verify", "FETCH_HEAD^{commit}"]', cli)
+        self.assertIn('["merge", "--ff-only", fetchedDev]', cli)
+        apply_body = cli.split("function applyPlan(", 1)[1].split("\nfunction main(", 1)[0]
+        self.assertNotIn("refs/remotes/origin/dev", apply_body)
+        self.assertNotIn("currentOriginDev(", apply_body)
+        self.assertIn('"-d"', cli)
+        self.assertNotIn('"-D"', cli)
+        self.assertNotIn("--remote", cli)
+        self.assertNotIn('"push"', cli)
+        self.assertNotIn("ls-remote", cli)
 
     def test_refusal_procedure_names_the_observed_blocker_and_forbids_bypass(self) -> None:
         self.assertIn("Caller pane identity is unavailable; refusing teardown", self.reference)

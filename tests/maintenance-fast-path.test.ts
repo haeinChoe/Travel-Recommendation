@@ -22,8 +22,11 @@ test("maintenance fast path accepts only the initial repository allowlist", () =
     ".agents/skills/travel-issue-agent-loop/references/agent-loop.md",
     ".github/ISSUE_TEMPLATE/task.yml",
     ".github/PULL_REQUEST_TEMPLATE/maintenance.md",
+    "scripts/maintenance/sync-finished-branches.ts",
     "scripts/maintenance/validate-fast-path-scope.ts",
     "tests/maintenance-fast-path.test.ts",
+    "tests/maintenance-sync-finished-branches.test.ts",
+    "tests/test_agent_loop_cleanup_docs.py",
     "package.json",
   ] as const;
 
@@ -39,6 +42,9 @@ test("maintenance fast path rejects product, data, recommendation, and unknown p
     "data/raw/example.csv",
     "apps/api/src/main.ts",
     "services/recommender/model.py",
+    "scripts/maintenance/sync-finished-branches-extra.ts",
+    "tests/maintenance-sync-finished-branches.integration.test.ts",
+    "tests/test_agent_loop_cleanup_docs_extended.py",
     "../AGENTS.md",
     "/tmp/AGENTS.md",
     "C:\\repo\\AGENTS.md",
@@ -74,6 +80,9 @@ test("workflow documents authorization, isolation, and resume semantics", () => 
     "maintenance worktree에서 원래 작업을 계속하지 않는다",
     "git pull --ff-only",
     "force push",
+    "scripts/maintenance/sync-finished-branches.ts",
+    "--apply",
+    "origin/dev",
   ]) {
     assert.ok(workflow.includes(phrase), phrase);
   }
