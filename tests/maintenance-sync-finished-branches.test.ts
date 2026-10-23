@@ -149,6 +149,33 @@ test("apply fast-forwards dev from origin/dev without cleaning unrelated branche
   assert.match(result.output, /fast-forwarded/i);
 });
 
+test("apply from a linked Issue worktree fast-forwards the separate dev worktree and preserves the caller", (context) => {
+  const fixture = makeFixture(context);
+  const callerBranch = "agent/42-caller-worktree";
+  const caller = join(fixture.root, "caller-worktree");
+  const callerHead = git(fixture.dev, ["rev-parse", "HEAD"]);
+  git(fixture.dev, ["worktree", "add", "-b", callerBranch, caller, "dev"]);
+  const callerStatus = git(caller, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  const primaryCommon = git(fixture.dev, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  const callerCommon = git(caller, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  assert.equal(callerCommon, primaryCommon);
+
+  const remoteDev = advanceRemoteDev(fixture);
+  const result = runCli(caller, ["--apply"]);
+
+  assert.equal(result.status, 0, result.output);
+  assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), remoteDev);
+  assert.equal(git(fixture.dev, ["branch", "--show-current"]), "dev");
+  assert.equal(git(caller, ["branch", "--show-current"]), callerBranch);
+  assert.equal(git(caller, ["rev-parse", "HEAD"]), callerHead);
+  assert.equal(git(fixture.dev, ["rev-parse", `refs/heads/${callerBranch}`]), callerHead);
+  assert.equal(git(caller, ["status", "--porcelain=v1", "--untracked-files=all"]), callerStatus);
+  assert.equal(existsSync(caller), true);
+  const worktrees = git(fixture.dev, ["worktree", "list", "--porcelain"]);
+  assert.ok(worktrees.includes(`worktree ${caller}`));
+  assert.ok(worktrees.includes(`branch refs/heads/${callerBranch}`));
+});
+
 test("apply removes only explicitly named merged local and remote Issue branches and preserves ignored files", (context) => {
   const fixture = makeFixture(context);
   const branch = "agent/42-finished-cleanup";
