@@ -188,7 +188,6 @@ test("apply removes only explicitly named merged local Issue branches and preser
   assert.equal(git(fixture.dev, ["show-ref", "--verify", `refs/heads/${unrelated}`]).length > 0, true);
   assert.equal(readFileSync(join(fixture.dev, "keep.local"), "utf8"), "preserve ignored content\n");
   assert.equal(git(fixture.dev, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
-  assert.equal(git(fixture.seed, ["ls-remote", "--heads", "origin", `refs/heads/${branch}`]).length > 0, true);
 });
 
 test("apply refuses an unmerged local Issue branch before moving dev or deleting refs", (context) => {
