@@ -17,7 +17,6 @@ const temporaryRootPrefix = join(repositoryRoot, ".maintenance-sync-test-");
 
 interface Fixture {
   readonly root: string;
-  readonly remote: string;
   readonly seed: string;
   readonly dev: string;
 }
@@ -75,7 +74,7 @@ function makeFixture(context: TestContext): Fixture {
   git(root, ["clone", "--branch", "dev", remote, dev]);
   git(dev, ["config", "user.name", "Maintenance Test"]);
   git(dev, ["config", "user.email", "maintenance-test@example.invalid"]);
-  return { root, remote, seed, dev };
+  return { root, seed, dev };
 }
 
 function pushIssueBranch(fixture: Fixture, branch: string): string {
@@ -111,10 +110,6 @@ function createLocalBranchAtRemoteTip(fixture: Fixture, branch: string): string 
   return tip;
 }
 
-function remoteBranchExists(fixture: Fixture, branch: string): boolean {
-  return git(fixture.dev, ["ls-remote", "--heads", "origin", `refs/heads/${branch}`]).length > 0;
-}
-
 test("plan mode reports the proposed sync and cleanup without mutating refs or worktree", (context) => {
   const fixture = makeFixture(context);
   const branch = "agent/42-finished-cleanup";
@@ -126,14 +121,13 @@ test("plan mode reports the proposed sync and cleanup without mutating refs or w
 
   const beforeHead = git(fixture.dev, ["rev-parse", "HEAD"]);
   const beforeStatus = git(fixture.dev, ["status", "--porcelain=v1", "--untracked-files=all"]);
-  const result = runCli(fixture.dev, ["--local", branch, "--remote", branch]);
+  const result = runCli(fixture.dev, ["--local", branch]);
 
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, /plan only; no changes made/i);
   assert.match(result.output, /eligible for non-force deletion/i);
   assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
   assert.equal(git(fixture.dev, ["status", "--porcelain=v1", "--untracked-files=all"]), beforeStatus);
-  assert.equal(remoteBranchExists(fixture, branch), true);
   assert.equal(git(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]).trim().length > 0, true);
   assert.equal(readFileSync(join(fixture.dev, "keep.local"), "utf8"), "keep me\n");
 });
@@ -176,43 +170,42 @@ test("apply from a linked Issue worktree fast-forwards the separate dev worktree
   assert.ok(worktrees.includes(`branch refs/heads/${callerBranch}`));
 });
 
-test("apply removes only explicitly named merged local and remote Issue branches and preserves ignored files", (context) => {
+test("apply removes only explicitly named merged local Issue branches and preserves ignored files", (context) => {
   const fixture = makeFixture(context);
   const branch = "agent/42-finished-cleanup";
   pushIssueBranch(fixture, branch);
   const remoteDev = mergeBranchIntoRemoteDev(fixture, branch);
   const branchTip = createLocalBranchAtRemoteTip(fixture, branch);
-  git(fixture.dev, ["update-ref", `refs/remotes/origin/${branch}`, branchTip]);
-  git(fixture.dev, ["branch", "--set-upstream-to", `origin/${branch}`, branch]);
   writeFileSync(join(fixture.dev, "keep.local"), "preserve ignored content\n", "utf8");
 
   const unrelated = "agent/43-unrelated";
   git(fixture.dev, ["branch", unrelated, branchTip]);
-  const result = runCli(fixture.dev, ["--apply", "--local", branch, "--remote", branch]);
+  const result = runCli(fixture.dev, ["--apply", "--local", branch]);
 
   assert.equal(result.status, 0, result.output);
   assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), remoteDev);
   assert.equal(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]), "");
   assert.equal(git(fixture.dev, ["show-ref", "--verify", `refs/heads/${unrelated}`]).length > 0, true);
-  assert.equal(remoteBranchExists(fixture, branch), false);
-  assert.equal(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/remotes/origin/${branch}`]), "");
   assert.equal(readFileSync(join(fixture.dev, "keep.local"), "utf8"), "preserve ignored content\n");
   assert.equal(git(fixture.dev, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
+  assert.equal(git(fixture.seed, ["ls-remote", "--heads", "origin", `refs/heads/${branch}`]).length > 0, true);
 });
 
-test("apply refuses an unmerged open Issue branch before moving dev or deleting refs", (context) => {
+test("apply refuses an unmerged local Issue branch before moving dev or deleting refs", (context) => {
   const fixture = makeFixture(context);
   const branch = "agent/43-open-review";
-  pushIssueBranch(fixture, branch);
+  const pushedTip = pushIssueBranch(fixture, branch);
+  const branchTip = createLocalBranchAtRemoteTip(fixture, branch);
+  assert.equal(branchTip, pushedTip);
   const remoteDev = advanceRemoteDev(fixture);
   const beforeHead = git(fixture.dev, ["rev-parse", "HEAD"]);
-  const result = runCli(fixture.dev, ["--apply", "--remote", branch]);
+  const result = runCli(fixture.dev, ["--apply", "--local", branch]);
 
   assert.notEqual(result.status, 0);
   assert.match(result.output, /not merged into origin\/dev/i);
   assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
   assert.notEqual(beforeHead, remoteDev);
-  assert.equal(remoteBranchExists(fixture, branch), true);
+  assert.notEqual(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]), "");
 });
 
 test("apply refuses dirty dev before fetching or removing anything", (context) => {
@@ -225,53 +218,34 @@ test("apply refuses dirty dev before fetching or removing anything", (context) =
   const beforeHead = git(fixture.dev, ["rev-parse", "HEAD"]);
   const beforeOriginDev = git(fixture.dev, ["rev-parse", "refs/remotes/origin/dev"]);
 
-  const result = runCli(fixture.dev, ["--apply", "--local", branch, "--remote", branch]);
+  const result = runCli(fixture.dev, ["--apply", "--local", branch]);
 
   assert.notEqual(result.status, 0);
   assert.match(result.output, /dirty; refusing apply before fetch/i);
   assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
   assert.equal(git(fixture.dev, ["rev-parse", "refs/remotes/origin/dev"]), beforeOriginDev);
-  assert.equal(remoteBranchExists(fixture, branch), true);
 });
 
 test("apply refuses a branch checked out in another worktree and rejects non-Issue names", (context) => {
   const fixture = makeFixture(context);
   const branch = "agent/44-other-worktree";
-  const tip = pushIssueBranch(fixture, branch);
+  const pushedTip = pushIssueBranch(fixture, branch);
   mergeBranchIntoRemoteDev(fixture, branch);
   const linked = join(fixture.root, "other-worktree");
-  git(fixture.dev, ["fetch", "origin", `refs/heads/${branch}`]);
-  const fetchedTip = git(fixture.dev, ["rev-parse", "FETCH_HEAD"]);
-  assert.equal(fetchedTip, tip);
-  git(fixture.dev, ["update-ref", `refs/remotes/origin/${branch}`, fetchedTip]);
-  git(fixture.dev, ["worktree", "add", "--track", "-b", branch, linked, `refs/remotes/origin/${branch}`]);
+  const tip = createLocalBranchAtRemoteTip(fixture, branch);
+  assert.equal(tip, pushedTip);
+  git(fixture.dev, ["worktree", "add", linked, branch]);
 
   const beforeHead = git(fixture.dev, ["rev-parse", "HEAD"]);
-  const checkedOut = runCli(fixture.dev, ["--apply", "--remote", branch]);
+  const checkedOut = runCli(fixture.dev, ["--apply", "--local", branch]);
   assert.notEqual(checkedOut.status, 0);
   assert.match(checkedOut.output, /checked out in a worktree/i);
   assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
   assert.equal(git(fixture.dev, ["rev-parse", `refs/heads/${branch}`]).length > 0, true);
 
-  const protectedName = runCli(fixture.dev, ["--apply", "--remote", "dev"]);
+  const protectedName = runCli(fixture.dev, ["--apply", "--local", "dev"]);
   assert.notEqual(protectedName.status, 0);
   assert.match(protectedName.output, /protected branch/i);
   assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
   assert.ok(tip.length > 0);
-});
-
-test("apply removes only a stale origin tracking ref after the remote branch is confirmed absent", (context) => {
-  const fixture = makeFixture(context);
-  const branch = "agent/46-stale-remote";
-  const stale = git(fixture.seed, ["rev-parse", "dev"]);
-  git(fixture.dev, ["update-ref", `refs/remotes/origin/${branch}`, stale]);
-  git(fixture.dev, ["branch", "agent/47-preserved-local", stale]);
-
-  const result = runCli(fixture.dev, ["--apply", "--remote", branch]);
-
-  assert.equal(result.status, 0, result.output);
-  assert.match(result.output, /already absent/i);
-  assert.match(result.output, /removed stale tracking ref/i);
-  assert.equal(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/remotes/origin/${branch}`]), "");
-  assert.equal(git(fixture.dev, ["show-ref", "--verify", "refs/heads/agent/47-preserved-local"]).length > 0, true);
 });

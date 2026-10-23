@@ -5,18 +5,11 @@ import { resolve } from "node:path";
 interface Options {
   readonly apply: boolean;
   readonly localBranches: readonly string[];
-  readonly remoteBranches: readonly string[];
 }
 
 interface Worktree {
   readonly path: string;
   readonly branch: string | null;
-}
-
-interface RemotePlan {
-  readonly branch: string;
-  readonly present: boolean;
-  readonly staleTrackingRef: boolean;
 }
 
 const ISSUE_BRANCH = /^agent\/\d+-(?:maintenance-)?[a-z0-9][a-z0-9._-]*$/;
@@ -42,7 +35,6 @@ function gitStatus(cwd: string, args: readonly string[]): number {
 function parseOptions(argv: readonly string[]): Options {
   let apply = false;
   const localBranches: string[] = [];
-  const remoteBranches: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -52,25 +44,24 @@ function parseOptions(argv: readonly string[]): Options {
       continue;
     }
 
-    if (argument === "--local" || argument === "--remote") {
+    if (argument === "--local") {
       const branch = argv[index + 1];
       if (!branch || branch.startsWith("--")) {
         throw new Error(`${argument} requires an explicit branch name`);
       }
       index += 1;
       assertIssueBranch(branch);
-      const target = argument === "--local" ? localBranches : remoteBranches;
-      if (target.includes(branch)) {
+      if (localBranches.includes(branch)) {
         throw new Error(`duplicate ${argument} branch: ${branch}`);
       }
-      target.push(branch);
+      localBranches.push(branch);
       continue;
     }
 
     throw new Error(`unknown argument: ${argument}`);
   }
 
-  return { apply, localBranches, remoteBranches };
+  return { apply, localBranches };
 }
 
 function assertIssueBranch(branch: string): void {
@@ -150,16 +141,6 @@ function localTip(worktree: string, branch: string): string | null {
     : null;
 }
 
-function remoteTip(worktree: string, branch: string): string | null {
-  const output = git(worktree, ["ls-remote", "--heads", "origin", `refs/heads/${branch}`]).trim();
-  if (!output) return null;
-  const [sha, ref] = output.split(/\s+/);
-  if (!sha || ref !== `refs/heads/${branch}`) {
-    throw new Error(`unexpected ls-remote response for ${branch}`);
-  }
-  return sha;
-}
-
 function printPlan(primary: string, options: Options): void {
   const head = git(primary, ["rev-parse", "HEAD"]).trim();
   const originDev = currentOriginDev(primary);
@@ -181,47 +162,6 @@ function printPlan(primary: string, options: Options): void {
     }
   }
 
-  for (const branch of options.remoteBranches) {
-    const tip = remoteTip(primary, branch);
-    const trackingRef = `refs/remotes/origin/${branch}`;
-    if (!tip) {
-      console.log(`Remote ${branch}: absent${refExists(primary, trackingRef) ? "; stale origin tracking ref would be removed" : ""}.`);
-    } else {
-      console.log(`Remote ${branch}: present; apply will fetch and verify its tip is an ancestor of origin/dev.`);
-    }
-  }
-}
-
-function prepareRemoteTargets(
-  worktree: string,
-  branches: readonly string[],
-  originDev: string,
-  worktrees: readonly Worktree[],
-): RemotePlan[] {
-  const plans: RemotePlan[] = [];
-  for (const branch of branches) {
-    if (worktrees.some((item) => item.branch === `refs/heads/${branch}`)) {
-      throw new Error(`branch ${branch} is checked out in a worktree; refusing cleanup`);
-    }
-    const tipBeforeFetch = remoteTip(worktree, branch);
-    const trackingRef = `refs/remotes/origin/${branch}`;
-    if (!tipBeforeFetch) {
-      plans.push({ branch, present: false, staleTrackingRef: refExists(worktree, trackingRef) });
-      continue;
-    }
-
-    git(worktree, ["fetch", "--no-tags", "origin", `refs/heads/${branch}`]);
-    const fetchedTip = git(worktree, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]).trim();
-    const tipAfterFetch = remoteTip(worktree, branch);
-    if (fetchedTip !== tipBeforeFetch || tipAfterFetch !== tipBeforeFetch) {
-      throw new Error(`remote branch ${branch} changed during verification; no cleanup performed`);
-    }
-    if (!isAncestor(worktree, fetchedTip, originDev)) {
-      throw new Error(`remote branch ${branch} is not merged into origin/dev; refusing cleanup`);
-    }
-    plans.push({ branch, present: true, staleTrackingRef: false });
-  }
-  return plans;
 }
 
 function prepareLocalTargets(
@@ -259,7 +199,6 @@ function applyPlan(primary: string, options: Options): void {
 
   const worktrees = parseWorktrees(git(primary, ["worktree", "list", "--porcelain"]));
   const localPlans = prepareLocalTargets(primary, options.localBranches, originDev, worktrees);
-  const remotePlans = prepareRemoteTargets(primary, options.remoteBranches, originDev, worktrees);
 
   if (devHead !== originDev) {
     git(primary, ["merge", "--ff-only", "refs/remotes/origin/dev"]);
@@ -268,18 +207,6 @@ function applyPlan(primary: string, options: Options): void {
   if (updatedHead !== originDev) throw new Error("dev fast-forward readback did not match origin/dev");
   if (!isClean(primary)) throw new Error("primary dev became dirty after fast-forward; refusing branch cleanup");
 
-  for (const plan of remotePlans) {
-    if (plan.present) {
-      git(primary, ["push", "origin", "--delete", plan.branch]);
-      console.log(`Deleted remote branch ${plan.branch}.`);
-      if (remoteTip(primary, plan.branch) !== null) {
-        throw new Error(`remote branch ${plan.branch} still exists after deletion; stopping cleanup`);
-      }
-    } else {
-      console.log(`Remote branch ${plan.branch} was already absent.`);
-    }
-  }
-
   for (const plan of localPlans) {
     if (!plan.tip) {
       console.log(`Local branch ${plan.branch} was already absent.`);
@@ -287,17 +214,6 @@ function applyPlan(primary: string, options: Options): void {
     }
     git(primary, ["branch", "-d", "--", plan.branch]);
     console.log(`Deleted local branch ${plan.branch} with git branch -d.`);
-  }
-
-  for (const plan of remotePlans) {
-    if (!plan.staleTrackingRef && !refExists(primary, `refs/remotes/origin/${plan.branch}`)) continue;
-    if (remoteTip(primary, plan.branch) !== null) {
-      throw new Error(`remote branch ${plan.branch} reappeared; preserving its tracking ref`);
-    }
-    if (refExists(primary, `refs/remotes/origin/${plan.branch}`)) {
-      git(primary, ["update-ref", "-d", `refs/remotes/origin/${plan.branch}`]);
-      console.log(`Removed stale tracking ref origin/${plan.branch}.`);
-    }
   }
 
   console.log(`Primary dev fast-forwarded to ${updatedHead}.`);
@@ -312,7 +228,7 @@ function main(argv: readonly string[]): number {
       applyPlan(primary, options);
     } else {
       printPlan(primary, options);
-      console.log("Use --apply to fetch origin dev, fast-forward safely, and perform the explicitly named cleanup.");
+      console.log("Use --apply to fetch origin dev and fast-forward safely; add --local <branch> only for explicitly named local branch cleanup.");
     }
     return 0;
   } catch (error) {
