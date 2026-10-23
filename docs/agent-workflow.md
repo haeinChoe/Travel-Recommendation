@@ -219,8 +219,10 @@ PR에는 실제 데이터 행, 개인 식별 가능 정보, 토큰·비밀값, �
 - `.github/PULL_REQUEST_TEMPLATE/**`
 - `.github/ISSUE_TEMPLATE/**`
 - 유지보수 신속 경로 자체의 계약 검증 파일
+  - `scripts/maintenance/sync-finished-branches.ts`
   - `scripts/maintenance/validate-fast-path-scope.ts`
   - `tests/maintenance-fast-path.test.ts`
+  - `tests/maintenance-sync-finished-branches.test.ts`
   - `tests/test_agent_loop_cleanup_docs.py`
   - `package.json`의 관련 테스트 스크립트
 
@@ -289,6 +291,8 @@ git -C "$BLOCKED_ISSUE_WORKTREE" merge origin/dev
 원래 Issue worktree의 미커밋 변경 때문에 merge가 안전하게 진행되지 않으면 이를 숨기기 위해 임의로 reset, stash, 강제 commit하지 않는다. 기존 Issue 권한과 현재 작업 상태에 맞는 안전한 방법을 선택하고, 자동으로 해결할 수 없으면 정확한 blocker를 보고한다. merge 후 원래 Issue 관련 검증을 다시 실행한 뒤 작업을 재개한다.
 
 로컬 `dev` 자체를 갱신해야 할 때는 예상치 못한 merge commit 생성을 피하기 위해 `git pull --ff-only`를 권장한다.
+
+완료된 Issue branch 정리는 repository-local `scripts/maintenance/sync-finished-branches.ts`를 사용한다. 기본 실행은 **plan-only**이며 실제 primary `dev` worktree를 현재 worktree와 shared Git metadata에서 찾는다. `--local agent/<N>-<slug>`와 `--remote agent/<N>-<slug>`로 정리할 branch 이름을 각각 명시해야 한다. 계획을 검토한 뒤에만 `--apply`를 추가한다. apply는 먼저 primary `dev`가 clean인지 확인하고 `git fetch origin dev`를 실행한 후, 현재 `dev`가 `origin/dev`의 ancestor인 경우에만 `git merge --ff-only`로 fast-forward한다. 보호 branch/non-Issue branch, 다른 worktree에서 checkout된 branch, `origin/dev`에 포함되지 않은 local 또는 remote branch는 거부한다. Local ref는 `git branch -d`만 사용하고 remote ref는 merged 상태를 확인한 뒤 `git push origin --delete`로만 삭제한다. Remote branch가 이미 없으면 그 사실을 보고하고 `ls-remote`로 부재를 확인한 뒤 그 branch의 stale `origin/<branch>` tracking ref만 제거한다. 무관한 branch/worktree와 ignored 파일은 보존한다. reset, stash, rebase, force, 전체 prune 또는 shell 문자열 실행은 사용하지 않는다. 테스트는 저장소 안의 임시 bare remote와 폐기 가능한 worktree만 사용하며 실제 primary checkout을 변경하지 않는다.
 
 ### Issue 작업 공간 정리와 산출물 보존
 

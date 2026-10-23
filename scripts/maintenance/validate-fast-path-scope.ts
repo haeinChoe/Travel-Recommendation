@@ -5,8 +5,10 @@ const EXACT_ALLOWED_PATHS = new Set([
   "docs/agent-workflow.md",
   ".github/PULL_REQUEST_TEMPLATE.md",
   "package.json",
+  "scripts/maintenance/sync-finished-branches.ts",
   "scripts/maintenance/validate-fast-path-scope.ts",
   "tests/maintenance-fast-path.test.ts",
+  "tests/maintenance-sync-finished-branches.test.ts",
   "tests/test_agent_loop_cleanup_docs.py",
 ]);
 

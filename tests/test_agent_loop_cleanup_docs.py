@@ -173,6 +173,22 @@ class CleanupDocumentationTests(unittest.TestCase):
         self.assertIn("사용자 수동 checkout/copy", instructions)
         self.assertIn("임의로 추측한 목적지", workflow)
 
+    def test_finished_branch_cleanup_uses_the_bounded_local_cli(self) -> None:
+        workflow = (ROOT / "docs/agent-workflow.md").read_text(encoding="utf-8")
+        reference = self.reference
+        cli = (ROOT / "scripts/maintenance/sync-finished-branches.ts").read_text(encoding="utf-8")
+        for text in (workflow, reference):
+            self.assertIn("scripts/maintenance/sync-finished-branches.ts", text)
+            self.assertIn("--apply", text)
+            self.assertIn("origin/dev", text)
+            self.assertIn("git branch -d", text)
+            self.assertIn("git push origin --delete", text)
+            self.assertIn("plan-only", text)
+        self.assertIn('"--ff-only"', cli)
+        self.assertIn('"--delete"', cli)
+        self.assertIn('"-d"', cli)
+        self.assertNotIn('"-D"', cli)
+
     def test_refusal_procedure_names_the_observed_blocker_and_forbids_bypass(self) -> None:
         self.assertIn("Caller pane identity is unavailable; refusing teardown", self.reference)
         self.assertIn("not a shared-`.git` refusal", self.reference)
