@@ -1,0 +1,352 @@
+# Cold-user POI ranking 학습·평가 계약
+
+**관련 Issue:** #41, #79, #80, #81, #82, #83
+**현재 상태:** 프로토콜 확정 / 실제 TL·VL 실험 미실행
+
+## 이 문서가 답하려는 질문
+
+과거 행동 이력이 없는 사용자에게 현재 여행 문맥과 목적 지역을 받아 POI를 추천할 때, 무엇을 입력으로 사용하고 무엇을 정답 신호로 보며 어떤 후보를 어떤 split에서 순위화할지 고정한다.
+
+이 문서는 CatBoost만을 위한 설명이 아니라 후속 모델도 같은 candidate, split, label, metric 정의로 비교하기 위한 공통 계약이다.
+
+## 한눈에 보는 결론
+
+~~~text
+cold user + 현재 여행 문맥 + 목적 지역
+        ↓
+해당 지역의 AI Hub 후보 POI hard filter
+        ↓
+(request context, candidate POI) feature row
+        ↓
+CatBoostRanker prototype: YetiRank
+        ↓
+POI score → Top-K ranking
+~~~
+
+실제 방문 POI는 관측 양성 1이다. sampled-unobserved POI는 학습 비교용 0으로 표현하지만, 이 0은 사용자가 싫어했다는 관측 음성이 아니다.
+
+## 현재 결정된 것
+
+- 문제 유형: **cold-user contextual POI ranking**
+- ranking group: 한 trip/request
+- 요청 지역을 ranking 전에 hard filter
+- 현재 offline candidate/evaluation source는 AI Hub만 사용
+- prototype model은 **CatBoostRanker**
+- prototype objective는 **YetiRank**
+- objective 비교 후보는 **YetiRank / PairLogit / LambdaMart**
+- TL 내부에서 모델 선택을 수행하고 공식 VL은 최종 holdout으로 보존
+- 평가 지표는 NDCG@K, Recall@K, MRR@K, HitRate@K
+- raw 좌표, H3, distance, TN_GPS_COORD는 현재 ranking feature에서 제외
+
+## 실제 데이터로 확인해야 하는 것
+
+- TL의 TRAVELER_ID → TRAVEL_ID 분포와 inner split 세부 설정: #80
+- I2 Administrative Location의 canonical 컬럼: #81
+- I4 Historical POI의 inner-train-safe 재계산 경로: #80
+- sampling / feature group / objective의 실제 최종 선택: #82
+- seed 반복 횟수: #82에서 runtime 확인 후 결정
+- bootstrap 단위와 신뢰구간: #83
+
+위 항목은 설계 누락이 아니라 실제 데이터나 실험 결과로 결정하도록 분리한 항목이다.
+
+## 다음 행동
+
+1. #79에서 이 계약과 synthetic experiment harness를 구현한다.
+2. #80에서 traveler-trip 분포, traveler group split, inner-train train-derived feature를 검증한다.
+3. #81에서 canonical administrative location을 만든다.
+4. #82에서 TL inner-validation으로 sampling → feature → objective → hyperparameter 순서로 비교한다.
+5. configuration을 잠근 뒤 #83에서 처음 VL을 평가하고 bootstrap 신뢰구간을 계산한다.
+
+---
+
+## 1. 모델의 X, Y와 GroupId
+
+### 1.1 입력 X
+
+한 학습 행은 하나의 request와 하나의 candidate POI 조합이다.
+
+~~~text
+X(q, i) = [request_context(q), item_features(i)]
+
+q1 × POI-A
+q1 × POI-B
+q1 × POI-C
+~~~
+
+trip_key와 item_key 같은 식별 키는 join과 group 구분에만 사용하고 모델 입력 feature로 넣지 않는다.
+
+### 1.2 학습 target Y
+
+~~~text
+실제 관측 방문 POI      → label = 1
+sampled-unobserved POI   → label = 0
+~~~
+
+의미 경계는 다음과 같다.
+
+- 1은 방문이 관측된 implicit positive다.
+- 0은 negative sampling으로 만든 비교 행이다.
+- 0은 노출됐지만 선택하지 않았거나 싫어했다는 관측 사실이 아니다.
+- 미방문 전체를 자동으로 negative로 변환하지 않는다.
+
+### 1.3 GroupId
+
+GroupId는 trip/request 단위다.
+
+~~~text
+Group q1
+  POI-A label=1
+  POI-B label=0
+  POI-C label=1
+  POI-D label=0
+~~~
+
+같은 group의 행은 CatBoost 입력에서 연속이어야 한다. #79 harness는 group이 끊겨 다시 나타나거나 한 group에 1 또는 0 중 하나만 있는 경우를 오류로 처리한다.
+
+## 2. 후보 집합 계약
+
+validation의 정답을 본 뒤 후보를 추가하면 evaluation 정보가 candidate 생성에 섞이므로 금지한다.
+
+### 2.1 TL inner-validation
+
+한 request의 후보는 다음과 같다.
+
+~~~text
+inner-train에서 관측된 AI Hub item
+∩
+request의 region
+~~~
+
+즉 same-region inner-train observed item만 후보가 된다.
+
+inner-validation에만 등장한 positive는 정답으로 남지만 후보 목록에 사후 주입하지 않는다. 따라서 해당 positive는 miss가 되며 candidate/positive coverage 진단에서 확인한다.
+
+이 경우 어떤 validation query는 candidate row 전체가 label 0일 수 있다. training group은 학습 비교를 위해 label 1과 sampled label 0을 모두 요구하지만, validation group은 all-zero candidate row를 허용한다. 최종 NDCG/Recall/MRR/HitRate는 CatBoost eval_set label만으로 계산하지 않고, 원래 held-out positive 집합을 별도 ground truth로 유지해 계산한다. 그래야 candidate 밖 unseen positive도 올바르게 miss로 반영된다.
+
+### 2.2 공식 VL
+
+VL 평가 후보는 다음과 같다.
+
+~~~text
+outer TL/train에서 관측된 AI Hub item
+∩
+VL request의 region
+~~~
+
+TourAPI 전체 catalog는 이번 offline 모델 선택 candidate universe가 아니다.
+
+### 2.3 region의 두 역할
+
+region은 다음 두 역할을 구분한다.
+
+1. **candidate scope:** 요청 지역 밖 POI를 ranking 전에 제외하는 hard filter
+2. **C1 Region feature:** 여러 region을 하나의 global model에서 학습할 때 region 자체의 추가 가치 확인
+
+따라서 hard filter를 했다는 이유로 C1 ablation을 자동 생략하지 않는다.
+
+## 3. Split과 데이터 누수 방지
+
+### 3.1 outer split
+
+~~~text
+TL / train      → 개발과 최종 학습
+VL / validation → 최종 holdout
+~~~
+
+VL metric을 보고 feature, sampling, objective, hyperparameter를 다시 고르지 않는다.
+
+### 3.2 TL inner split
+
+cold-user 문제이므로 기본 원칙은 TRAVELER_ID 기준 group split이다.
+
+같은 traveler의 모든 trip은 inner-train 또는 inner-validation 한쪽에만 둔다. 실제 traveler당 trip 분포와 split seed/ratio는 #80에서 확인한다.
+
+### 3.3 train-derived feature의 inner split 누수
+
+현재 canonical item_features.parquet의 다음 값은 outer TL 전체에서 계산된다.
+
+- train_positive_interaction_count
+- train_observed_visit_type_codes
+
+이 값을 TL inner-validation에서 그대로 사용하면 inner-validation interaction이 feature 생성에 참여한다. 따라서 TL tuning에서는 반드시 inner-train 기준으로 다시 계산한다.
+
+| Group | 값 | inner-validation 규칙 |
+| --- | --- | --- |
+| I3 Popularity | train_positive_interaction_count | inner-train interaction만 집계 |
+| I4 Historical POI | train_observed_visit_type_codes | inner-train 방문 이벤트만 집계 |
+
+popularity-weighted / mixed sampling의 popularity와 hard sampling의 score도 inner-train 정보만 사용한다.
+
+현재 canonical trip_item_interaction.parquet에는 visit type이 없으므로 I4를 그 파일만으로 재계산할 수 없다. #80에서 안전한 파생 경계를 구현하기 전까지 #79 harness는 I4를 pending으로 처리한다.
+
+## 4. Feature Group v1
+
+### Query / request context
+
+| ID | Group | 컬럼 |
+| --- | --- | --- |
+| Q1 | Style | travel_style_1..8 |
+| Q2 | Motive | travel_motive_1..3 |
+| Q3 | Companion | companion_status, companion_count |
+| Q4 | Temporal | start_month, elapsed_days |
+| Q5 | Destination Context | travel_status_destination |
+
+### Item / POI
+
+| ID | Group | 컬럼 / 상태 |
+| --- | --- | --- |
+| I1 | Category | source_category_l1_code, l2, l3 |
+| I2 | Administrative Location | #81에서 canonical 컬럼 정의, 현재 pending |
+| I3 | Popularity | train_positive_interaction_count, inner-train 재계산 필수 |
+| I4 | Historical POI | train_observed_visit_type_codes, #80 완료 전 pending |
+
+### Control
+
+| ID | Group | 컬럼 |
+| --- | --- | --- |
+| C1 | Region | region |
+
+Category는 L1 / L1+L2 / L1+L2+L3를 비교할 수 있다. Popularity는 raw count와 log(1 + count)를 비교한다.
+
+## 5. 위치 feature 현재 범위
+
+POI 정적 좌표는 canonical location 정제와 identity 검증에 사용할 수 있지만 현재 ranking feature로 넣지 않는다.
+
+현재 보류:
+
+- raw latitude / longitude
+- H3
+- distance feature
+- TN_GPS_COORD
+
+#81의 administrative location만으로 너무 거칠거나 향후 거리·동선 요구가 생기면 다시 검토한다.
+
+## 6. Negative sampling
+
+### 가설
+
+같은 region의 미관측 candidate를 어떤 분포로 얼마나 많이 뽑는지가 ranking 성능과 popularity bias에 영향을 준다.
+
+### 비교 family
+
+- uniform
+- popularity-weighted
+- mixed
+- hard
+
+### 초기 ratio
+
+~~~text
+1x, 2x, 4x, 8x, 16x
+~~~
+
+4x는 positive 하나당 최대 네 개의 sampled-unobserved를 비교 행으로 만든다는 뜻이다.
+
+재현 규칙:
+
+- sampling seed를 기록한다.
+- 같은 candidate, positive, seed이면 같은 sample을 만든다.
+- weighted/hard sampling 통계는 inner-train만 사용한다.
+- final VL metric 계산에서는 negative sampling으로 candidate를 축소하지 않는다.
+
+## 7. CatBoost objective
+
+prototype은 YetiRank로 고정한다.
+
+최종 비교 후보:
+
+- YetiRank
+- PairLogit
+- LambdaMart
+
+현재 CatBoost 공식 문서는 위 objective를 ranking 최적화에 지원하고 CatBoostRanker.fit에서 group_id를 받을 수 있다. NDCG, RecallAt, MRR 같은 평가 metric과 학습 objective는 같은 개념이 아니다.
+
+#79는 CatBoost dependency를 실제 실행 환경에 고정하지 않고 thin adapter만 둔다. #82에서 실행 환경과 버전을 확인한 뒤 dependency와 runtime 설정을 고정한다.
+
+## 8. 평가 지표
+
+초기에는 하나의 primary metric을 고르지 않고 다음을 모두 측정한다.
+
+- **NDCG@K:** relevant POI를 더 높은 순위에 놓았는지 반영
+- **Recall@K:** 실제 positive 중 상위 K가 얼마나 회수했는지
+- **MRR@K:** 첫 relevant POI가 얼마나 빨리 나오는지
+- **HitRate@K:** 상위 K에 relevant POI가 하나라도 있는지
+
+기본 K는 5, 10, 20이다. UI 노출 개수가 정해지면 중요한 K를 다시 정할 수 있다.
+
+## 9. 실험 순서
+
+1. YetiRank prototype smoke
+2. sampling search
+3. feature-group search
+4. objective search
+5. hyperparameter search
+6. final candidate multi-seed 확인
+7. configuration lock
+8. untouched VL final evaluation
+9. bootstrap confidence interval
+
+feature search는 runtime이 충분하면 exhaustive search를 사용한다. 비용이 크면 forward + backward greedy search로 축소한다.
+
+## 10. Bootstrap 리마인더
+
+bootstrap은 negative sampling이 아니라 최종 metric의 변동성과 신뢰구간을 추정하는 통계 절차다.
+
+#83에서 #80 결과를 다시 확인한다.
+
+- 반복 traveler가 의미 있게 있으면 traveler-cluster bootstrap
+- 사실상 1 traveler = 1 trip이면 trip/request bootstrap
+
+## 11. 해석 한계
+
+현재 offline 질문은 다음이다.
+
+> holdout request에서 실제 관측된 방문 POI를 같은 region의 사전에 정의된 AI Hub candidate 중 얼마나 높은 순위에 배치하는가?
+
+따라서 현재 metric은 이 offline ranking 문제의 품질이다. 클릭, 저장, 만족도, 실제 서비스 재사용을 직접 측정하지 않는다.
+
+## 12. #79 코드 범위
+
+scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아니라 다음 계약 primitive를 제공한다.
+
+- Feature Group v1
+- pending group fail-closed
+- train-derived inner-train scope guard
+- same-region candidate filter
+- 네 negative sampling strategy
+- sampling / feature / objective config builder
+- NDCG / Recall / MRR / HitRate
+- ranking group layout validation
+- CatBoost thin adapter
+- machine-readable default protocol 출력
+
+실제 TL/VL 실행은 #80~#83 범위다.
+
+## 확인된 사실 / 결정 / 한계
+
+### 확인된 사실
+
+- canonical interaction에는 observed positive만 저장된다.
+- 현재 I3/I4 값은 outer TL 전체 기준이다.
+- canonical interaction만으로 I4를 inner-train 기준으로 다시 만들 정보는 부족하다.
+
+### 결정
+
+- TL tuning의 train-derived feature와 sampling 통계는 inner-train에서만 계산한다.
+- I2와 I4는 선행 작업이 끝날 때까지 fail closed한다.
+- VL은 최종 configuration을 잠글 때까지 tuning에 사용하지 않는다.
+
+### 한계
+
+- #79는 actual AI Hub row를 읽지 않는다.
+- 실제 CatBoost 학습 성능은 아직 없다.
+- canonical location과 traveler split은 각각 #81/#80 결과가 필요하다.
+
+## 재현 참고
+
+~~~bash
+python scripts/recommendation/catboost_ranking_experiment.py --print-default-protocol
+python -m unittest tests.test_catboost_ranking_experiment -v
+~~~
+
+실제 데이터 실행 명령은 #80~#83에서 별도로 기록한다.
