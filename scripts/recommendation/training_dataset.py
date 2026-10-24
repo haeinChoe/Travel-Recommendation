@@ -48,13 +48,30 @@ from scripts.recommendation.sgg_crosswalk import SggCrosswalk
 
 DEFAULT_OUTPUT = REPO_ROOT / "data" / "processed" / "training-dataset"
 MODEL_FEATURE_ALLOWLIST = frozenset(
-    {*STYLE_FEATURES, *MOTIVE_FEATURES, "region", "TRAVEL_STATUS_DESTINATION",
-     *COMPANION_FEATURES, *TEMPORAL_FEATURES,
-     "VISIT_AREA_TYPE_CODES", "SGG_CD", "ASORT_LCLASDC",
-     "ASORT_MLSFCDC", "ASORT_SDASDC", "tl_popularity"}
+    {*(f"travel_style_{i}" for i in range(1, 9)),
+     *(f"travel_motive_{i}" for i in range(1, 4)), "region", "travel_status_destination",
+     "companion_status", "companion_count", "start_month", "elapsed_days",
+     "train_observed_visit_type_codes", "sgg_code", "source_category_l1_code",
+     "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"}
 )
+SOURCE_TO_CANONICAL_COLUMNS = {
+    **{f"TRAVEL_STYL_{i}": f"travel_style_{i}" for i in range(1, 9)},
+    **{f"TRAVEL_MOTIVE_{i}": f"travel_motive_{i}" for i in range(1, 4)},
+    "TRAVEL_STATUS_DESTINATION": "travel_status_destination",
+    "TRAVEL_STATUS_ACCOMPANY": "companion_status",
+    "TRAVEL_COMPANIONS_NUM": "companion_count",
+    "TN_TRAVEL.TRAVEL_START_YMD:month": "start_month",
+    "TN_TRAVEL.TRAVEL_START_YMD+TRAVEL_END_YMD": "elapsed_days",
+    "VISIT_AREA_TYPE_CD": "train_observed_visit_type_codes",
+    "SGG_CD": "sgg_code",
+    "ASORT_LCLASDC": "source_category_l1_code",
+    "ASORT_MLSFCDC": "source_category_l2_code",
+    "ASORT_SDASDC": "source_category_l3_code",
+    "train_trip_item_positive_count": "train_positive_interaction_count",
+    "interaction_split_set": "observed_in_splits",
+}
 FORBIDDEN_FEATURE_NAMES = frozenset({
-    "trip_key", "item_key", "split", "split_presence",
+    "trip_key", "item_key", "split", "observed_in_splits",
     "observed_positive", "repeat_visit_count", "TRAVELER_ID", "TRAVEL_ID",
     "VISIT_AREA_ID", "POI_ID", "contentid", "TRAVEL_START_YMD",
     "TRAVEL_END_YMD", "ROAD_NM_ADDR", "LOTNO_ADDR", "X_COORD", "Y_COORD",
@@ -152,14 +169,14 @@ def _context(travel: Mapping[str, str], traveler: Mapping[str, str], split: str,
         raise ValueError("Missing TRAVEL_ID in unique trip row")
     result: dict[str, object] = {
         "trip_key": surrogate_key(run_id, "trip", region, tid),
-        "region": region, "split": split,
-        "month": temporal.month, "elapsed_days": temporal.elapsed_days,
-        "TRAVEL_STATUS_DESTINATION": _clean_str(traveler.get("TRAVEL_STATUS_DESTINATION")),
-        "TRAVEL_STATUS_ACCOMPANY": _clean_str(traveler.get("TRAVEL_STATUS_ACCOMPANY")),
-        "TRAVEL_COMPANIONS_NUM": validate_companions_num(traveler.get("TRAVEL_COMPANIONS_NUM")),
+        "region": region, "split": {"TL": "train", "VL": "validation"}[split],
+        "start_month": temporal.month, "elapsed_days": temporal.elapsed_days,
+        "travel_status_destination": _clean_str(traveler.get("TRAVEL_STATUS_DESTINATION")),
+        "companion_status": _clean_str(traveler.get("TRAVEL_STATUS_ACCOMPANY")),
+        "companion_count": validate_companions_num(traveler.get("TRAVEL_COMPANIONS_NUM")),
     }
     for col in STYLE_FEATURES + MOTIVE_FEATURES:
-        result[col] = validate_code_domain(col, traveler.get(col))
+        result[SOURCE_TO_CANONICAL_COLUMNS[col]] = validate_code_domain(col, traveler.get(col))
     return result
 
 
@@ -250,12 +267,14 @@ def validate_dataset_keys(context_rows: list[dict[str, object]], item_rows: list
         if row.get("observed_positive") != 1 or int(row.get("repeat_visit_count", 0)) < 1:
             raise ValueError("Interaction label or diagnostic invalid")
     for row in context_rows:
-        if not row.get("region") or row.get("split") not in SPLITS:
+        if not row.get("region") or row.get("split") not in {"train", "validation"}:
             raise ValueError("Required trip_context metadata missing")
     for row in item_rows:
-        if not row.get("region") or not isinstance(row.get("split_presence"), list):
+        observed_splits = row.get("observed_in_splits")
+        if (not row.get("region") or not isinstance(observed_splits, list)
+                or not observed_splits or not set(observed_splits) <= {"train", "validation"}):
             raise ValueError("Required item_features metadata missing")
-        if not isinstance(row.get("VISIT_AREA_TYPE_CODES"), list) or row.get("tl_popularity") is None:
+        if not isinstance(row.get("train_observed_visit_type_codes"), list) or row.get("train_positive_interaction_count") is None:
             raise ValueError("Required item_features values missing")
 
 
@@ -418,11 +437,11 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
                             build[col] = master.get(col)
                     if positive.has_tourism_core_visit:
                         build["tl_popularity"] += 1
-                    build["split_presence"].add(split)
+                    build["split_presence"].add("train")
                 elif (region, item_key) in item_build:
-                    item_build[(region, item_key)]["split_presence"].add(split)
+                    item_build[(region, item_key)]["split_presence"].add({"TL": "train", "VL": "validation"}[split])
                 interaction_rows.append({
-                    "trip_key": trip_key, "item_key": item_key, "region": region, "split": split,
+                    "trip_key": trip_key, "item_key": item_key, "region": region, "split": {"TL": "train", "VL": "validation"}[split],
                     "observed_positive": 1, "repeat_visit_count": positive.repeat_visit_count,
                 })
 
@@ -538,17 +557,22 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
         visit_sgg = item.pop("_tl_sgg_codes", set())
         master_sgg = item.pop("_tl_master_sgg", None)
         item["SGG_CD"] = resolve_item_sgg(visit_sgg, master_sgg)[1]
-        item_rows.append({**item,
-            "split_presence": sorted(item["split_presence"]),
-            "VISIT_AREA_TYPE_CODES": sorted(item["VISIT_AREA_TYPE_CODES"], key=lambda x: int(x)),
+        item_rows.append({
+            "item_key": item["item_key"], "region": item["region"],
+            "observed_in_splits": sorted(item["split_presence"]),
+            "train_observed_visit_type_codes": sorted(item["VISIT_AREA_TYPE_CODES"], key=lambda x: int(x)),
+            "sgg_code": item["SGG_CD"],
+            "source_category_l1_code": item["ASORT_LCLASDC"],
+            "source_category_l2_code": item["ASORT_MLSFCDC"],
+            "source_category_l3_code": item["ASORT_SDASDC"],
+            "train_positive_interaction_count": item["tl_popularity"],
         })
     context_rows = [contexts[k] for k in sorted(contexts)]
     interaction_rows.sort(key=lambda r: (r["region"], r["split"], r["trip_key"], r["item_key"]))
     item_rows.sort(key=lambda r: (r["region"], r["item_key"]))
     validate_dataset_keys(context_rows, item_rows, interaction_rows)
-    context_features = {*STYLE_FEATURES, *MOTIVE_FEATURES, "region", "TRAVEL_STATUS_DESTINATION",
-                        *COMPANION_FEATURES, *TEMPORAL_FEATURES}
-    item_features = {"region", "VISIT_AREA_TYPE_CODES", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC", "tl_popularity"}
+    context_features = set(MODEL_FEATURE_ALLOWLIST) - {"train_observed_visit_type_codes", "sgg_code", "source_category_l1_code", "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"}
+    item_features = {"region", "train_observed_visit_type_codes", "sgg_code", "source_category_l1_code", "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"}
     validate_feature_allowlist(context_features | item_features)
     output_dir.mkdir(parents=True, exist_ok=True)
     import duckdb
@@ -557,15 +581,16 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
     try:
         _parquet(con, output_dir / "trip_context.parquet", context_rows,
             "SELECT CAST(NULL AS VARCHAR) trip_key, CAST(NULL AS VARCHAR) region, CAST(NULL AS VARCHAR) split, "
-            + ", ".join([*(f"CAST(NULL AS VARCHAR) {c}" for c in STYLE_FEATURES + MOTIVE_FEATURES),
-                "CAST(NULL AS VARCHAR) TRAVEL_STATUS_DESTINATION", "CAST(NULL AS VARCHAR) TRAVEL_STATUS_ACCOMPANY",
-                "CAST(NULL AS INTEGER) TRAVEL_COMPANIONS_NUM", 'CAST(NULL AS VARCHAR) AS "month"', "CAST(NULL AS INTEGER) elapsed_days"])
+            + ", ".join([*(f"CAST(NULL AS VARCHAR) travel_style_{i}" for i in range(1,9)),
+                *(f"CAST(NULL AS VARCHAR) travel_motive_{i}" for i in range(1,4)),
+                "CAST(NULL AS VARCHAR) travel_status_destination", "CAST(NULL AS VARCHAR) companion_status",
+                "CAST(NULL AS INTEGER) companion_count", 'CAST(NULL AS VARCHAR) AS "start_month"', "CAST(NULL AS INTEGER) elapsed_days"])
             + " WHERE FALSE")
         _parquet(con, output_dir / "item_features.parquet", item_rows,
-            "SELECT CAST(NULL AS VARCHAR) item_key, CAST(NULL AS VARCHAR) region, CAST(NULL AS VARCHAR[]) split_presence, "
-            "CAST(NULL AS VARCHAR[]) VISIT_AREA_TYPE_CODES, CAST(NULL AS VARCHAR) SGG_CD, "
-            "CAST(NULL AS VARCHAR) ASORT_LCLASDC, CAST(NULL AS VARCHAR) ASORT_MLSFCDC, "
-            "CAST(NULL AS VARCHAR) ASORT_SDASDC, CAST(NULL AS BIGINT) tl_popularity WHERE FALSE")
+            "SELECT CAST(NULL AS VARCHAR) item_key, CAST(NULL AS VARCHAR) region, CAST(NULL AS VARCHAR[]) observed_in_splits, "
+            "CAST(NULL AS VARCHAR[]) train_observed_visit_type_codes, CAST(NULL AS VARCHAR) sgg_code, "
+            "CAST(NULL AS VARCHAR) source_category_l1_code, CAST(NULL AS VARCHAR) source_category_l2_code, "
+            "CAST(NULL AS VARCHAR) source_category_l3_code, CAST(NULL AS BIGINT) train_positive_interaction_count WHERE FALSE")
         _parquet(con, output_dir / "trip_item_interaction.parquet", interaction_rows,
             "SELECT CAST(NULL AS VARCHAR) trip_key, CAST(NULL AS VARCHAR) item_key, CAST(NULL AS VARCHAR) region, "
             "CAST(NULL AS VARCHAR) split, CAST(NULL AS INTEGER) observed_positive, "
@@ -574,7 +599,7 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
         con.close()
     payload = {
         "generated_at_utc": datetime.now(UTC).isoformat(),
-        "contract": "issue-71-v1", "outputs": {"trip_context": len(context_rows),
+        "dataset_type": "travel-recommendation-training", "schema_version": "1.0", "contract_version": "1.0", "outputs": {"trip_context": len(context_rows),
             "item_features": len(item_rows), "trip_item_interaction": len(interaction_rows)},
         "feature_allowlist": sorted(MODEL_FEATURE_ALLOWLIST), "codebook_splits_verified": 8,
         "codebook_digest_count": len(codebook_digest), "sgg_audit": audit,

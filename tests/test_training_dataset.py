@@ -15,6 +15,7 @@ from unittest.mock import patch
 from scripts.recommendation.training_data_contract import REGION_ENV_PREFIX, REGIONS, SPLITS, VISIT_AREA_TYPE_LABELS
 from scripts.recommendation.training_dataset import (
     MODEL_FEATURE_ALLOWLIST,
+    SOURCE_TO_CANONICAL_COLUMNS,
     _sgg_outcome,
     resolve_item_sgg,
     strict_sgg,
@@ -126,17 +127,30 @@ class TrainingDatasetTests(unittest.TestCase):
             self.assertEqual(manifest["outputs"]["trip_item_interaction"], 20)
             con = duckdb.connect()
             items = con.execute("SELECT * FROM read_parquet(?) ORDER BY region, item_key", [str(output / "item_features.parquet")]).fetchall()
+            observed_splits = con.execute("SELECT observed_in_splits FROM read_parquet(?)", [str(output / "item_features.parquet")]).fetchall()
             columns = [r[0] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(output / "item_features.parquet")]).fetchall()]
             schema = {r[0]: r[1] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(output / "item_features.parquet")]).fetchall()}
             interactions = con.execute("SELECT * FROM read_parquet(?)", [str(output / "trip_item_interaction.parquet")]).fetchall()
             ctx_schema = {r[0]: r[1] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(output / "trip_context.parquet")]).fetchall()}
+            interaction_columns = {r[0] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(output / "trip_item_interaction.parquet")]).fetchall()}
             con.close()
-            self.assertEqual(schema["VISIT_AREA_TYPE_CODES"], "VARCHAR[]")
-            self.assertEqual(schema["tl_popularity"], "BIGINT")
+            self.assertEqual(schema["train_observed_visit_type_codes"], "VARCHAR[]")
+            self.assertEqual(schema["train_positive_interaction_count"], "BIGINT")
             self.assertIn("region", columns)
             self.assertIn("region", ctx_schema)
             self.assertEqual(ctx_schema["elapsed_days"], "INTEGER")
+            self.assertEqual(manifest["dataset_type"], "travel-recommendation-training")
+            self.assertEqual(manifest["schema_version"], "1.0")
+            self.assertEqual(manifest["contract_version"], "1.0")
+            self.assertEqual(set(columns), {"item_key", "region", "observed_in_splits", "train_observed_visit_type_codes", "sgg_code", "source_category_l1_code", "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"})
             self.assertNotIn("POI_ID", columns)
+            ctx_columns = set(ctx_schema)
+            self.assertEqual(ctx_columns, {"trip_key", "region", "split", *(f"travel_style_{i}" for i in range(1, 9)), *(f"travel_motive_{i}" for i in range(1, 4)), "travel_status_destination", "companion_status", "companion_count", "start_month", "elapsed_days"})
+            self.assertEqual(interaction_columns, {"trip_key", "item_key", "region", "split", "observed_positive", "repeat_visit_count"})
+            raw_columns = {"TRAVEL_STYL_1", "TRAVEL_MOTIVE_1", "TRAVEL_STATUS_DESTINATION", "TRAVEL_STATUS_ACCOMPANY", "TRAVEL_COMPANIONS_NUM", "VISIT_AREA_TYPE_CODES", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC", "tl_popularity"}
+            self.assertFalse(raw_columns & (ctx_columns | set(columns) | interaction_columns))
+            self.assertTrue(all(row[3] in {"train", "validation"} for row in interactions))
+            self.assertTrue(all(set(row[0]) <= {"train", "validation"} for row in observed_splits))
             self.assertEqual(len(items), 16)  # three TL tourist items and one VL-only per region
             self.assertEqual(len(interactions), 20)
             self.assertTrue(all(row[4] == 1 for row in interactions))
@@ -155,9 +169,28 @@ class TrainingDatasetTests(unittest.TestCase):
             transform(inputs, masters, output, "synthetic-run")
             second_hash = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in output.glob("*.parquet")}
             self.assertEqual(first_hash, second_hash)
+            import duckdb as _duckdb
+            check = _duckdb.connect()
+            before_counts = check.execute("SELECT item_key, train_positive_interaction_count FROM read_parquet(?) ORDER BY item_key", [str(output / "item_features.parquet")]).fetchall()
+            check.close()
+            validation_visit = inputs[("capital", "VL")] / "tn_visit_area_info.csv"
+            with validation_visit.open("a", encoding="utf-8") as stream:
+                stream.write("RAW_TRIP_VL,EXTRA,POI1,1,11110,street,,1,2\n")
+            transform(inputs, masters, output, "synthetic-run")
+            check = _duckdb.connect()
+            after_counts = check.execute("SELECT item_key, train_positive_interaction_count FROM read_parquet(?) ORDER BY item_key", [str(output / "item_features.parquet")]).fetchall()
+            check.close()
+            self.assertEqual(before_counts, after_counts)
+
+    def test_source_to_canonical_mapping_uses_internal_names(self) -> None:
+        self.assertEqual(SOURCE_TO_CANONICAL_COLUMNS["TRAVEL_STYL_1"], "travel_style_1")
+        self.assertEqual(SOURCE_TO_CANONICAL_COLUMNS["TRAVEL_STATUS_ACCOMPANY"], "companion_status")
+        self.assertEqual(SOURCE_TO_CANONICAL_COLUMNS["ASORT_SDASDC"], "source_category_l3_code")
+        self.assertEqual(SOURCE_TO_CANONICAL_COLUMNS["VISIT_AREA_TYPE_CD"], "train_observed_visit_type_codes")
+        self.assertFalse(set(SOURCE_TO_CANONICAL_COLUMNS.values()) & set(SOURCE_TO_CANONICAL_COLUMNS))
 
     def test_feature_allowlist_rejects_keys_labels_and_metadata(self) -> None:
-        self.assertIn("tl_popularity", MODEL_FEATURE_ALLOWLIST)
+        self.assertIn("train_positive_interaction_count", MODEL_FEATURE_ALLOWLIST)
         self.assertIn("region", MODEL_FEATURE_ALLOWLIST)
         validate_feature_allowlist({"region"})
         for bad in ("trip_key", "item_key", "split", "observed_positive", "repeat_visit_count", "POI_ID", "TRAVEL_START_YMD", "ROAD_NM_ADDR", "X_COORD"):
@@ -192,10 +225,10 @@ class TrainingDatasetTests(unittest.TestCase):
         self.assertEqual(resolve_item_sgg({"11110", "11200"}, "11110"), ("value_conflicts", None))
 
     def test_nullability_key_integrity_and_sgg_denominator(self) -> None:
-        context = [{"trip_key": "t1", "region": "capital", "split": "TL", "TRAVEL_STYL_1": None}]
-        items = [{"item_key": "i1", "region": "capital", "split_presence": ["TL"],
-                  "VISIT_AREA_TYPE_CODES": [], "SGG_CD": None, "tl_popularity": 0}]
-        interactions = [{"trip_key": "t1", "item_key": "i1", "region": "capital", "split": "TL",
+        context = [{"trip_key": "t1", "region": "capital", "split": "train", "travel_style_1": None}]
+        items = [{"item_key": "i1", "region": "capital", "observed_in_splits": ["train"],
+                  "train_observed_visit_type_codes": [], "sgg_code": None, "train_positive_interaction_count": 0}]
+        interactions = [{"trip_key": "t1", "item_key": "i1", "region": "capital", "split": "train",
                          "observed_positive": 1, "repeat_visit_count": 2}]
         validate_dataset_keys(context, items, interactions)
         validate_sgg_reconciliation({"direct": 1, "both_missing": 2}, 3)
@@ -230,7 +263,7 @@ class TrainingDatasetTests(unittest.TestCase):
             manifest = transform(inputs, masters, output, "synthetic-run")
             con = duckdb.connect()
             result = con.execute(
-                "SELECT item_key, SGG_CD FROM read_parquet(?) WHERE region='capital'",
+                "SELECT item_key, sgg_code FROM read_parquet(?) WHERE region='capital'",
                 [str(output / "item_features.parquet")],
             ).fetchall()
             con.close()

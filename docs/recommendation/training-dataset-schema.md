@@ -1,72 +1,101 @@
-# 표준 학습 데이터셋 스키마 (Issue #73)
+# 표준 학습 데이터셋 스키마 (Issue #77)
 
-이 문서는 Issue #71 학습 계약을 적용해 생성하는 세 Parquet 파일의 타입, null 허용 여부, 원천 컬럼 매핑과 재현 명령을 정의한다. 승인된 2023년 4개 권역 데이터는 최종 검증에서 변환했다. 생성 산출물은 Git-ignore 상태로 보관하고 커밋하지 않았으며, 이 문서에는 개인정보 안전 집계만 기록한다. 기본 출력은 `data/processed/training-dataset/<run-id>/`이다.
+## 목적과 현재 계약
 
-## 목적과 결정
+이 문서는 추천 학습 변환기가 만드는 세 Parquet 파일의 기준 계약이다. Issue #77에서 AI Hub 원천 표기(TL/VL, 대문자 열 이름)를 내부 출력 스키마와 분리하고, 각 컬럼의 의미와 사용 제한을 명시했다. 파일 구성은 `trip_context.parquet`, `item_features.parquet`, `trip_item_interaction.parquet` 세 개로 유지한다.
 
-관측 양성은 한 여행에서 관측한 관광 핵심 POI이며 `observed_positive = 1`이다. 동일 여행-POI 반복 방문은 한 상호작용으로 합치고 `repeat_visit_count`는 진단값으로 둔다. TL만 방문 기반 아이템 특성과 `tl_popularity`를 만든다. VL은 관측 상호작용 및 분할 메타데이터에만 영향을 준다. 원시 식별자는 메모리에만 남고, 연결에는 실행 ID로 범위가 정해진 SHA-256 surrogate key를 사용한다.
+manifest는 `dataset_type=travel-recommendation-training`, `schema_version=1.0`, `contract_version=1.0`을 기록한다. 스키마 버전은 컬럼명·타입·필수성 변경을, 계약 버전은 값의 의미·원천·누수 방지 규칙 변경을 나타낸다. 하위 호환되는 선택 필드 추가는 minor, 소비자 변경이 필요한 rename/remove/type/domain/meaning 변경은 major를 올린다. GitHub Issue 번호는 변경 근거이지 버전 식별자가 아니다. Issue #77의 컬럼 rename은 #74 출력 소비자에 대한 breaking change다.
 
-`region`은 권역 스코프 메타데이터이자 계약에서 허용한 범주형 모델 입력이다. `split`, 키, 라벨, 방문 반복 진단값은 메타데이터/식별자다. 모델 입력은 아래 명시적 allowlist만 허용한다. 분할은 TL=학습, VL=검증이며, 방문하지 않은 POI는 음성으로 만들지 않는다.
+`TL` 입력 역할은 내부 `train`, `VL`은 `validation`으로 변환한다. 입력 경로 환경변수와 원천 매핑에서는 AI Hub 역할 표기를 유지한다. `trip_key`와 `item_key`는 한 실행(run) 범위의 대체 키(surrogate key)다. 서로 다른 실행에서 같은 키가 같은 개체를 뜻한다고 보장하지 않으며 run 간 개체 식별에 사용하지 않는다. 별도 namespace 메타데이터는 두지 않는다.
 
-## Parquet 컬럼 계약
+Parquet null 제약은 변환 검증과 이 문서로 보장한다. “필수”는 null 불가이며, 빈 리스트는 허용될 수 있다. 원시 ID·개인정보는 출력에 저장하지 않는다. `observed_positive=1`은 방문이 관측된 암묵적 양성일 뿐 선호 점수나 노출을 뜻하지 않는다. 관측되지 않은 POI는 음성으로 처리하지 않는다.
 
-Parquet 자체는 필드의 null 허용 제약을 일관되게 표현하지 않으므로, nullability는 생성 코드 검증과 이 계약을 통해 보장한다. 아래 `필수`는 null 불가, `허용`은 null 가능을 뜻한다.
+## 컬럼 사전
+
+아래 표의 각 행은 사람 기준으로 컬럼의 뜻, 원천, 계산, 타입, null, split 범위와 모델링 제한을 함께 정의한다. “입력” 역할이어도 반드시 allowlist에 있는 값만 사용한다.
 
 ### `trip_context.parquet`
 
-| 컬럼 | 타입 | Null | 원천/파생 | 사용 |
-|---|---|---|---|---|
-| `trip_key` | string | 필수 | `TN_TRAVEL.TRAVEL_ID`의 run-scoped surrogate | 조인 키, 모델 제외 |
-| `region` | string | 필수 | 입력 역할 바인딩 | 권역 범주형 모델 입력 및 스코프 메타데이터 |
-| `split` | string | 필수 | TL/VL 입력 역할 | 메타데이터, 모델 제외 |
-| `TRAVEL_STYL_1..8` | string | 허용 | `TN_TRAVELLER_MASTER.TRAVEL_STYL_1..8`, 코드 `1..7` | 모델 입력 |
-| `TRAVEL_MOTIVE_1..3` | string | 허용 | `TN_TRAVELLER_MASTER.TRAVEL_MOTIVE_1..3`, 코드 `1..10` | 모델 입력 |
-| `TRAVEL_STATUS_DESTINATION` | string | 허용 | 동명 traveller master 컬럼 | 모델 입력 |
-| `TRAVEL_STATUS_ACCOMPANY` | string | 허용 | 동명 traveller master 컬럼 | 모델 입력 |
-| `TRAVEL_COMPANIONS_NUM` | int32 | 허용 | 동명 traveller master 컬럼, 0 이상 정수 | 모델 입력 |
-| `month` | string | 허용 | `TN_TRAVEL.TRAVEL_START_YMD`에서 `01..12` 파생 | 모델 입력 |
-| `elapsed_days` | int32 | 허용 | `TRAVEL_END_YMD - TRAVEL_START_YMD`, 음수/날짜 오류는 null | 모델 입력 |
+| 표준 컬럼명 | 한국어 이름 | 한국어 설명 | 데이터 역할 | 원천 | 생성·계산 규칙 | 타입·허용값 | Null 정책 | train-validation 사용 범위 | 모델링 주의점 |
+|---|---|---|---|---|---|---|---|---|---|
+| `trip_key` | 여행 키 | 한 여행 행을 연결하는 실행 범위 대체 키 | 조인 키 | `TN_TRAVEL.TRAVEL_ID` (해시 후 원시값 폐기) | 실행 ID·권역·원천 ID로 SHA-256 앞 128비트 생성 | string, 32 hex | 필수 | 두 split | 입력·임베딩 금지; run 간 동일성 미보장 |
+| `region` | 권역 | 여행이 속한 입력 권역 | 모델 입력·메타데이터 | 입력 바인딩 | 권역 코드 그대로 사용 | string: `capital`, `west`, `east`, `jeju-islands` | 필수 | 두 split | 허용된 범주형 입력이자 scope metadata |
+| `split` | 데이터 분할 | 행이 학습 또는 검증 중 어느 쪽인지 표시 | 메타데이터 | AI Hub 파일 역할 TL/VL | TL→`train`, VL→`validation` | string: `train`, `validation` | 필수 | 각 행 하나 | 모델 입력 금지; split 간 여행 중복 금지 |
+| `travel_style_1` | 여행 스타일 응답 1 | 여행자 스타일 설문 1번 문항의 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_STYL_1` | 공백 제거 및 코드 도메인 검사 | string, `1`~`7` | 허용 | 각 여행의 split | 순서별 문항으로 사용; 결측을 임의 대치하지 않음 |
+| `travel_style_2` | 여행 스타일 응답 2 | 여행자 스타일 설문 2번 문항의 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_STYL_2` | 공백 제거 및 코드 도메인 검사 | string, `1`~`7` | 허용 | 각 여행의 split | 순서별 문항으로 사용; 결측을 임의 대치하지 않음 |
+| `travel_style_3` | 여행 스타일 응답 3 | 여행자 스타일 설문 3번 문항의 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_STYL_3` | 공백 제거 및 코드 도메인 검사 | string, `1`~`7` | 허용 | 각 여행의 split | 순서별 문항으로 사용; 결측을 임의 대치하지 않음 |
+| `travel_style_4` | 여행 스타일 응답 4 | 여행자 스타일 설문 4번 문항의 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_STYL_4` | 공백 제거 및 코드 도메인 검사 | string, `1`~`7` | 허용 | 각 여행의 split | 순서별 문항으로 사용; 결측을 임의 대치하지 않음 |
+| `travel_style_5` | 여행 스타일 응답 5 | 여행자 스타일 설문 5번 문항의 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_STYL_5` | 공백 제거 및 코드 도메인 검사 | string, `1`~`7` | 허용 | 각 여행의 split | 순서별 문항으로 사용; 결측을 임의 대치하지 않음 |
+| `travel_style_6` | 여행 스타일 응답 6 | 여행자 스타일 설문 6번 문항의 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_STYL_6` | 공백 제거 및 코드 도메인 검사 | string, `1`~`7` | 허용 | 각 여행의 split | 순서별 문항으로 사용; 결측을 임의 대치하지 않음 |
+| `travel_style_7` | 여행 스타일 응답 7 | 여행자 스타일 설문 7번 문항의 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_STYL_7` | 공백 제거 및 코드 도메인 검사 | string, `1`~`7` | 허용 | 각 여행의 split | 순서별 문항으로 사용; 결측을 임의 대치하지 않음 |
+| `travel_style_8` | 여행 스타일 응답 8 | 여행자 스타일 설문 8번 문항의 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_STYL_8` | 공백 제거 및 코드 도메인 검사 | string, `1`~`7` | 허용 | 각 여행의 split | 순서별 문항으로 사용; 결측을 임의 대치하지 않음 |
+| `travel_motive_1` | 여행 동기 응답 1순위 | 여행 동기 설문의 1순위 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_MOTIVE_1` | 공백 제거 및 코드 도메인 검사 | string, `1`~`10` | 허용 | 각 여행의 split | 순위 문항은 서로 바꿔 쓰지 않음; 결측을 임의 대치하지 않음 |
+| `travel_motive_2` | 여행 동기 응답 2순위 | 여행 동기 설문의 2순위 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_MOTIVE_2` | 공백 제거 및 코드 도메인 검사 | string, `1`~`10` | 허용 | 각 여행의 split | 순위 문항은 서로 바꿔 쓰지 않음; 결측을 임의 대치하지 않음 |
+| `travel_motive_3` | 여행 동기 응답 3순위 | 여행 동기 설문의 3순위 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_MOTIVE_3` | 공백 제거 및 코드 도메인 검사 | string, `1`~`10` | 허용 | 각 여행의 split | 순위 문항은 서로 바꿔 쓰지 않음; 결측을 임의 대치하지 않음 |
+| `travel_status_destination` | 여행 목적지 유형 | 여행자 마스터에 기록된 목적지 유형 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_STATUS_DESTINATION` | 공백 제거 | string, 원천 코드 | 허용 | 각 여행의 split | 운영 지역 코드와 parity가 확정됐다는 뜻 아님 |
+| `companion_status` | 동반 형태 | 동반 여행 형태 코드 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_STATUS_ACCOMPANY` | 공백 제거 | string, 원천 코드 | 허용 | 각 여행의 split | `TN_COMPANION_INFO`의 관계 코드와 다른 개념 |
+| `companion_count` | 동반 인원 수 | 기록된 동반 인원 정수 | 모델 입력 | `TN_TRAVELLER_MASTER.TRAVEL_COMPANIONS_NUM` | 음이 아닌 정수로 파싱 | int32, 0 이상 | 허용; 음수·파싱 실패는 null | 각 여행의 split | 값이 여행자 포함 전체 인원인지 임의 해석하지 않음 |
+| `start_month` | 여행 시작 월 | 여행 시작 날짜의 월 | 모델 입력 | `TN_TRAVEL.TRAVEL_START_YMD` | 시작 날짜에서 월만 파생; 날짜 원문 미저장 | string, `01`~`12` | 날짜 오류·결측이면 null | 각 여행의 split | 예: 4월 시작이면 `04`; 여행 종료 월이 아님 |
+| `elapsed_days` | 시작일부터 종료일까지 경과 일수 | 종료일에서 시작일을 뺀 날짜 차이 | 모델 입력 | `TN_TRAVEL.TRAVEL_START_YMD`, `TRAVEL_END_YMD` | `end - start` 달력 날짜 차이 | int32, 0 이상 | 날짜 오류·음수면 null | 각 여행의 split | 예: 당일=0, 1박 2일=1; 일반적인 “여행 일수”와 다를 수 있음 |
 
 ### `item_features.parquet`
 
-| 컬럼 | 타입 | Null | 원천/파생 | 사용 |
-|---|---|---|---|---|
-| `item_key` | string | 필수 | 권역 및 `POI_ID`의 run-scoped surrogate | 조인 키, 모델 제외 |
-| `region` | string | 필수 | 입력 역할 바인딩 | 권역 범주형 모델 입력 및 스코프 메타데이터 |
-| `split_presence` | list<string> | 필수 | 이 아이템이 나타난 interaction의 TL/VL 역할 | 메타데이터, 모델 제외 |
-| `VISIT_AREA_TYPE_CODES` | list<string> | 필수(빈 목록 가능) | TL 방문의 정렬된 고유 `TN_VISIT_AREA_INFO.VISIT_AREA_TYPE_CD` | 모델 입력 |
-| `SGG_CD` | string | 허용 | TL 관광 핵심 방문 전체의 유일한 유효 값; 복수 방문값 또는 유효 Master 값과 다르면 null; 유효 방문값이 없을 때만 유일 POI master 보완 | 모델 입력 |
-| `ASORT_LCLASDC` | string | 허용 | TL 상호작용에 연결된 유일 `TN_POI_MASTER` 행 | 모델 입력 |
-| `ASORT_MLSFCDC` | string | 허용 | 동상 | 모델 입력 |
-| `ASORT_SDASDC` | string | 허용 | 동상 | 모델 입력 |
-| `tl_popularity` | int64 | 필수 | 권역 내 TL 관광 핵심의 고유 여행-POI 양성 수; VL 전혀 사용 안 함 | 모델 입력 |
-
-VL-only 아이템은 테이블에 존재해 interaction 키가 온전하게 연결되지만 TL-derived 속성은 null/빈 목록, 인기도는 0이다. 이 행의 속성은 VL 내용으로 채우지 않는다. Master 속성도 TL에서 관측된 아이템에 대해서만 결합한다.
+| 표준 컬럼명 | 한국어 이름 | 한국어 설명 | 데이터 역할 | 원천 | 생성·계산 규칙 | 타입·허용값 | Null 정책 | train-validation 사용 범위 | 모델링 주의점 |
+|---|---|---|---|---|---|---|---|---|---|
+| `item_key` | 장소 키 | POI 행과 상호작용을 연결하는 실행 범위 대체 키 | 조인 키 | 권역, `POI_ID` (원시값은 메모리만) | 실행 ID·권역·원천 ID로 SHA-256 앞 128비트 생성 | string, 32 hex | 필수 | 두 split 관측 장소 | 입력·임베딩 금지; run 간 동일성 미보장 |
+| `region` | 권역 | 장소가 속한 입력 권역 | 모델 입력·메타데이터 | 입력 바인딩 | 원천 권역 | string, 위 허용 목록 | 필수 | 두 split | 입력의 scope를 넘는 지리 정밀도를 뜻하지 않음 |
+| `observed_in_splits` | 관측된 분할 | 이 장소가 상호작용에 나타난 분할 목록 | 메타데이터·진단값 | interaction 행의 내부 split | 연결된 interaction에서 중복 제거 후 정렬; 값은 `train`, `validation` | list<string>, 빈 목록 불가 | 필수 | 어느 쪽 관측인지 표시 | 예: `["train", "validation"]`은 양쪽에서 관측됨; 입력 금지, interaction에서 재계산 가능 |
+| `train_observed_visit_type_codes` | 학습 관측 방문 유형 코드 | 학습 여행에서 해당 장소 방문 이벤트에 기록된 방문 유형 코드 집합 | 모델 입력 | `TL`/`train`의 `TN_VISIT_AREA_INFO.VISIT_AREA_TYPE_CD` | train 관광 핵심 trip-item에 연결된 이벤트 코드의 정렬 고유 집합 | list<string>, 코드 목록; 빈 목록 가능 | 필수 필드, 값 없음은 빈 목록 | train만; validation 이벤트 미사용 | POI Master 정적 분류 아님. TourAPI `contenttypeid`와 같은 분류체계가 아님 |
+| `sgg_code` | 시군구 코드 | 학습 관광 방문 및 유일 POI Master에서 계약 규칙으로 해결한 시군구 | 모델 입력 | train 방문 `SGG_CD`, 유일 `TN_POI_MASTER`의 `SGG_CD`, split별 `TC_SGG` | 방문 유효값이 하나이고 Master와 충돌 없으면 사용; 방문값이 없을 때 유일 유효 Master로 보완; 충돌이면 null | string, 해당 split의 `TC_SGG` 등록 코드 | 해결 불가·충돌은 null | train만으로 생성; validation 값은 사용하지 않음 | 단순 원천 행 복사가 아님. 예: 방문값 두 개가 다르면 null; TourAPI parity 보장 아님 |
+| `source_category_l1_code` | 원천 장소 대분류 코드 | AI Hub POI Master의 첫 번째 분류 단계 | 모델 입력 | `TN_POI_MASTER.ASORT_LCLASDC` | 유일 Master 행에서 값 결합; train 관측 장소만 채움 | string, AI Hub 원천 코드 | Master 연결/값 없으면 null | train 관측 장소의 정적 Master 속성 | TourAPI `lclsSystm1`와 같다고 가정 금지; 별도 crosswalk 미정 |
+| `source_category_l2_code` | 원천 장소 중분류 코드 | AI Hub POI Master의 두 번째 분류 단계 | 모델 입력 | `TN_POI_MASTER.ASORT_MLSFCDC` | 유일 Master 행에서 값 결합; train 관측 장소만 채움 | string, AI Hub 원천 코드 | Master 연결/값 없으면 null | train 관측 장소의 정적 Master 속성 | TourAPI `lclsSystm2`와 동일 taxonomy 아님 |
+| `source_category_l3_code` | 원천 장소 소분류 코드 | AI Hub POI Master의 세 번째 분류 단계 | 모델 입력 | `TN_POI_MASTER.ASORT_SDASDC` | 유일 Master 행에서 값 결합; train 관측 장소만 채움 | string, AI Hub 원천 코드 | Master 연결/값 없으면 null | train 관측 장소의 정적 Master 속성 | TourAPI `lclsSystm3`와 동일 taxonomy 아님 |
+| `train_positive_interaction_count` | 학습 관측 양성 수 | 해당 장소가 train의 tourism-core 고유 여행-장소 상호작용에 나타난 횟수 | 모델 입력 | `train` `trip_item_interaction`의 `observed_positive` | 권역별 item의 고유 trip-item 양성을 합산 | int64, 0 이상 | 필수; train 등장 없음은 0 | 오직 train; validation은 절대 사용하지 않음 | 전체 인기·전체 방문수가 아님. validation으로 계산하면 누수; VL-only는 0 |
 
 ### `trip_item_interaction.parquet`
 
-| 컬럼 | 타입 | Null | 원천/파생 | 사용 |
-|---|---|---|---|---|
-| `trip_key` | string | 필수 | 권역 및 `TRAVEL_ID` surrogate | 조인 키, 모델 제외 |
-| `item_key` | string | 필수 | 권역 및 `POI_ID` surrogate | 조인 키, 모델 제외 |
-| `region` | string | 필수 | 입력 역할 바인딩 | 메타데이터, 모델 제외 |
-| `split` | string | 필수 | TL/VL 입력 역할 | 메타데이터, 모델 제외 |
-| `observed_positive` | int32 | 필수 | #71 관측 방문 label, 항상 1 | label, 모델 입력 제외 |
-| `repeat_visit_count` | int64 | 필수 | 중복 제거 전 여행-POI 이벤트 수 | 진단, 모델 입력 제외 |
+| 표준 컬럼명 | 한국어 이름 | 한국어 설명 | 데이터 역할 | 원천 | 생성·계산 규칙 | 타입·허용값 | Null 정책 | train-validation 사용 범위 | 모델링 주의점 |
+|---|---|---|---|---|---|---|---|---|---|
+| `trip_key` | 여행 키 | 여행 문맥 행을 참조하는 실행 범위 키 | 조인 키 | `TN_TRAVEL.TRAVEL_ID` | `trip_context`와 동일한 surrogate 생성 규칙 | string, 32 hex | 필수 | 두 split | 모델 입력 금지; run 간 동일성 미보장 |
+| `item_key` | 장소 키 | 장소 특성 행을 참조하는 실행 범위 키 | 조인 키 | 권역, `POI_ID` | `item_features`와 동일한 surrogate 생성 규칙 | string, 32 hex | 필수 | 두 split | 모델 입력 금지; run 간 동일성 미보장 |
+| `region` | 권역 | 상호작용의 권역 | 메타데이터 | 입력 바인딩 | 여행과 장소의 region 일치 검증 | string, 위 허용 목록 | 필수 | 두 split | 조인 무결성 확인용, 모델 입력 아님 |
+| `split` | 데이터 분할 | 관측 상호작용의 학습/검증 구분 | 메타데이터 | AI Hub 파일 역할 | TL→`train`, VL→`validation` | string, `train`, `validation` | 필수 | 각 상호작용 하나 | 입력 금지; 여행 split과 일치해야 함 |
+| `observed_positive` | 방문 관측 양성 표시 | 해당 여행에서 POI 방문이 실제 기록됨 | 라벨 | `TN_VISIT_AREA_INFO`의 유효 tourism-core 방문 | 같은 여행-POI 반복 이벤트를 하나의 이진 양성으로 합쳐 항상 1 | int32, `1` | 필수 | 원천 split 그대로 | “좋아함”의 직접 평가나 노출을 의미하지 않음; 미방문은 음성이 아니라 미관측 |
+| `repeat_visit_count` | 반복 방문 기록 수 | 중복 제거 전 동일 여행-POI 방문 이벤트 수 | 진단값 | `TN_VISIT_AREA_INFO`의 이벤트 | 같은 trip-item 양성에 속한 원시 이벤트 수 | int64, 1 이상 | 필수 | 원천 split 그대로 | 진단 전용; 학습 가중치나 라벨 강도가 아님 |
 
-## 명시적 모델 입력 allowlist
+## 모델 입력 allowlist와 split 규칙
 
-`trip_context`: `region`, 여행 스타일 8개, 여행 동기 3개, 목적지, 동반 형태, 동반 인원, `month`, `elapsed_days`.
+`trip_context` 입력은 `region`, `travel_style_1..8`, `travel_motive_1..3`, `travel_status_destination`, `companion_status`, `companion_count`, `start_month`, `elapsed_days`다. `item_features` 입력은 `region`, `train_observed_visit_type_codes`, `sgg_code`, `source_category_l1_code`~`source_category_l3_code`, `train_positive_interaction_count`다. 상호작용 테이블은 입력 컬럼을 제공하지 않는다. 키·split·라벨·진단값은 모델 입력으로 허용하지 않는다.
 
-`item_features`: `region`, `VISIT_AREA_TYPE_CODES`, `SGG_CD`, `ASORT_LCLASDC`, `ASORT_MLSFCDC`, `ASORT_SDASDC`, `tl_popularity`.
+원천 `TL`/`VL` 역할 표시는 파일 선택과 감사 집계에서만 쓴다. Parquet split 값과 `observed_in_splits`에는 `train`/`validation`만 허용한다. 아이템의 train-derived 값은 TL 입력에서만 만든다. validation을 `train_positive_interaction_count`나 `train_observed_visit_type_codes` 생성에 포함하면 누수다.
 
-Issue #71 계약 §2.2에 따라 `region`은 권역 스코프 메타데이터이면서 요청/아이템의 범주형 모델 입력이다. 상호작용 행의 `region`과 모든 `split` 값은 메타데이터다. `trip_key`, `item_key`, 원시 ID, `split`, label, 방문 반복 수, 날짜, 주소, 좌표, 감사 진단 및 `split_presence`는 모델 입력에 포함하지 않는다. SGG 및 POI 분류는 추천 입력 후보일 뿐, 외부 카탈로그와의 category parity를 확정하지 않는다.
+## 원천→표준 컬럼 매핑
+
+다음 표는 원천 시스템 이름을 보존하는 유일한 데이터 의미 매핑이다. 출력 Parquet에는 원천 대문자 컬럼명을 그대로 내보내지 않는다.
+
+| 원천 | 표준 출력 |
+|---|---|
+| `TN_TRAVELLER_MASTER.TRAVEL_STYL_1..8` | `travel_style_1..8` |
+| `TN_TRAVELLER_MASTER.TRAVEL_MOTIVE_1..3` | `travel_motive_1..3` |
+| `TN_TRAVELLER_MASTER.TRAVEL_STATUS_DESTINATION` | `travel_status_destination` |
+| `TN_TRAVELLER_MASTER.TRAVEL_STATUS_ACCOMPANY` | `companion_status` |
+| `TN_TRAVELLER_MASTER.TRAVEL_COMPANIONS_NUM` | `companion_count` |
+| `TN_TRAVEL.TRAVEL_START_YMD` | `start_month` |
+| `TN_TRAVEL.TRAVEL_START_YMD`, `TRAVEL_END_YMD` | `elapsed_days` |
+| 역할 입력 `TL`, `VL` | split `train`, `validation` |
+| train 방문의 `TN_VISIT_AREA_INFO.VISIT_AREA_TYPE_CD` | `train_observed_visit_type_codes` |
+| 방문 `SGG_CD` + 유일 `TN_POI_MASTER.SGG_CD` + `TC_SGG` 검증 | `sgg_code` |
+| `TN_POI_MASTER.ASORT_LCLASDC` | `source_category_l1_code` |
+| `TN_POI_MASTER.ASORT_MLSFCDC` | `source_category_l2_code` |
+| `TN_POI_MASTER.ASORT_SDASDC` | `source_category_l3_code` |
+| train 고유 여행-장소 양성 집계 | `train_positive_interaction_count` |
+| 상호작용 split의 고유 집합 | `observed_in_splits` |
 
 ## SGG 감사와 재조정
 
 코드 검증은 8개 입력의 `TC_CODEB`에서 `cd_a='VIS'`의 공식 17개 코드/라벨이 #71 계약과 맞는지 확인하고, 하나라도 불일치하면 생성을 중단한다. 각 region/split의 `TC_SGG.SGG_CD`에 정확히 포함된 값만 strict-valid다. 레거시 SggCrosswalk 호환 수치는 strict TC_SGG 수치와 별도로 기록한다.
 
-`manifest.json`은 region/split/cohort(`all_valid_visits`, `tourism_core`, `non_tourism`)별 방문 상태, Master POI join 상태, Master SGG 상태, 상호 배타적 해결 결과 및 분모를 집계한다. `direct`는 현재 방문 행 자체가 strict-valid인 경우만 뜻한다. 현재 행에 값이 없지만 cohort 내 같은 POI의 유일한 유효 값으로 채운 경우는 `poi_aggregate_filled`, 유효 방문 값이 하나도 없고 유일 Master SGG로 채운 경우는 `master_filled`로 따로 센다. cohort 내 여러 유효 방문 값 또는 방문 집계와 유효 Master 값이 다르면 `value_conflicts`로 분류한다. cohort별 POI 유효 값 상태(유일/충돌/없음)도 행 단위와 고유 POI 단위로 각각 집계하며 두 분모를 재조정한다. item `SGG_CD`는 TL 관광 핵심 방문 전체에서 유효 값을 모아 한 번 결정하고 유효 값 충돌이면 null이다.
+`manifest.json`은 region/split/cohort(`all_valid_visits`, `tourism_core`, `non_tourism`)별 방문 상태, Master POI join 상태, Master SGG 상태, 상호 배타적 해결 결과 및 분모를 집계한다. `direct`는 현재 방문 행 자체가 strict-valid인 경우만 뜻한다. 현재 행에 값이 없지만 cohort 내 같은 POI의 유일한 유효 값으로 채운 경우는 `poi_aggregate_filled`, 유효 방문 값이 하나도 없고 유일 Master SGG로 채운 경우는 `master_filled`로 따로 센다. cohort 내 여러 유효 방문 값 또는 방문 집계와 유효 Master 값이 다르면 `value_conflicts`로 분류한다. cohort별 POI 유효 값 상태(유일/충돌/없음)도 행 단위와 고유 POI 단위로 각각 집계하며 두 분모를 재조정한다. item `sgg_code`는 train 관광 핵심 방문 전체에서 유효 값을 모아 한 번 결정하고 유효 값 충돌이면 null이다.
 
 `all_valid_visits`는 방문 유형 분류에서 `tourism_core`, `non_tourism`, `missing_visit_type`, `unsupported_visit_type`로 나뉘며 네 집계 합은 all-valid 방문 분모와 일치해야 한다. SGG를 결정하지 못한 관측에는 POI ID 대신 POI 존재 건수와 Master join 상태(`unique`, `missing`, `ambiguous`, `not_applicable`)만 기록한다. 이 두 집계 합은 SGG-unavailable 분모와 일치한다. 주소 문자열/좌표는 기록하지 않고 도로명 주소, 지번 주소, 완전한 X/Y 쌍의 존재 건수만 남긴다. 감사는 ID, 원시 코드 값, 주소, 좌표, 입력 경로 또는 caller run ID를 내보내지 않는다. 실행 ID는 메모리에서만 surrogate key scope에 쓰인다.
 

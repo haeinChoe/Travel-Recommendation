@@ -3,6 +3,8 @@
 - **관련 Issue:** [#17](https://github.com/haeinChoe/Travel-Recommendation/issues/17), [#45](https://github.com/haeinChoe/Travel-Recommendation/issues/45), [#69](https://github.com/haeinChoe/Travel-Recommendation/issues/69), [#71](https://github.com/haeinChoe/Travel-Recommendation/issues/71)
 - **현재 상태:** 4개 권역(수도권·서부권·동부권·제주도 및 도서지역) 실제 데이터 코호트 감사 및 `TC_CODEB`(`cd_a = 'VIS'`) 공식 코드북 검증 완료 (`issue71-training-contract-20261020T1550Z`)
 
+> 이 문서는 코호트·라벨의 의미와 승인된 분석 집계를 설명한다. 실제 세 Parquet 출력 이름, TL/VL→`train`/`validation` 변환, 모든 출력 컬럼의 null·타입·역할 규칙은 [표준 학습 데이터셋 스키마](training-dataset-schema.md)를 기준으로 한다. 여기서 언급하는 대문자 AI Hub 컬럼은 원천 필드 이름이다.
+
 ## 한눈에 보기
 
 ### 이 문서가 답하려는 질문
@@ -86,7 +88,7 @@ Issue #69의 다단계 식별자 매칭 파이프라인(Stage 5)은 AI Hub 방�
   공통 속성 공간이 정렬된 범주에서 미매칭(unseen) TourAPI 후보에 점수 부여
 ```
 
-> **주의 (미해결 선행 과제 명시)**: 위 구조는 ID 암기 없이 미매칭 후보를 다루기 위한 **구조적 설계 방향**이며, 현재 모든 특성에서 학습-서빙 호환성이 완성되었다는 뜻이 아니다. `region`(100% 매핑 완료)과 달리 `SGG_CD`는 순수 관광 양성의 **24.48%**에서만 존재하고, `VISIT_AREA_TYPE_CD`/`ASORT_*` ↔ TourAPI `contenttypeid`/`lclsSystm1..3` 간 **공식 카테고리 교차 매핑표(crosswalk)는 아직 정의되지 않았으며**, 미매칭 TourAPI 후보(85.55%)의 `tl_popularity`는 `0`이므로 명시적 콜드 스타트 기본값(prior) 설계가 선행되어야 한다(§3.2 상세).
+> **주의 (미해결 선행 과제 명시)**: 위 구조는 ID 암기 없이 미매칭 후보를 다루기 위한 **구조적 설계 방향**이며, 현재 모든 특성에서 학습-서빙 호환성이 완성되었다는 뜻이 아니다. `region`(100% 매핑 완료)과 달리 `SGG_CD`는 순수 관광 양성의 **24.48%**에서만 존재하고, `VISIT_AREA_TYPE_CD`/`ASORT_*` ↔ TourAPI `contenttypeid`/`lclsSystm1..3` 간 **공식 카테고리 교차 매핑표(crosswalk)는 아직 정의되지 않았으며**, 미매칭 TourAPI 후보(85.55%)의 `train_positive_interaction_count`는 `0`이므로 명시적 콜드 스타트 기본값(prior) 설계가 선행되어야 한다(§3.2 상세).
 
 **[결정]**
 - 학습 관측치의 포함 자격은 오직 **AI Hub 내부의 구조적 무결성과 관광 도메인 적합성**으로만 판정하며, TourAPI `catalog_match_status`(`MATCHED`, `AMBIGUOUS`, `UNMATCHED`, `identity_source_missing`)에 의해 학습 데이터를 필터링하지 않는다.
@@ -145,7 +147,7 @@ Issue #69의 다단계 식별자 매칭 파이프라인(Stage 5)은 AI Hub 방�
 | **세부 행정구역 특성** | `SGG_CD` | `TN_VISIT_AREA_INFO.SGG_CD` 및 `TN_POI_MASTER.SGG_CD` (5자리 시군구 코드) | `(lDongRegnCd, lDongSignguCd)` | 방문 행 단독 **1.26%** (360 / 54) → 마스터 결합 시 **24.48%** (7,132 / 922) | **코드 매핑(`SggCrosswalk`) 확립 / AI Hub 커버리지 부분적(24.48%)**: 강원(`42→51`), 전북(`45→52`), 전남광주(`29/46→12`), 세종(`36110`) 및 일반구 호환 규칙은 구현되었으나, AI Hub 순수 관광 양성의 **75.52%**에서 `SGG_CD`가 비어 있으므로 결측 허용(missing-aware) 인코딩 또는 주소 기반 시군구 보강 없이는 전체 후보 점수화의 주 신호로 단독 사용할 수 없음 |
 | **기본 장소 유형** | `VISIT_AREA_TYPE_CD` | `TN_VISIT_AREA_INFO.VISIT_AREA_TYPE_CD` (`1..13, 21..24`, 코드 `VIS`) | `contenttypeid` (`{12, 14, 28}`) 및 `lclsSystm1..3` | **100.00%** (29,307 / 3,586) | **오프라인 코호트 분리 확정 / 서빙 피처 호환 미확립(Crosswalk 미정의)**: AI Hub 내부에서 순수 관광 코호트를 분리하는 데는 100% 사용 가능하나, AI Hub `VIS` 코드와 TourAPI `contenttypeid`는 1:1 동등 코드가 아니다. **공식 카테고리 교차 매핑표(crosswalk)가 정의되기 전에는 미매칭 TourAPI 후보에 이 특성을 직접 주입할 수 없다** |
 | **확장 마스터 분류** | `ASORT_LCLASDC`, `ASORT_MLSFCDC`, `ASORT_SDASDC` | 동일 권역 `TN_POI_MASTER` 유일 `POI_ID` 조인 | TourAPI `lclsSystm1`, `lclsSystm2`, `lclsSystm3` | 마스터 조인 **77.72%** (22,799 / 2,764), 4개 필드 모두 비결측 **2.69%** (785 / 101) | **오프라인 보조 실험 전용 (서빙 피처 미확립)**: 마스터 조인은 77.72%에서 성립하나 4개 필드가 모두 채워진 `rich_complete` 비율이 **2.69%**(전체 방문 기준 3.57%)로 극히 희소하며, TourAPI `lclsSystm1..3`와의 분류 체계 교차 매핑(crosswalk)도 아직 정의되지 않음 |
-| **학습 분할 인기도** | `tl_popularity`, `popularity_band` | **오직 TL(학습 분할) 내부**에서 집계한 `(region, POI_ID)` 관측 양성 빈도 | Stage 5 매칭 시드(14.45%)는 TL 빈도 전이 가능; 미매칭 후보(85.55%)는 `0` (Cold-Start) | TL 정의 **100.00%**, VL 중 TL 등장 비율 **74.65%** (2,677 / 3,586) | **시드 브리지(14.45%)만 전이 가능 / 미매칭 후보(85.55%)는 Cold-Start Prior 필수**: VL을 인기도 계산에 포함하면 데이터 누수이므로 엄격히 금지한다. 운영 시 미매칭 TourAPI 후보(85.55%)는 과거 방문 수가 `0`이므로 명시적 cold-start prior 규칙이 정의되어야 한다 |
+| **학습 분할 인기도** | `train_positive_interaction_count`, `popularity_band` | **오직 TL(학습 분할) 내부**에서 집계한 `(region, POI_ID)` 관측 양성 빈도 | Stage 5 매칭 시드(14.45%)는 TL 빈도 전이 가능; 미매칭 후보(85.55%)는 `0` (Cold-Start) | TL 정의 **100.00%**, VL 중 TL 등장 비율 **74.65%** (2,677 / 3,586) | **시드 브리지(14.45%)만 전이 가능 / 미매칭 후보(85.55%)는 Cold-Start Prior 필수**: VL을 인기도 계산에 포함하면 데이터 누수이므로 엄격히 금지한다. 운영 시 미매칭 TourAPI 후보(85.55%)는 과거 방문 수가 `0`이므로 명시적 cold-start prior 규칙이 정의되어야 한다 |
 
 ### 3.3 명시적 사용 금지 특성 (Explicitly Excluded Features)
 
