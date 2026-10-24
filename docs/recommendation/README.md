@@ -11,7 +11,7 @@
    TourAPI 식별자 매칭 상태와 학습 데이터 자격의 독립성, 3단계 관측 단위(`visit_event_grain`, `trip_poi_grain`, `trip_request_grain`), 순수 관광 코호트(`tourism_core_cohort`) 분리 기준, 입력 특성·라벨 계약 및 4개 권역 코호트 퍼널 집계(Issue #17, #71)를 확인한다.
 
 3. [표준 학습 데이터셋 스키마](training-dataset-schema.md)
-   Issue #71 계약을 세 Parquet 출력과 재현 가능한 변환 CLI에 적용한 컬럼·타입·nullability·원천 매핑과 SGG 감사를 확인한다.
+   Issue #71 계약을 세 Parquet 출력과 재현 가능한 변환 CLI에 적용한 canonical 컬럼 사전(전체 컬럼의 한국어 설명·역할·원천·계산·타입·Null·split·모델링 주의점), TL/VL→train/validation 매핑, 버전 정책과 SGG 감사를 확인한다.
 
 4. [후보 집합 타당성 실험](experiments/candidate-choice-feasibility.md)
    과거 여행로그만으로 평가 가능한 추천 후보를 어떻게 정의했으며 왜 현재 결론이 판정 보류인지 확인한다.
