@@ -44,7 +44,7 @@
 
 ### 다음 행동
 
-이 문서로 확정된 **학습 데이터 구성 및 특성/라벨 계약(`scripts/recommendation/training_data_contract.py`)**을 후속 순위 모델링 및 후보 평가 실험의 공통 입력 계층으로 사용한다. 미매칭 TourAPI 후보까지 실제로 점수를 매기는 서빙 모델을 학습하기 전에는 (1) 카테고리 교차 매핑표(crosswalk) 정의, (2) `SGG_CD` 결측(75.52%) 처리 전략, (3) 미매칭 후보의 인기도 콜드 스타트 기본값(prior) 프로토콜을 먼저 확정한다.
+이 문서로 확정된 **학습 데이터 구성 및 특성/라벨 계약(`scripts/recommendation/training_data_contract.py`)**을 후속 순위 모델링 및 후보 평가 실험의 공통 입력 계층으로 사용한다. 다음 실행 단계는 #82의 TL inner-validation ranking 실험이다. 미매칭 TourAPI 후보까지 실제로 점수를 매기는 서빙 모델을 학습하기 전에는 (1) 카테고리 교차 매핑표(crosswalk) 정의, (2) canonical I2의 실제 AI Hub coverage/conflict/provenance 감사, (3) 미매칭 후보의 인기도 콜드 스타트 기본값(prior) 프로토콜을 별도로 확정한다. 과거 `SGG_CD` 결측 75.52% 수치는 #71 당시 raw/legacy 위치 근거의 역사적 감사값이며 현재 canonical I2 coverage를 뜻하지 않는다.
 
 ## Issue #81 현재 I2 계약
 
@@ -319,7 +319,7 @@ Issue #69의 다단계 식별자 매칭 파이프라인(Stage 5)은 AI Hub 방�
 ### 해석 (Interpretation)
 
 - 일회성 식당·카페·집·상점 방문을 포함한 전체 방문(`all_valid_visits`)에서는 재방문 빈도가 낮고 일회성 장소 비중이 높아 VL 아이템 콜드 스타트 비율이 높게 관측된다(35.99%). 순수 관광 코호트(`tourism_core_cohort`)로 분리하면 관측된 VL 콜드 스타트 비율이 25.35%로 10.64%p 낮아지는 비율 차이가 확인된다. 다만 이러한 분포 변화가 실제 오프라인 순위 모델의 일반화 성능과 지지력(support) 향상으로 이어지는지는 후속 모델링 실험에서 별도로 검증해야 한다.
-- 속성 기반 학습(`f(X_context, X_item)`)은 미매칭 TourAPI 후보를 다루기 위한 필수 조건이지만, 현재 AI Hub 원천에서 `SGG_CD`(통합 24.48%)와 `TN_POI_MASTER` 세분류(`rich_complete` 2.69%)의 결측 비중이 높고 카테고리 교차 매핑표(crosswalk)가 아직 정의되지 않았으므로, **현 시점에서 곧바로 모든 미매칭 TourAPI 후보에 정밀한 속성 점수를 부여할 수 있다고 주장해서는 안 된다.**
+- 속성 기반 학습(`f(X_context, X_item)`)은 미매칭 TourAPI 후보를 다루기 위한 필수 조건이다. #71 당시 raw/legacy `SGG_CD` 통합 가용성은 24.48%, `TN_POI_MASTER` 세분류까지 함께 완비된 `rich_complete` 비율은 2.69%였다. 이 수치는 현재 canonical I2의 coverage가 아니며, #81은 static canonicalization 계약과 synthetic 검증까지만 완료했다. 실제 canonical I2 coverage/conflict/provenance 감사와 카테고리 교차 매핑표(crosswalk)가 남아 있으므로, **현 시점에서 곧바로 모든 미매칭 TourAPI 후보에 정밀한 속성 점수를 부여할 수 있다고 주장해서는 안 된다.**
 
 ### 결정 (Decisions)
 
@@ -331,7 +331,7 @@ Issue #69의 다단계 식별자 매칭 파이프라인(Stage 5)은 AI Hub 방�
 
 - AI Hub `VISIT_AREA_TYPE_CD` / `ASORT_*`와 TourAPI `contenttypeid` / `lclsSystm1..3` 간의 공식 카테고리 교차 매핑표(crosswalk) 설계
 - `VISIT_AREA_TYPE_CD = "12"`(`TC_CODEB` 원문 `'기타'`, 단독 양성 1,774건) 포함/제외 민감도 점검
-- `SGG_CD` 결측(75.52%) 처리 및 미매칭 TourAPI 후보(85.55%)의 인기도 콜드 스타트 기본값(prior) 설계
+- canonical I2의 실제 AI Hub coverage/conflict/provenance 감사 및 미매칭 TourAPI 후보(85.55%)의 인기도 콜드 스타트 기본값(prior) 설계
 - 순수 관광 코호트 위에서의 음성 표본 추출(negative sampling) 프로토콜 및 문맥 결합 순위 모델 대 인기도 기준선 비교 실험
 
 ---
@@ -390,7 +390,7 @@ uv run python scripts/recommendation/training_data_contract.py \
 | `Preference.gender`, `age_grp` | 사용자 survey profile | `TN_TRAVELLER_MASTER.GENDER`, `AGE_GRP` | **배제(기본 입력 제외):** 최소 수집·동의·공정성 정책 확정 전까지 기본 추천 입력에서 제외 | 네 schema는 두 열을 선택 항목으로 정의 |
 | `Preference.travel_style_1..7` | 선호 context | `TN_TRAVELLER_MASTER.TRAVEL_STYL_1..8` | **유지/확장:** 8개 문항(도메인 `1..7`)을 `STYLE` 핵심 문맥 그룹으로 사용하되 기존 1–7과 직접 동등시하지 않음 | 4권역 여행 단위 완비율 100.00% |
 | legacy companion fields | trip companion context | `TRAVEL_STATUS_ACCOMPANY`, `TRAVEL_COMPANIONS_NUM`, `TN_COMPANION_INFO.REL_CD` | **변경:** 동반 현황과 동반자 수는 `COMPANION` 핵심 문맥으로 채택, `REL_CD`는 `recorded_only` 민감도 분석으로 분리 | 동반자 테이블 미기록과 1인 여행 구분 한계 반영 |
-| `Preference.regionId` / request region | 요청 지역 context | `region` 스코프, `TRAVEL_STATUS_DESTINATION`, `SGG_CD` | **변경:** `region`은 `poi-catalog-policy-v1.json`으로 TourAPI와 100% 매핑; `SGG_CD`는 `SggCrosswalk`로 법정동 호환되나 AI Hub 측 결측(75.52%) 고려 필요 | 권역 호환 확립, 시군구는 결측 허용 처리 필요 |
+| `Preference.regionId` / request region | 요청 지역 context | `region` 스코프, `TRAVEL_STATUS_DESTINATION`, `SGG_CD` / `TC_SGG` | **변경:** `region`은 coarse product/candidate scope로 유지하고, 행정 위치는 #81의 `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`로 분리한다. 과거 raw `SGG_CD` 결측 75.52%는 역사적 감사값이며 현재 canonical I2 coverage는 별도 실제 감사가 필요하다. | 권역과 행정 위치, request target geography를 서로 대체하지 않음 |
 | `Visited(traveler_id, content_id)` | user-item 방문 interaction | `(region, TRAVEL_ID, POI_ID)` (`trip_poi_grain`) | **변경:** `POI_ID`와 `contentid`는 조인·집계·후보 식별용 구분자(key)로만 쓰고 기계학습 입력 특성(feature)에서 제외하며 학습 자격은 TourAPI 매칭과 독립으로 유지 | 외부 카탈로그 연결과 학습 관측치 자격의 분리 |
 | `TourSpot` categories, region/district/theme | item metadata | `VISIT_AREA_TYPE_CD`, `SGG_CD`, `TN_POI_MASTER.ASORT_*` | **변경:** `VISIT_AREA_TYPE_CD`로 `tourism_core_cohort`를 분리하고 오프라인 속성 학습에 사용 | 미매칭 TourAPI 후보 서빙에 쓰려면 별도 카테고리 crosswalk 정의 선행 필요 |
 | `content_embeddings` | item content representation | SbL `caption.IMG_CAPTION`, 원시 이미지 | **폐기:** 기존 임베딩 미이식, 원시 이미지 및 캡션 텍스트는 기본 계약에서 제외 | 생성 출처 미확인 및 서빙 시점 호환성 미검증 |
