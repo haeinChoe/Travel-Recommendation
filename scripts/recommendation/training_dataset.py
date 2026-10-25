@@ -45,13 +45,20 @@ from scripts.recommendation.training_data_contract import (
     COMPANION_FEATURES,
 )
 from scripts.recommendation.sgg_crosswalk import SggCrosswalk
+from scripts.recommendation.canonical_admin_location import (
+    build_admin_lookup,
+    compare_visit_location,
+    normalize_aihub_sgg_code,
+    resolve_canonical_admin_location,
+)
 
 DEFAULT_OUTPUT = REPO_ROOT / "data" / "processed" / "training-dataset"
 MODEL_FEATURE_ALLOWLIST = frozenset(
     {*(f"travel_style_{i}" for i in range(1, 9)),
      *(f"travel_motive_{i}" for i in range(1, 4)), "region", "travel_status_destination",
      "companion_status", "companion_count", "start_month", "elapsed_days",
-     "train_observed_visit_type_codes", "sgg_code", "source_category_l1_code",
+     "train_observed_visit_type_codes", "canonical_admin_sido_code",
+     "canonical_admin_sgg_code", "canonical_admin_location_status", "source_category_l1_code",
      "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"}
 )
 SOURCE_TO_CANONICAL_COLUMNS = {
@@ -63,7 +70,7 @@ SOURCE_TO_CANONICAL_COLUMNS = {
     "TN_TRAVEL.TRAVEL_START_YMD:month": "start_month",
     "TN_TRAVEL.TRAVEL_START_YMD+TRAVEL_END_YMD": "elapsed_days",
     "VISIT_AREA_TYPE_CD": "train_observed_visit_type_codes",
-    "SGG_CD": "sgg_code",
+    "SGG_CD": "visit_sgg_code_evidence",
     "ASORT_LCLASDC": "source_category_l1_code",
     "ASORT_MLSFCDC": "source_category_l2_code",
     "ASORT_SDASDC": "source_category_l3_code",
@@ -75,6 +82,7 @@ FORBIDDEN_FEATURE_NAMES = frozenset({
     "observed_positive", "repeat_visit_count", "TRAVELER_ID", "TRAVEL_ID",
     "VISIT_AREA_ID", "POI_ID", "contentid", "TRAVEL_START_YMD",
     "TRAVEL_END_YMD", "ROAD_NM_ADDR", "LOTNO_ADDR", "X_COORD", "Y_COORD",
+    "latitude", "longitude", "h3", "distance", "TN_GPS_COORD",
     "visit_type_conflict", "repeat_visit_count", "source_split",
 })
 
@@ -140,7 +148,7 @@ def _master_path(other: Path) -> Path:
     return target
 
 
-def _master_rows(path: Path, valid_sgg: set[str]) -> tuple[dict[str, dict[str, str]], Counter[str]]:
+def _master_rows(path: Path, admin_lookup: Mapping[str, object]) -> tuple[dict[str, dict[str, str]], Counter[str]]:
     counts: Counter[str] = Counter()
     first: dict[str, dict[str, str]] = {}
     for row in _read_dicts(path, ("POI_ID", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC")):
@@ -153,9 +161,13 @@ def _master_rows(path: Path, valid_sgg: set[str]) -> tuple[dict[str, dict[str, s
     for pid, row in first.items():
         if counts[pid] == 1:
             unique[pid] = {
-                "SGG_CD": strict_sgg(row.get("SGG_CD"), valid_sgg),
+                "SGG_CD": normalize_aihub_sgg_code(row.get("SGG_CD"), admin_lookup),
                 "_raw_sgg": _clean_str(row.get("SGG_CD")),
                 **{c: _clean_str(row.get(c)) for c in ("ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC")},
+                "ROAD_NM_ADDR": _clean_str(row.get("ROAD_NM_ADDR")),
+                "LOTNO_ADDR": _clean_str(row.get("LOTNO_ADDR")),
+                "X_COORD": _clean_str(row.get("X_COORD")),
+                "Y_COORD": _clean_str(row.get("Y_COORD")),
             }
     return unique, counts
 
@@ -272,7 +284,7 @@ def validate_dataset_keys(context_rows: list[dict[str, object]], item_rows: list
     for row in item_rows:
         observed_splits = row.get("observed_in_splits")
         if (not row.get("region") or not isinstance(observed_splits, list)
-                or not observed_splits or not set(observed_splits) <= {"train", "validation"}):
+                or not set(observed_splits) <= {"train", "validation"}):
             raise ValueError("Required item_features metadata missing")
         if not isinstance(row.get("train_observed_visit_type_codes"), list) or row.get("train_positive_interaction_count") is None:
             raise ValueError("Required item_features values missing")
@@ -311,7 +323,8 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
     contexts: dict[tuple[str, str], dict[str, object]] = {}
     interaction_rows: list[dict[str, object]] = []
     item_build: dict[tuple[str, str], dict[str, object]] = {}
-    audit = {"by_region_split_cohort": {}, "visit_type_reconciliation": {}}
+    audit = {"by_region_split_cohort": {}, "visit_type_reconciliation": {},
+             "canonical_location": {}}
     codebook_digest: set[str] = set()
     sgg_crosswalk = SggCrosswalk()
     trip_ids_by_region_split: dict[tuple[str, str], set[str]] = {}
@@ -337,7 +350,45 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
                     if code: sgg_codes.add(code)
             if not sgg_codes:
                 raise ValueError(f"TC_SGG missing in {region}:{split}")
-            master_rows, master_counts = _master_rows(master_path, sgg_codes)
+            sgg_rows = [row for p in tc_sgg_files
+                        for row in _read_dicts(p, ("SGG_CD", "SGG_CD1", "SGG_CD2", "SIDO_NM", "SGG_NM"))]
+            admin_lookup = build_admin_lookup(sgg_rows)
+            if not admin_lookup:
+                raise ValueError(f"TC_SGG has no usable administrative names in {region}:{split}")
+            master_rows, master_counts = _master_rows(master_path, admin_lookup)
+            if split == "TL":
+                location_counts: Counter[str] = Counter()
+                for pid, master in master_rows.items():
+                    location = resolve_canonical_admin_location(
+                        lookup=admin_lookup,
+                        master_sgg_codes=(master.get("_raw_sgg"),),
+                        master_addresses=(master.get("ROAD_NM_ADDR"), master.get("LOTNO_ADDR")),
+                    )
+                    item_key = surrogate_key(run_id, "item", region, pid)
+                    build = item_build.setdefault((region, item_key), {
+                        "item_key": item_key, "region": region, "split_presence": set(),
+                        "VISIT_AREA_TYPE_CODES": set(), "tl_popularity": 0,
+                    })
+                    build.update({
+                        "ASORT_LCLASDC": master.get("ASORT_LCLASDC"),
+                        "ASORT_MLSFCDC": master.get("ASORT_MLSFCDC"),
+                        "ASORT_SDASDC": master.get("ASORT_SDASDC"),
+                        "canonical_admin_sido_code": location.sido_code,
+                        "canonical_admin_sgg_code": location.sgg_code,
+                        "canonical_admin_sido_name": location.sido_name,
+                        "canonical_admin_sgg_name": location.sgg_name,
+                        "canonical_admin_location_status": location.status,
+                        "canonical_admin_provenance": list(location.provenance),
+                        "canonical_admin_conflict_sources": list(location.conflict_sources),
+                        "coordinate_validation_status": location.coordinate_status,
+                    })
+                    location_counts[location.status] += 1
+                audit["canonical_location"][region] = {
+                    "master_inventory_denominator": len(master_rows),
+                    "static_resolution_status_counts": dict(sorted(location_counts.items())),
+                    "coordinate_validation": "unverified_source_crs_and_axis_order; not used",
+                    "visit_evidence_policy": "diagnostic_only; never fills model feature",
+                }
 
             traveler_rows = _read_dicts(src["traveller"], ("TRAVELER_ID", *STYLE_FEATURES, *MOTIVE_FEATURES,
                 "TRAVEL_STATUS_DESTINATION", "TRAVEL_STATUS_ACCOMPANY", "TRAVEL_COMPANIONS_NUM"))
@@ -378,6 +429,27 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
             positives, diag = build_trip_poi_positives(trip_visit_rows, region=region,
                 trip_to_traveler=trip_owner, valid_traveler_ids=set(unique_travelers))
 
+            if split == "TL":
+                visit_location_counts: Counter[str] = Counter()
+                for event in valid_events:
+                    poi_id = _clean_str(event.get("POI_ID"))
+                    if not poi_id:
+                        visit_location_counts["visit_only_unconfirmed"] += 1
+                        continue
+                    item_key = surrogate_key(run_id, "item", region, poi_id)
+                    static = item_build.get((region, item_key), {})
+                    visit_location_counts[compare_visit_location(
+                        canonical_sgg_code=static.get("canonical_admin_sgg_code"),
+                        visit_sgg_codes=(event.get("SGG_CD"),),
+                        visit_addresses=(event.get("ROAD_NM_ADDR"), event.get("LOTNO_ADDR")),
+                        lookup=admin_lookup,
+                    )] += 1
+                audit["canonical_location"][region]["train_visit_corroboration"] = {
+                    "denominator": len(valid_events),
+                    "status_counts": dict(sorted(visit_location_counts.items())),
+                    "used_to_populate_features": False,
+                }
+
             visit_type_counts: Counter[str] = Counter({name: 0 for name in (
                 "tourism_core", "non_tourism", "missing_visit_type", "unsupported_visit_type")})
             for row in valid_events:
@@ -415,23 +487,20 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
                 if split == "TL":
                     build = item_build.setdefault((region, item_key), {
                         "item_key": item_key, "region": region, "split_presence": set(),
-                        "VISIT_AREA_TYPE_CODES": set(), "SGG_CD": None,
+                        "VISIT_AREA_TYPE_CODES": set(),
                         "ASORT_LCLASDC": None, "ASORT_MLSFCDC": None, "ASORT_SDASDC": None,
                         "tl_popularity": 0,
+                        "canonical_admin_sido_code": None, "canonical_admin_sgg_code": None,
+                        "canonical_admin_sido_name": None, "canonical_admin_sgg_name": None,
+                        "canonical_admin_location_status": "unavailable",
+                        "canonical_admin_provenance": [], "canonical_admin_conflict_sources": [],
+                        "coordinate_validation_status": "unverified_not_used",
                     })
                     build["VISIT_AREA_TYPE_CODES"].update(
                         validate_code_domain("VISIT_AREA_TYPE_CD", e.get("VISIT_AREA_TYPE_CD"))
                         for e in evs if validate_code_domain("VISIT_AREA_TYPE_CD", e.get("VISIT_AREA_TYPE_CD"))
                     )
                     master = master_rows.get(positive.poi_id)
-                    m_sgg = master.get("SGG_CD") if master else None
-                    visit_sgg = build.setdefault("_tl_sgg_codes", set())
-                    visit_sgg.update(
-                        valid for e in core_events
-                        if (valid := strict_sgg(e.get("SGG_CD"), sgg_codes)) is not None
-                    )
-                    build["_tl_master_sgg"] = m_sgg
-                    build["SGG_CD"] = resolve_item_sgg(visit_sgg, m_sgg)[1]
                     if master:
                         for col in ("ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC"):
                             build[col] = master.get(col)
@@ -548,20 +617,29 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
         key = (row["region"], row["item_key"])
         if key not in item_build:
             item_build[key] = {"item_key": row["item_key"], "region": row["region"],
-                "split_presence": set(), "VISIT_AREA_TYPE_CODES": set(), "SGG_CD": None,
-                "ASORT_LCLASDC": None, "ASORT_MLSFCDC": None, "ASORT_SDASDC": None, "tl_popularity": 0}
+                "split_presence": set(), "VISIT_AREA_TYPE_CODES": set(),
+                "ASORT_LCLASDC": None, "ASORT_MLSFCDC": None, "ASORT_SDASDC": None,
+                "tl_popularity": 0, "canonical_admin_sido_code": None,
+                "canonical_admin_sgg_code": None, "canonical_admin_sido_name": None,
+                "canonical_admin_sgg_name": None, "canonical_admin_location_status": "unavailable",
+                "canonical_admin_provenance": [], "canonical_admin_conflict_sources": [],
+                "coordinate_validation_status": "unverified_not_used"}
         item_build[key]["split_presence"].add(row["split"])
     item_rows = []
     for key in sorted(item_build):
         item = item_build[key]
-        visit_sgg = item.pop("_tl_sgg_codes", set())
-        master_sgg = item.pop("_tl_master_sgg", None)
-        item["SGG_CD"] = resolve_item_sgg(visit_sgg, master_sgg)[1]
         item_rows.append({
             "item_key": item["item_key"], "region": item["region"],
             "observed_in_splits": sorted(item["split_presence"]),
             "train_observed_visit_type_codes": sorted(item["VISIT_AREA_TYPE_CODES"], key=lambda x: int(x)),
-            "sgg_code": item["SGG_CD"],
+            "canonical_admin_sido_code": item["canonical_admin_sido_code"],
+            "canonical_admin_sgg_code": item["canonical_admin_sgg_code"],
+            "canonical_admin_sido_name": item["canonical_admin_sido_name"],
+            "canonical_admin_sgg_name": item["canonical_admin_sgg_name"],
+            "canonical_admin_location_status": item["canonical_admin_location_status"],
+            "canonical_admin_provenance": sorted(set(item["canonical_admin_provenance"])),
+            "canonical_admin_conflict_sources": sorted(set(item["canonical_admin_conflict_sources"])),
+            "coordinate_validation_status": item["coordinate_validation_status"],
             "source_category_l1_code": item["ASORT_LCLASDC"],
             "source_category_l2_code": item["ASORT_MLSFCDC"],
             "source_category_l3_code": item["ASORT_SDASDC"],
@@ -571,8 +649,8 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
     interaction_rows.sort(key=lambda r: (r["region"], r["split"], r["trip_key"], r["item_key"]))
     item_rows.sort(key=lambda r: (r["region"], r["item_key"]))
     validate_dataset_keys(context_rows, item_rows, interaction_rows)
-    context_features = set(MODEL_FEATURE_ALLOWLIST) - {"train_observed_visit_type_codes", "sgg_code", "source_category_l1_code", "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"}
-    item_features = {"region", "train_observed_visit_type_codes", "sgg_code", "source_category_l1_code", "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"}
+    context_features = set(MODEL_FEATURE_ALLOWLIST) - {"train_observed_visit_type_codes", "canonical_admin_sido_code", "canonical_admin_sgg_code", "canonical_admin_location_status", "source_category_l1_code", "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"}
+    item_features = {"region", "train_observed_visit_type_codes", "canonical_admin_sido_code", "canonical_admin_sgg_code", "canonical_admin_location_status", "source_category_l1_code", "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"}
     validate_feature_allowlist(context_features | item_features)
     output_dir.mkdir(parents=True, exist_ok=True)
     import duckdb
@@ -588,7 +666,12 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
             + " WHERE FALSE")
         _parquet(con, output_dir / "item_features.parquet", item_rows,
             "SELECT CAST(NULL AS VARCHAR) item_key, CAST(NULL AS VARCHAR) region, CAST(NULL AS VARCHAR[]) observed_in_splits, "
-            "CAST(NULL AS VARCHAR[]) train_observed_visit_type_codes, CAST(NULL AS VARCHAR) sgg_code, "
+            "CAST(NULL AS VARCHAR[]) train_observed_visit_type_codes, "
+            "CAST(NULL AS VARCHAR) canonical_admin_sido_code, CAST(NULL AS VARCHAR) canonical_admin_sgg_code, "
+            "CAST(NULL AS VARCHAR) canonical_admin_sido_name, CAST(NULL AS VARCHAR) canonical_admin_sgg_name, "
+            "CAST(NULL AS VARCHAR) canonical_admin_location_status, "
+            "CAST(NULL AS VARCHAR[]) canonical_admin_provenance, CAST(NULL AS VARCHAR[]) canonical_admin_conflict_sources, "
+            "CAST(NULL AS VARCHAR) coordinate_validation_status, "
             "CAST(NULL AS VARCHAR) source_category_l1_code, CAST(NULL AS VARCHAR) source_category_l2_code, "
             "CAST(NULL AS VARCHAR) source_category_l3_code, CAST(NULL AS BIGINT) train_positive_interaction_count WHERE FALSE")
         _parquet(con, output_dir / "trip_item_interaction.parquet", interaction_rows,
@@ -599,7 +682,7 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
         con.close()
     payload = {
         "generated_at_utc": datetime.now(UTC).isoformat(),
-        "dataset_type": "travel-recommendation-training", "schema_version": "1.0", "contract_version": "1.0", "outputs": {"trip_context": len(context_rows),
+        "dataset_type": "travel-recommendation-training", "schema_version": "2.0", "contract_version": "2.0", "outputs": {"trip_context": len(context_rows),
             "item_features": len(item_rows), "trip_item_interaction": len(interaction_rows)},
         "feature_allowlist": sorted(MODEL_FEATURE_ALLOWLIST), "codebook_splits_verified": 8,
         "codebook_digest_count": len(codebook_digest), "sgg_audit": audit,

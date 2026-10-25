@@ -2,9 +2,9 @@
 
 ## 목적과 현재 계약
 
-이 문서는 추천 학습 변환기가 만드는 세 Parquet 파일의 기준 계약이다. Issue #77에서 AI Hub 원천 표기(TL/VL, 대문자 열 이름)를 내부 출력 스키마와 분리하고, 각 컬럼의 의미와 사용 제한을 명시했다. 파일 구성은 `trip_context.parquet`, `item_features.parquet`, `trip_item_interaction.parquet` 세 개로 유지한다.
+이 문서는 추천 학습 변환기가 만드는 세 Parquet 파일의 기준 계약이다. Issue #77에서 AI Hub 원천 표기(TL/VL, 대문자 열 이름)를 내부 출력 스키마와 분리했고, Issue #81에서 I2 행정 위치를 canonicalize하며 전체 고유 POI Master inventory로 정적 특성 범위를 확장했다. 파일 구성은 `trip_context.parquet`, `item_features.parquet`, `trip_item_interaction.parquet` 세 개로 유지한다.
 
-manifest는 `dataset_type=travel-recommendation-training`, `schema_version=1.0`, `contract_version=1.0`을 기록한다. 스키마 버전은 컬럼명·타입·필수성 변경을, 계약 버전은 값의 의미·원천·누수 방지 규칙 변경을 나타낸다. 하위 호환되는 선택 필드 추가는 minor, 소비자 변경이 필요한 rename/remove/type/domain/meaning 변경은 major를 올린다. GitHub Issue 번호는 변경 근거이지 버전 식별자가 아니다. Issue #77의 컬럼 rename은 #74 출력 소비자에 대한 breaking change다.
+manifest는 `dataset_type=travel-recommendation-training`, `schema_version=2.0`, `contract_version=2.0`을 기록한다. 이번 버전은 기존 `sgg_code`를 canonical I2 필드로 대체하고, `item_features`를 TL/VL 상호작용에서 관측된 POI뿐 아니라 고유 AI Hub `TN_POI_MASTER` inventory로 확장한 breaking change다. 스키마 버전은 컬럼명·타입·필수성 변경을, 계약 버전은 값의 의미·원천·누수 방지 규칙 변경을 나타낸다.
 
 `TL` 입력 역할은 내부 `train`, `VL`은 `validation`으로 변환한다. 입력 경로 환경변수와 원천 매핑에서는 AI Hub 역할 표기를 유지한다. `trip_key`와 `item_key`는 한 실행(run) 범위의 대체 키(surrogate key)다. 서로 다른 실행에서 같은 키가 같은 개체를 뜻한다고 보장하지 않으며 run 간 개체 식별에 사용하지 않는다. 별도 namespace 메타데이터는 두지 않는다.
 
@@ -44,12 +44,19 @@ Parquet null 제약은 변환 검증과 이 문서로 보장한다. “필수”
 |---|---|---|---|---|---|---|---|---|---|
 | `item_key` | 장소 키 | POI 행과 상호작용을 연결하는 실행 범위 대체 키 | 조인 키 | 권역, `POI_ID` (원시값은 메모리만) | 실행 ID·권역·원천 ID로 SHA-256 앞 128비트 생성 | string, 32 hex | 필수 | 두 split 관측 장소 | 입력·임베딩 금지; run 간 동일성 미보장 |
 | `region` | 권역 | 장소가 속한 입력 권역 | 모델 입력·메타데이터 | 입력 바인딩 | 원천 권역 | string, 위 허용 목록 | 필수 | 두 split | 입력의 scope를 넘는 지리 정밀도를 뜻하지 않음 |
-| `observed_in_splits` | 관측된 분할 | 이 장소가 상호작용에 나타난 분할 목록 | 메타데이터·진단값 | interaction 행의 내부 split | 연결된 interaction에서 중복 제거 후 정렬; 값은 `train`, `validation` | list<string>, 빈 목록 불가 | 필수 | 어느 쪽 관측인지 표시 | 예: `["train", "validation"]`은 양쪽에서 관측됨; 입력 금지, interaction에서 재계산 가능 |
+| `observed_in_splits` | 관측된 분할 | 이 장소가 상호작용에 나타난 분할 목록 | 메타데이터·진단값 | interaction 행의 내부 split | 연결된 interaction에서 중복 제거 후 정렬; 값은 `train`, `validation` | list<string>, 빈 목록 가능 | 필수 | 어느 쪽 관측인지 표시 | 빈 목록은 Master inventory의 train-unseen 후보; 입력 금지 |
 | `train_observed_visit_type_codes` | 학습 관측 방문 유형 코드 | 학습 여행에서 해당 장소 방문 이벤트에 기록된 방문 유형 코드 집합 | 모델 입력 | `TL`/`train`의 `TN_VISIT_AREA_INFO.VISIT_AREA_TYPE_CD` | train 관광 핵심 trip-item에 연결된 이벤트 코드의 정렬 고유 집합 | list<string>, 코드 목록; 빈 목록 가능 | 필수 필드, 값 없음은 빈 목록 | train만; validation 이벤트 미사용 | POI Master 정적 분류 아님. TourAPI `contenttypeid`와 같은 분류체계가 아님 |
-| `sgg_code` | 시군구 코드 | 학습 관광 방문 및 유일 POI Master에서 계약 규칙으로 해결한 시군구 | 모델 입력 | train 방문 `SGG_CD`, 유일 `TN_POI_MASTER`의 `SGG_CD`, split별 `TC_SGG` | 방문 유효값이 하나이고 Master와 충돌 없으면 사용; 방문값이 없을 때 유일 유효 Master로 보완; 충돌이면 null | string, 해당 split의 `TC_SGG` 등록 코드 | 해결 불가·충돌은 null | train만으로 생성; validation 값은 사용하지 않음 | 단순 원천 행 복사가 아님. 예: 방문값 두 개가 다르면 null; TourAPI parity 보장 아님 |
-| `source_category_l1_code` | 원천 장소 대분류 코드 | AI Hub POI Master의 첫 번째 분류 단계 | 모델 입력 | `TN_POI_MASTER.ASORT_LCLASDC` | 유일 Master 행에서 값 결합; train 관측 장소만 채움 | string, AI Hub 원천 코드 | Master 연결/값 없으면 null | train 관측 장소의 정적 Master 속성 | TourAPI `lclsSystm1`와 같다고 가정 금지; 별도 crosswalk 미정 |
-| `source_category_l2_code` | 원천 장소 중분류 코드 | AI Hub POI Master의 두 번째 분류 단계 | 모델 입력 | `TN_POI_MASTER.ASORT_MLSFCDC` | 유일 Master 행에서 값 결합; train 관측 장소만 채움 | string, AI Hub 원천 코드 | Master 연결/값 없으면 null | train 관측 장소의 정적 Master 속성 | TourAPI `lclsSystm2`와 동일 taxonomy 아님 |
-| `source_category_l3_code` | 원천 장소 소분류 코드 | AI Hub POI Master의 세 번째 분류 단계 | 모델 입력 | `TN_POI_MASTER.ASORT_SDASDC` | 유일 Master 행에서 값 결합; train 관측 장소만 채움 | string, AI Hub 원천 코드 | Master 연결/값 없으면 null | train 관측 장소의 정적 Master 속성 | TourAPI `lclsSystm3`와 동일 taxonomy 아님 |
+| `canonical_admin_sido_code` | 표준 시도 코드 | AI Hub `TC_SGG` 코드북에서 확인한 광역 행정구역 코드 | 모델 입력 | 유일 `TN_POI_MASTER.SGG_CD` 또는 정적 보조 주소를 `TC_SGG`에 대조 | 유효한 5자리 SGG 코드의 앞 2자리 | string, 해당 코드북의 2자리 | 해소 불가·충돌은 null | 정적 inventory 전체; TL/VL 방문 행으로 채우지 않음 | `region`의 네 coarse product region과 별개이며 request target geography를 뜻하지 않음 |
+| `canonical_admin_sgg_code` | 표준 시군구 코드 | AI Hub `TC_SGG`에서 검증된 5자리 시군구 코드 | 모델 입력 | 유일 `TN_POI_MASTER.SGG_CD`, 필요 시 정적 주소의 정확한 시도+시군구명 | `TC_SGG` 등록 코드만 허용; 10자리 표현은 뒤 5자리가 0일 때 앞 5자리로 검증 | string, 해당 `TC_SGG`의 5자리 `SGG_CD` | 미확정·충돌·미등록은 null | 정적 inventory 전체 | 시군구 단위. 읍면동·도로·거리·요청 목적지를 뜻하지 않음 |
+| `canonical_admin_sido_name` | 표준 시도 이름 | canonical 시도 코드에 대응하는 AI Hub `TC_SGG.SIDO_NM` | 설명용 메타데이터 | `TC_SGG` | 코드북에서 조회 | string | 해소 불가 시 null | 정적 inventory 전체 | 모델 입력에는 코드 사용; 제공 이름은 읽기·감사용 |
+| `canonical_admin_sgg_name` | 표준 시군구 이름 | canonical 시군구 코드에 대응하는 AI Hub `TC_SGG.SGG_NM` | 설명용 메타데이터 | `TC_SGG` | 코드북에서 조회 | string | 해소 불가 시 null | 정적 inventory 전체 | 코드북 표기 이름이며 세분 지리나 서비스 요청값 아님 |
+| `canonical_admin_location_status` | 행정 위치 해결 상태 | 정적 근거를 모순 없이 행정구역으로 해석했는지 표시 | 모델 입력 | Master 코드·Master 주소, 선택적 TourAPI 정적 근거 | `resolved_single_source`, `resolved_multi_source`, `conflict`, `ambiguous_address`, `visit_only_unconfirmed`, `unavailable` | string, 위 상태 집합 | 필수 | 정적 근거만 사용 | 방문 기록으로 status를 덮어쓰지 않음; 미확정 상태를 명시 |
+| `canonical_admin_provenance` | 행정 위치 출처 | 결정에 참여한 출처 종류 목록 | 감사 메타데이터 | Master 코드·주소, 선택적 TourAPI 코드·주소 | `master_sgg_code`, `master_address`, `tourapi_sgg_code`, `tourapi_address` 등 허용된 출처 토큰만 정렬 저장 | list<string>, 빈 목록 가능 | 필수 | 정적 근거만 포함 | 주소·코드 원문, POI ID, 좌표는 저장 금지 |
+| `canonical_admin_conflict_sources` | 행정 위치 충돌 출처 | 해결을 막은 출처 종류 | 감사 메타데이터 | 같은 정적 출처 | `master`, `tourapi`, `visit` 등 출처 토큰 집합 | list<string>, 빈 목록 가능 | 필수 | 정적 근거만 feature에 반영 | 모델 입력 금지; 값이 다르면 canonical 코드는 null |
+| `coordinate_validation_status` | 좌표 검증 상태 | 정적 좌표의 CRS·축 의미 검증 및 사용 상태 | 감사 메타데이터 | AI Hub `X_COORD`, `Y_COORD` 문서 검토 | 현재 `unverified_not_used` | string, `unverified_not_used` | 필수 | 좌표는 feature 생성에 쓰지 않음 | CRS·축 순서를 확인할 문서가 없어 좌표값, H3, 거리 계산을 금지 |
+| `source_category_l1_code` | 원천 장소 대분류 코드 | AI Hub POI Master의 첫 번째 분류 단계 | 모델 입력 | `TN_POI_MASTER.ASORT_LCLASDC` | 고유 Master 행에서 전체 정적 inventory에 결합 | string, AI Hub 원천 코드 | Master 연결/값 없으면 null | 전체 정적 inventory | TourAPI `lclsSystm1`와 같다고 가정 금지; 별도 crosswalk 미정 |
+| `source_category_l2_code` | 원천 장소 중분류 코드 | AI Hub POI Master의 두 번째 분류 단계 | 모델 입력 | `TN_POI_MASTER.ASORT_MLSFCDC` | 고유 Master 행에서 전체 정적 inventory에 결합 | string, AI Hub 원천 코드 | Master 연결/값 없으면 null | 전체 정적 inventory | TourAPI `lclsSystm2`와 동일 taxonomy 아님 |
+| `source_category_l3_code` | 원천 장소 소분류 코드 | AI Hub POI Master의 세 번째 분류 단계 | 모델 입력 | `TN_POI_MASTER.ASORT_SDASDC` | 고유 Master 행에서 전체 정적 inventory에 결합 | string, AI Hub 원천 코드 | Master 연결/값 없으면 null | 전체 정적 inventory | TourAPI `lclsSystm3`와 동일 taxonomy 아님 |
 | `train_positive_interaction_count` | 학습 관측 양성 수 | 해당 장소가 train의 tourism-core 고유 여행-장소 상호작용에 나타난 횟수 | 모델 입력 | `train` `trip_item_interaction`의 `observed_positive` | 권역별 item의 고유 trip-item 양성을 합산 | int64, 0 이상 | 필수; train 등장 없음은 0 | 오직 train; validation은 절대 사용하지 않음 | 전체 인기·전체 방문수가 아님. validation으로 계산하면 누수; VL-only는 0 |
 
 ### `trip_item_interaction.parquet`
@@ -65,7 +72,7 @@ Parquet null 제약은 변환 검증과 이 문서로 보장한다. “필수”
 
 ## 모델 입력 allowlist와 split 규칙
 
-`trip_context` 입력은 `region`, `travel_style_1..8`, `travel_motive_1..3`, `travel_status_destination`, `companion_status`, `companion_count`, `start_month`, `elapsed_days`다. `item_features` 입력은 `region`, `train_observed_visit_type_codes`, `sgg_code`, `source_category_l1_code`~`source_category_l3_code`, `train_positive_interaction_count`다. 상호작용 테이블은 입력 컬럼을 제공하지 않는다. 키·split·라벨·진단값은 모델 입력으로 허용하지 않는다.
+`trip_context` 입력은 `region`, `travel_style_1..8`, `travel_motive_1..3`, `travel_status_destination`, `companion_status`, `companion_count`, `start_month`, `elapsed_days`다. `item_features`의 모델 allowlist는 `region`, `train_observed_visit_type_codes`, `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`, `source_category_l1_code`~`source_category_l3_code`, `train_positive_interaction_count`다. 이름·provenance·충돌 출처·좌표 검증 상태는 설명/감사용 메타데이터라 모델 입력이 아니다. 상호작용 테이블은 입력 컬럼을 제공하지 않는다.
 
 원천 `TL`/`VL` 역할 표시는 파일 선택과 감사 집계에서만 쓴다. Parquet split 값과 `observed_in_splits`에는 `train`/`validation`만 허용한다. 아이템의 train-derived 값은 TL 입력에서만 만든다. validation을 `train_positive_interaction_count`나 `train_observed_visit_type_codes` 생성에 포함하면 누수다.
 
@@ -84,7 +91,7 @@ Parquet null 제약은 변환 검증과 이 문서로 보장한다. “필수”
 | `TN_TRAVEL.TRAVEL_START_YMD`, `TRAVEL_END_YMD` | `elapsed_days` |
 | 역할 입력 `TL`, `VL` | split `train`, `validation` |
 | train 방문의 `TN_VISIT_AREA_INFO.VISIT_AREA_TYPE_CD` | `train_observed_visit_type_codes` |
-| 방문 `SGG_CD` + 유일 `TN_POI_MASTER.SGG_CD` + `TC_SGG` 검증 | `sgg_code` |
+| 유일 `TN_POI_MASTER.SGG_CD`와 정적 주소 단서 + `TC_SGG` 코드북 | `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`, provenance metadata |
 | `TN_POI_MASTER.ASORT_LCLASDC` | `source_category_l1_code` |
 | `TN_POI_MASTER.ASORT_MLSFCDC` | `source_category_l2_code` |
 | `TN_POI_MASTER.ASORT_SDASDC` | `source_category_l3_code` |
@@ -93,9 +100,11 @@ Parquet null 제약은 변환 검증과 이 문서로 보장한다. “필수”
 
 ## SGG 감사와 재조정
 
-코드 검증은 8개 입력의 `TC_CODEB`에서 `cd_a='VIS'`의 공식 17개 코드/라벨이 #71 계약과 맞는지 확인하고, 하나라도 불일치하면 생성을 중단한다. 각 region/split의 `TC_SGG.SGG_CD`에 정확히 포함된 값만 strict-valid다. 레거시 SggCrosswalk 호환 수치는 strict TC_SGG 수치와 별도로 기록한다.
+코드 검증은 8개 입력의 `TC_CODEB`에서 `cd_a='VIS'`의 공식 17개 코드/라벨이 #71 계약과 맞는지 확인하고, 하나라도 불일치하면 생성을 중단한다. canonical I2는 `TC_SGG`가 등록한 5자리 시군구만 허용하며, 시도 코드는 앞 2자리, 이름은 같은 행의 `SIDO_NM`/`SGG_NM`에서만 가져온다. Master 코드와 Master 주소가 서로 다른 행정구역을 가리키면 코드를 null로 두고 `conflict`와 출처 종류를 남긴다. 동일 시도에서 주소 이름이 여러 SGG와 겹치거나 코드북과 정확히 일치하지 않는 주소는 `ambiguous_address`/미확정으로 둔다.
 
-`manifest.json`은 region/split/cohort(`all_valid_visits`, `tourism_core`, `non_tourism`)별 방문 상태, Master POI join 상태, Master SGG 상태, 상호 배타적 해결 결과 및 분모를 집계한다. `direct`는 현재 방문 행 자체가 strict-valid인 경우만 뜻한다. 현재 행에 값이 없지만 cohort 내 같은 POI의 유일한 유효 값으로 채운 경우는 `poi_aggregate_filled`, 유효 방문 값이 하나도 없고 유일 Master SGG로 채운 경우는 `master_filled`로 따로 센다. cohort 내 여러 유효 방문 값 또는 방문 집계와 유효 Master 값이 다르면 `value_conflicts`로 분류한다. cohort별 POI 유효 값 상태(유일/충돌/없음)도 행 단위와 고유 POI 단위로 각각 집계하며 두 분모를 재조정한다. item `sgg_code`는 train 관광 핵심 방문 전체에서 유효 값을 모아 한 번 결정하고 유효 값 충돌이면 null이다.
+`manifest.json`은 기존 방문 SGG 감사와 별도로 `canonical_location`의 고유 Master inventory 분모와 정적 위치 해결 상태를 region별로 집계한다. TL 방문 행의 위치 단서는 정적 canonical feature와 일치하는지 진단할 때만 쓰며 `train_visit_corroboration`에 비식별 상태 수만 기록한다. VL 방문 행은 canonical location이나 provenance 생성에 참여하지 않는다. 방문 근거는 canonical 코드·상태·출처를 채우거나 덮어쓸 수 없어서 TL inner split의 inner-validation 행도 I2를 바꾸지 않는다. 주소 텍스트와 좌표값은 출력하지 않는다. AI Hub 정적 좌표는 출처 문서에서 CRS 및 X/Y 축 의미를 확인하지 못해 `unverified_not_used`로 표시하며, 좌표/H3/거리를 계산하지 않는다.
+
+`observed_in_splits=[]`인 행은 TL/VL 상호작용에 나타나지 않은 고유 Master item이다. 해당 행도 `item_key`, region, 정적 분류, canonical I2, 0 popularity, 빈 train-visit type 목록을 가져 candidate inventory에서 사용할 수 있다. Master 연결이 없는 관측 item은 interaction 참조를 보존하기 위해 metadata-only 행으로 출력하지만, 정적 특성 설정을 충족하지 않으므로 candidate feature eligibility를 주장하지 않는다.
 
 `all_valid_visits`는 방문 유형 분류에서 `tourism_core`, `non_tourism`, `missing_visit_type`, `unsupported_visit_type`로 나뉘며 네 집계 합은 all-valid 방문 분모와 일치해야 한다. SGG를 결정하지 못한 관측에는 POI ID 대신 POI 존재 건수와 Master join 상태(`unique`, `missing`, `ambiguous`, `not_applicable`)만 기록한다. 이 두 집계 합은 SGG-unavailable 분모와 일치한다. 주소 문자열/좌표는 기록하지 않고 도로명 주소, 지번 주소, 완전한 X/Y 쌍의 존재 건수만 남긴다. 감사는 ID, 원시 코드 값, 주소, 좌표, 입력 경로 또는 caller run ID를 내보내지 않는다. 실행 ID는 메모리에서만 surrogate key scope에 쓰인다.
 

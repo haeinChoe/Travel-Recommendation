@@ -42,14 +42,16 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
         "source_category_l2_code",
         "source_category_l3_code",
     ),
-    "I2_ADMINISTRATIVE_LOCATION": (),
+    "I2_ADMINISTRATIVE_LOCATION": (
+        "canonical_admin_sido_code",
+        "canonical_admin_sgg_code",
+        "canonical_admin_location_status",
+    ),
     "I3_POPULARITY": ("train_positive_interaction_count",),
     "I4_HISTORICAL_POI": ("train_observed_visit_type_codes",),
     "C1_REGION": ("region",),
 }
 PENDING_FEATURE_GROUPS = {
-    "I2_ADMINISTRATIVE_LOCATION":
-        "Issue #81 must define canonical administrative-location columns.",
     "I4_HISTORICAL_POI":
         "Issue #80 must provide inner-train-safe visit-type derivation.",
 }
@@ -63,6 +65,9 @@ CATEGORICAL_COLUMNS = frozenset({
     "source_category_l1_code",
     "source_category_l2_code",
     "source_category_l3_code",
+    "canonical_admin_sido_code",
+    "canonical_admin_sgg_code",
+    "canonical_admin_location_status",
     "train_observed_visit_type_codes",
     "region",
 })

@@ -1,7 +1,7 @@
 # 추천 학습 데이터 구성·포함 기준 및 Feature/Label 계약
 
 - **관련 Issue:** [#17](https://github.com/haeinChoe/Travel-Recommendation/issues/17), [#45](https://github.com/haeinChoe/Travel-Recommendation/issues/45), [#69](https://github.com/haeinChoe/Travel-Recommendation/issues/69), [#71](https://github.com/haeinChoe/Travel-Recommendation/issues/71)
-- **현재 상태:** 4개 권역(수도권·서부권·동부권·제주도 및 도서지역) 실제 데이터 코호트 감사 및 `TC_CODEB`(`cd_a = 'VIS'`) 공식 코드북 검증 완료 (`issue71-training-contract-20261020T1550Z`)
+- **현재 상태:** 아래 실제 데이터 코호트 수치는 Issue #71의 과거 감사 결과다. Issue #81의 canonical administrative location 합성 계약/코드는 추가됐지만, 이번 작업에서는 실제 데이터 coverage/conflict 감사를 실행하지 않았다.
 
 > 이 문서는 코호트·라벨의 의미와 승인된 분석 집계를 설명한다. 실제 세 Parquet 출력 이름, TL/VL→`train`/`validation` 변환, 모든 출력 컬럼의 null·타입·역할 규칙은 [표준 학습 데이터셋 스키마](training-dataset-schema.md)를 기준으로 한다. 여기서 언급하는 대문자 AI Hub 컬럼은 원천 필드 이름이다.
 
@@ -43,6 +43,18 @@
 ### 다음 행동
 
 이 문서로 확정된 **학습 데이터 구성 및 특성/라벨 계약(`scripts/recommendation/training_data_contract.py`)**을 후속 순위 모델링 및 후보 평가 실험의 공통 입력 계층으로 사용한다. 미매칭 TourAPI 후보까지 실제로 점수를 매기는 서빙 모델을 학습하기 전에는 (1) 카테고리 교차 매핑표(crosswalk) 정의, (2) `SGG_CD` 결측(75.52%) 처리 전략, (3) 미매칭 후보의 인기도 콜드 스타트 기본값(prior) 프로토콜을 먼저 확정한다.
+
+## Issue #81 현재 I2 계약
+
+새 데이터셋 스키마 v2는 AI Hub POI Master의 유일 POI inventory를 item table에 포함한다. 이 inventory의 정적 category와 행정구역 근거가 있으면 TL에서 관측되지 않은 아이템도 후보가 될 수 있다. 상호작용 관측 아이템은 기존처럼 유지하고, Master에 없는 관측 아이템에는 추정된 정적 location을 부여하지 않는다.
+
+모델의 I2 location은 `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`다. 시도 및 시군구는 TC_SGG 행정구역 코드북의 코드 단위이며, SGG는 시·군·구 수준의 행정 구역이다. coarse product `region` 값(capital/west/east/jeju-islands)은 모델/카탈로그 partition이고, 사용자 요청의 target geography는 목적지 문맥이다. 이 세 의미는 서로 대체하거나 자동 변환하지 않는다.
+
+현재 builder는 AI Hub Master의 유일 POI별 정적 코드와 모호하지 않은 정적 address clue만 canonical 결정에 넣는다. 원시 좌표는 검증 기준계가 확인되지 않아 `unverified_not_used`로 provenance에 남으며 선택 근거로 쓰지 않는다. raw latitude/longitude, H3, distance, `TN_GPS_COORD`는 model feature가 아니다. 방문행 SGG/address clues는 train-side aggregate corroboration/conflict 진단에만 쓴다. TL 전체 item feature에 보완값을 쓰지 않으며 inner-validation 또는 VL positive에서 역으로 보완하지 않는다. 현재 실행 경로에 검증된 AI Hub↔TourAPI item identity link가 없으므로 TourAPI 행정구역은 canonical feature에 섞지 않는다.
+
+Canonical state와 source provenance는 item table 및 manifest에 보존한다. 동일 코드/주소 충돌, 다중/불명확 주소, 방문 근거만 존재하는 경우 상태를 분리하고 fail-closed로 모델 행정구역 코드를 비운다. 현재 Issue #81에서는 정적 source 단위 ablation을 수행하지 않는다.
+
+위 정책은 privacy-safe synthetic tests로 검증한다. 다만 실제 coverage/conflict/provenance aggregate는 수행되지 않았다. bounded preflight에서 승인된 TL/VL 입력 변수로 출처와 역할을 확인할 수 있는 입력이 주어지지 않아 원본 행을 열지 않았다. 이는 저장소에 데이터가 없다는 주장이 아니다. 실제 감사의 coverage 수치를 이 문서의 과거 Issue #71 통계나 합성 fixture에서 추정하면 안 된다. 상세 상태 및 후속 감사 범위는 [Canonical administrative location](experiments/canonical-admin-location.md)을 참조한다.
 
 ---
 

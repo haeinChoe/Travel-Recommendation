@@ -133,6 +133,8 @@ class TrainingDatasetTests(unittest.TestCase):
             interactions = con.execute("SELECT * FROM read_parquet(?)", [str(output / "trip_item_interaction.parquet")]).fetchall()
             ctx_schema = {r[0]: r[1] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(output / "trip_context.parquet")]).fetchall()}
             interaction_columns = {r[0] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(output / "trip_item_interaction.parquet")]).fetchall()}
+            unseen_static = con.execute("SELECT source_category_l1_code, canonical_admin_sgg_code, observed_in_splits, train_positive_interaction_count FROM read_parquet(?) WHERE source_category_l1_code = 'L9'", [str(output / "item_features.parquet")]).fetchall()
+            vl_only = con.execute("SELECT canonical_admin_sgg_code, canonical_admin_location_status, observed_in_splits FROM read_parquet(?) WHERE observed_in_splits = ['validation']", [str(output / "item_features.parquet")]).fetchall()
             con.close()
             self.assertEqual(schema["train_observed_visit_type_codes"], "VARCHAR[]")
             self.assertEqual(schema["train_positive_interaction_count"], "BIGINT")
@@ -140,9 +142,13 @@ class TrainingDatasetTests(unittest.TestCase):
             self.assertIn("region", ctx_schema)
             self.assertEqual(ctx_schema["elapsed_days"], "INTEGER")
             self.assertEqual(manifest["dataset_type"], "travel-recommendation-training")
-            self.assertEqual(manifest["schema_version"], "1.0")
-            self.assertEqual(manifest["contract_version"], "1.0")
-            self.assertEqual(set(columns), {"item_key", "region", "observed_in_splits", "train_observed_visit_type_codes", "sgg_code", "source_category_l1_code", "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"})
+            self.assertEqual(manifest["schema_version"], "2.0")
+            self.assertEqual(manifest["contract_version"], "2.0")
+            self.assertEqual(set(columns), {"item_key", "region", "observed_in_splits", "train_observed_visit_type_codes",
+                "canonical_admin_sido_code", "canonical_admin_sgg_code", "canonical_admin_sido_name",
+                "canonical_admin_sgg_name", "canonical_admin_location_status", "canonical_admin_provenance",
+                "canonical_admin_conflict_sources", "coordinate_validation_status", "source_category_l1_code",
+                "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"})
             self.assertNotIn("POI_ID", columns)
             ctx_columns = set(ctx_schema)
             self.assertEqual(ctx_columns, {"trip_key", "region", "split", *(f"travel_style_{i}" for i in range(1, 9)), *(f"travel_motive_{i}" for i in range(1, 4)), "travel_status_destination", "companion_status", "companion_count", "start_month", "elapsed_days"})
@@ -151,7 +157,9 @@ class TrainingDatasetTests(unittest.TestCase):
             self.assertFalse(raw_columns & (ctx_columns | set(columns) | interaction_columns))
             self.assertTrue(all(row[3] in {"train", "validation"} for row in interactions))
             self.assertTrue(all(set(row[0]) <= {"train", "validation"} for row in observed_splits))
-            self.assertEqual(len(items), 16)  # three TL tourist items and one VL-only per region
+            self.assertEqual(len(items), 32)  # full unique Master inventory plus observed non-Master items
+            self.assertEqual(unseen_static, [("L9", "11110", [], 0)] * len(REGIONS))  # train-unseen Master items retain static candidate features
+            self.assertEqual(vl_only, [(None, "unavailable", ["validation"])] * len(REGIONS))
             self.assertEqual(len(interactions), 20)
             self.assertTrue(all(row[4] == 1 for row in interactions))
             self.assertTrue(all(k not in json.dumps(manifest) for k in ("RAW_TRIP", "RAW_TRAVELER", "POI1", temporary, "synthetic-run")))
@@ -187,6 +195,7 @@ class TrainingDatasetTests(unittest.TestCase):
         self.assertEqual(SOURCE_TO_CANONICAL_COLUMNS["TRAVEL_STATUS_ACCOMPANY"], "companion_status")
         self.assertEqual(SOURCE_TO_CANONICAL_COLUMNS["ASORT_SDASDC"], "source_category_l3_code")
         self.assertEqual(SOURCE_TO_CANONICAL_COLUMNS["VISIT_AREA_TYPE_CD"], "train_observed_visit_type_codes")
+        self.assertEqual(SOURCE_TO_CANONICAL_COLUMNS["SGG_CD"], "visit_sgg_code_evidence")
         self.assertFalse(set(SOURCE_TO_CANONICAL_COLUMNS.values()) & set(SOURCE_TO_CANONICAL_COLUMNS))
 
     def test_feature_allowlist_rejects_keys_labels_and_metadata(self) -> None:
@@ -263,17 +272,17 @@ class TrainingDatasetTests(unittest.TestCase):
             manifest = transform(inputs, masters, output, "synthetic-run")
             con = duckdb.connect()
             result = con.execute(
-                "SELECT item_key, sgg_code FROM read_parquet(?) WHERE region='capital'",
+                "SELECT item_key, canonical_admin_sgg_code FROM read_parquet(?) WHERE region='capital'",
                 [str(output / "item_features.parquet")],
             ).fetchall()
             con.close()
             sgg_by_key = dict(result)
             item_key = lambda poi: surrogate_key("synthetic-run", "item", "capital", poi)
-            self.assertIsNone(sgg_by_key[item_key("POI3")])  # conflicting valid TL visits
-            self.assertIsNone(sgg_by_key[item_key("POI6")])  # one valid visit conflicts with Master
-            self.assertEqual(sgg_by_key[item_key("POI9")], "11110")  # visit and Master agree
-            self.assertEqual(sgg_by_key[item_key("POI10")], "11110")  # Master fills absent visits
-            self.assertEqual(sgg_by_key[item_key("POI11")], "11110")  # one TL value fills the sibling row
+            self.assertEqual(sgg_by_key[item_key("POI3")], "11110")  # conflicting visits cannot alter static feature
+            self.assertEqual(sgg_by_key[item_key("POI6")], "11200")  # visit conflict stays diagnostic only
+            self.assertEqual(sgg_by_key[item_key("POI9")], "11110")
+            self.assertEqual(sgg_by_key[item_key("POI10")], "11110")
+            self.assertIsNone(sgg_by_key[item_key("POI11")])  # visit-only evidence cannot fill static feature
             self.assertNotIn("synthetic-run", json.dumps(manifest))
             audit = manifest["sgg_audit"]["by_region_split_cohort"]["capital:TL:all_valid_visits"]
             self.assertEqual(audit["resolved_outcome_counts"].get("direct"), 2)

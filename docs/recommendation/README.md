@@ -25,10 +25,13 @@
 7. [CatBoost cold-user ranking 실험 프로토콜](experiments/catboost-ranking-protocol.md)
    YetiRank prototype, negative sampling search, feature-group search, objective comparison, hyperparameter 조정, multi-seed 확인과 VL 최종 평가의 순서를 확인한다.
 
-8. [서비스 카탈로그 기반 후보 계약](poi-catalog-candidate-contract.md)
+8. [Canonical administrative location (I2)](experiments/canonical-admin-location.md)
+   AI Hub Master의 정적 행정구역 근거, conflict/uncertain 상태, provenance, 방문 증거의 누수 방지와 I2 feature 의미를 확인한다.
+
+9. [서비스 카탈로그 기반 후보 계약](poi-catalog-candidate-contract.md)
    한국관광공사 TourAPI KorService2 v4.4 서비스 카탈로그와 AI Hub 여행로그 간 POI 후보 집합 정의와 식별자 매칭 계약을 확인한다. 현재 CatBoost offline 모델 선택 candidate universe는 AI Hub로 제한하므로 제품 카탈로그 계약과 분리해서 읽는다.
 
-9. [POI 식별자 매칭 및 코호트 커버리지 실험](experiments/poi-identity-matching-v2.md)
+10. [POI 식별자 매칭 및 코호트 커버리지 실험](experiments/poi-identity-matching-v2.md)
    다단계 식별자 매칭 파이프라인의 단계별 결과와 관광 대상 코호트 분리 분석을 확인한다.
 
 ## 새 연구·실험 문서를 작성할 때
