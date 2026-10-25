@@ -119,6 +119,28 @@ class TLTravelerSplitTests(unittest.TestCase):
             "jeju-islands": {"j1": "traveler-h", "j2": "traveler-i"},
         }
         seed = "region-scoped"
+        for candidate in map(str, range(100)):
+            regional = {
+                region: deterministic_traveler_group_split(
+                    owners, seed=candidate, validation_fraction=0.25
+                )
+                for region, owners in region_trip_owners.items()
+            }
+            combined = {
+                f"{region}:{trip}": traveler
+                for region, owners in region_trip_owners.items()
+                for trip, traveler in owners.items()
+            }
+            combined_partitions = deterministic_traveler_group_split(
+                combined, seed=candidate, validation_fraction=0.25
+            )
+            if (
+                regional["capital"]["c1"]
+                != combined_partitions["capital:c1"]
+                or regional["west"]["w1"] != combined_partitions["west:w1"]
+            ):
+                seed = candidate
+                break
         rows = {
             region: [
                 {"TRAVEL_ID": trip, "TRAVELER_ID": traveler}
@@ -322,7 +344,7 @@ class TLTravelerSplitTests(unittest.TestCase):
         for raw_value in set(self.trip_owner.values()):
             self.assertNotIn(raw_value, serialized)
         self.assertNotIn("path", serialized)
-        self.assertEqual(payload["split"]["group_scope"], "all four TL regions")
+        self.assertEqual(payload["split"]["group_scope"], "within each TL region")
         self.assertEqual(payload["split"]["traveler_overlap"], 0)
         self.assertTrue(all(
             region["inner_split"]["traveler_overlap"] == 0
