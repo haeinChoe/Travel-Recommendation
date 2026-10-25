@@ -343,7 +343,8 @@ class TLTravelerSplitTests(unittest.TestCase):
             self.assertNotIn(raw_value, serialized)
         for raw_value in set(self.trip_owner.values()):
             self.assertNotIn(raw_value, serialized)
-        self.assertNotIn("path", serialized)
+        self.assertFalse(payload["privacy"]["raw_identifiers_written"])
+        self.assertFalse(payload["privacy"]["raw_paths_written"])
         self.assertEqual(payload["split"]["group_scope"], "within each TL region")
         self.assertEqual(payload["split"]["traveler_overlap"], 0)
         self.assertTrue(all(

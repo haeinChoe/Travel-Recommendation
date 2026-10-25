@@ -130,8 +130,8 @@ def deterministic_traveler_group_split(
 ) -> dict[str, str]:
     """Assign all trips for each traveler to one deterministic inner partition.
 
-    Raw IDs are accepted and returned only for in-memory joins. The caller is responsible
-    for keeping them out of artifacts and logs.
+    Raw IDs are accepted and returned only for in-memory joins. Call once per region;
+    the canonical identity grain includes region. Keep IDs out of artifacts and logs.
     """
     if isinstance(validation_fraction, bool) or not 0 < validation_fraction < 1:
         raise ValueError("validation_fraction must be between zero and one")
@@ -190,7 +190,7 @@ def recompute_inner_train_positive_interaction_count(
     *,
     all_item_ids: Iterable[str] = (),
 ) -> dict[str, int]:
-    """Recompute I3 from unique inner-train positive trip-item interactions only."""
+    """Recompute I3 from one region's unique inner-train positive trip-item interactions."""
     pairs: set[tuple[str, str]] = set()
     item_ids = {_clean(item_id) for item_id in all_item_ids}
     item_ids.discard(None)
@@ -220,9 +220,9 @@ def recompute_inner_train_visit_type_codes(
 ) -> dict[str, list[str]]:
     """Recompute I4 from inner-train TN_VISIT_AREA_INFO events; fail closed if unavailable.
 
-    A trip-item is eligible when it has at least one tourism-core visit event. For that
-    eligible pair, all valid event visit-type codes are collected, matching the canonical
-    item-feature rule. The function never reads canonical item_features values.
+    Pass one region at a time because TRAVEL_ID is region-scoped. A trip-item is eligible
+    when it has at least one tourism-core visit event. For that pair, all valid event
+    visit-type codes are collected. The function never reads canonical item_features values.
     """
     if visit_events is None:
         raise I4SourceUnavailableError(
@@ -333,6 +333,7 @@ def audit_payload(
             "output_scope": "aggregate counts only",
         },
     }
+
 
 def _find_table_csv(folder: Path, table_name: str) -> Path:
     token = table_name.casefold()
