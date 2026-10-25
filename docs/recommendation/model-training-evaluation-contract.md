@@ -112,26 +112,28 @@ validation의 정답을 본 뒤 후보를 추가하면 evaluation 정보가 cand
 한 request의 후보는 다음과 같다.
 
 ~~~text
-inner-train에서 관측된 AI Hub item
+AI Hub item inventory 중 요청 문맥과 설정된 feature를 만들 수 있는 item
 ∩
 request의 region
 ~~~
 
-즉 same-region inner-train observed item만 후보가 된다.
+후보 자격은 inner-train에서 관측됐는지와 분리한다. Train-unseen POI도 AI Hub inventory에 있고 필요한 정적 특성과 inner-train 기준 파생 특성을 만들 수 있으면 후보에 포함한다. 이 계약은 cold-item을 별도 평가 문제로 나누지 않는다. 인기 횟수처럼 inner-train에서 계산하는 값은 후보 전체에 대해 inner-train만으로 다시 만들며, 상호작용이 없는 item은 그 집계 규칙에 따른 값을 받는다.
 
-inner-validation에만 등장한 positive는 정답으로 남지만 후보 목록에 사후 주입하지 않는다. 따라서 해당 positive는 miss가 되며 candidate/positive coverage 진단에서 확인한다.
+inner-validation positive는 정답 집합에 남기고 후보 구성에 사후 주입하지 않는다. 필요한 feature를 만들 수 없어 후보에서 제외된 positive는 miss가 되며 candidate/positive coverage 진단에서 확인한다.
 
-이 경우 어떤 validation query는 candidate row 전체가 label 0일 수 있다. training group은 학습 비교를 위해 label 1과 sampled label 0을 모두 요구하지만, validation group은 all-zero candidate row를 허용한다. 최종 NDCG/Recall/MRR/HitRate는 CatBoost eval_set label만으로 계산하지 않고, 원래 held-out positive 집합을 별도 ground truth로 유지해 계산한다. 그래야 candidate 밖 unseen positive도 올바르게 miss로 반영된다.
+이 경우 어떤 validation query는 candidate row 전체가 label 0일 수 있다. Training group은 학습 비교를 위해 label 1과 sampled label 0을 모두 요구하지만, validation group은 all-zero candidate row를 허용한다. 최종 NDCG/Recall/MRR/HitRate는 CatBoost eval_set label만으로 계산하지 않고, 원래 held-out positive 집합을 별도 ground truth로 유지해 계산한다. 그래야 candidate 밖 positive도 올바르게 miss로 반영된다.
 
 ### 2.2 공식 VL
 
 VL 평가 후보는 다음과 같다.
 
 ~~~text
-outer TL/train에서 관측된 AI Hub item
+AI Hub item inventory 중 설정된 feature를 만들 수 있는 item
 ∩
 VL request의 region
 ~~~
+
+Train-unseen item을 후보에서 제외하지 않는다. TL 전체 interaction으로 파생되는 feature는 최종 학습 시점에만 TL에서 재계산한다.
 
 TourAPI 전체 catalog는 이번 offline 모델 선택 candidate universe가 아니다.
 
@@ -247,6 +249,7 @@ POI 정적 좌표는 canonical location 정제와 identity 검증에 사용할 �
 - sampling seed를 기록한다.
 - 같은 candidate, positive, seed이면 같은 sample을 만든다.
 - weighted/hard sampling 통계는 inner-train만 사용한다.
+- popularity smoothing 값과 mixed sampling의 uniform 분율은 설정으로 기록한다. prototype 기본값은 각각 `1.0`과 `0.5`이며, #82 결과 전까지 확정된 모델링 결정이 아니다.
 - final VL metric 계산에서는 negative sampling으로 candidate를 축소하지 않는다.
 
 ## 7. CatBoost objective
@@ -260,6 +263,10 @@ prototype은 YetiRank로 고정한다.
 - LambdaMart
 
 현재 CatBoost 공식 문서는 위 objective를 ranking 최적화에 지원하고 CatBoostRanker.fit에서 group_id를 받을 수 있다. NDCG, RecallAt, MRR 같은 평가 metric과 학습 objective는 같은 개념이 아니다.
+
+Objective 비교에서는 세 모델에 같은 `iterations=1000` prototype budget과 `eval_metric=NDCG:top=10`을 사용한다. `use_best_model=False`로 두어 validation score가 모델별 저장 tree 수를 바꾸지 않게 한다. CatBoost는 eval set이 있고 validation label이 한 값으로만 구성되지 않으면 기본으로 best-model 저장을 켤 수 있으므로 명시적으로 끈다. 이 설정은 objective 비교를 통제하기 위한 초기 budget이지 최종 hyperparameter 결정이 아니다. 여러 K의 최종 ranking 지표는 별도 metric 코드로 계산하고, #82에서 objective 비교 후 hyperparameter search를 진행한다. ([CatBoost common training parameters](https://catboost.ai/docs/en/references/training-parameters/common))
+
+CatBoost는 범주형 feature를 일반 수치형 결측 규칙으로 처리하지 않는다. 입력에 `None`, `NaN`, pandas의 nullable 값이 있으면 예약 문자열 `__MISSING__`으로 정규화하고, 나머지 범주값도 문자열로 통일한다. 이 값은 데이터의 실제 범주 코드로 사용하지 않는 sentinel이다. ([CatBoost missing values](https://catboost.ai/docs/en/concepts/algorithm-missing-values-processing), [categorical features FAQ](https://catboost.ai/docs/en/concepts/faq))
 
 #79는 CatBoost dependency를 실제 실행 환경에 고정하지 않고 thin adapter만 둔다. #82에서 실행 환경과 버전을 확인한 뒤 dependency와 runtime 설정을 고정한다.
 

@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import importlib.util
 import math
 import unittest
 
+import pandas as pd
+
 from scripts.recommendation.catboost_ranking_experiment import (
+    CATBOOST_MISSING_CATEGORY,
+    DEFAULT_EVAL_METRIC,
+    DEFAULT_ITERATIONS,
+    DEFAULT_MIXED_UNIFORM_FRACTION,
     DEFAULT_OBJECTIVE,
+    DEFAULT_POPULARITY_SMOOTHING,
     FEATURE_GROUPS,
     ExperimentConfig,
     SamplingStrategy,
@@ -82,17 +90,33 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
             ),
             "1|13",
         )
+        self.assertEqual(
+            normalize_feature_value("companion_status", None, config),
+            CATBOOST_MISSING_CATEGORY,
+        )
+        self.assertEqual(
+            normalize_feature_value("source_category_l1_code", float("nan"), config),
+            CATBOOST_MISSING_CATEGORY,
+        )
+        self.assertEqual(
+            normalize_feature_value("travel_style_1", pd.NA, config),
+            CATBOOST_MISSING_CATEGORY,
+        )
+        self.assertEqual(
+            normalize_feature_value("region", "capital", config), "capital"
+        )
 
-    def test_region_filter_uses_only_prequalified_inventory(self) -> None:
+    def test_region_filter_includes_train_unseen_items_from_inventory(self) -> None:
         regions = {
             "a": "capital",
             "b": "capital",
             "c": "east",
             "vl-only": "capital",
         }
-        candidates = filter_region_candidates(regions, {"a", "c"}, "capital")
-        self.assertEqual(candidates, ("a",))
-        self.assertNotIn("vl-only", candidates)
+        candidates = filter_region_candidates(
+            regions, {"a", "c", "vl-only"}, "capital"
+        )
+        self.assertEqual(candidates, ("a", "vl-only"))
 
     def test_uniform_sampling_is_deterministic_and_excludes_positives(self) -> None:
         candidates = {"a", "b", "c", "d", "e"}
@@ -173,6 +197,64 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
                     statistics_scope="full-TL",
                 )
 
+    def test_sampling_parameters_are_configurable_with_prototype_defaults(self) -> None:
+        candidates = {"positive", "a", "b", "c", "d", "e"}
+        positives = {"positive"}
+        popularity = {"a": 1, "b": 3, "c": 5, "d": 7, "e": 9}
+        self.assertEqual(DEFAULT_POPULARITY_SMOOTHING, 1.0)
+        self.assertEqual(DEFAULT_MIXED_UNIFORM_FRACTION, 0.5)
+        uniform = sample_unobserved(
+            candidates,
+            positives,
+            strategy=SamplingStrategy.UNIFORM,
+            ratio=3,
+            seed=17,
+        )
+        all_uniform_mixed = sample_unobserved(
+            candidates,
+            positives,
+            strategy=SamplingStrategy.MIXED,
+            ratio=3,
+            seed=17,
+            popularity=popularity,
+            statistics_scope="inner-train",
+            mixed_uniform_fraction=1.0,
+        )
+        self.assertEqual(all_uniform_mixed, uniform)
+        all_weighted = sample_unobserved(
+            candidates,
+            positives,
+            strategy=SamplingStrategy.MIXED,
+            ratio=3,
+            seed=17,
+            popularity=popularity,
+            statistics_scope="inner-train",
+            mixed_uniform_fraction=0.0,
+            popularity_smoothing=0.0,
+        )
+        weighted = sample_unobserved(
+            candidates,
+            positives,
+            strategy=SamplingStrategy.POPULARITY_WEIGHTED,
+            ratio=3,
+            seed=17,
+            popularity=popularity,
+            statistics_scope="inner-train",
+            popularity_smoothing=0.0,
+        )
+        self.assertEqual(all_weighted, weighted)
+        with self.assertRaisesRegex(ValueError, "popularity_smoothing"):
+            sample_unobserved(
+                candidates,
+                positives,
+                strategy=SamplingStrategy.UNIFORM,
+                ratio=1,
+                seed=17,
+                popularity_smoothing=-1,
+            )
+        with self.assertRaisesRegex(ValueError, "mixed_uniform_fraction"):
+            ExperimentConfig(("Q1_STYLE",), mixed_uniform_fraction=1.1).validate()
+
     def test_hard_sampling_requires_complete_scores(self) -> None:
         with self.assertRaisesRegex(ValueError, "hard_scores"):
             sample_unobserved(
@@ -246,16 +328,34 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
             validate_ranking_group_layout(["q1", "q1"], [2, 0])
 
     def test_train_derived_features_require_inner_train_scope(self) -> None:
-        config = ExperimentConfig(("I3_POPULARITY",))
-        with self.assertRaisesRegex(ValueError, "full-TL"):
-            validate_train_derived_scope(config, "full-TL")
-        validate_train_derived_scope(config, "inner-train")
+        for group in ("I3_POPULARITY", "I4_HISTORICAL_POI"):
+            with self.subTest(group=group):
+                config = ExperimentConfig((group,))
+                with self.assertRaisesRegex(ValueError, "full-TL"):
+                    validate_train_derived_scope(config, "full-TL")
+                validate_train_derived_scope(config, "inner-train")
         validate_train_derived_scope(ExperimentConfig(("Q1_STYLE",)), None)
 
     def test_default_objective_is_yetirank(self) -> None:
         config = ExperimentConfig(("Q1_STYLE",))
         self.assertEqual(DEFAULT_OBJECTIVE, "YetiRank")
         self.assertEqual(catboost_model_params(config)["loss_function"], "YetiRank")
+        params = catboost_model_params(config)
+        self.assertEqual(params["eval_metric"], DEFAULT_EVAL_METRIC)
+        self.assertEqual(params["iterations"], DEFAULT_ITERATIONS)
+        self.assertIs(params["use_best_model"], False)
+        objective_configs = objective_search_configs(
+            ("Q1_STYLE",),
+            sampling_strategy=SamplingStrategy.UNIFORM,
+            negative_ratio=1,
+        )
+        self.assertEqual({c.iterations for c in objective_configs}, {DEFAULT_ITERATIONS})
+        self.assertEqual({c.eval_metric for c in objective_configs}, {DEFAULT_EVAL_METRIC})
+        sampling_configs = sampling_search_configs(
+            ("Q1_STYLE",), popularity_smoothing=0.25, mixed_uniform_fraction=0.7
+        )
+        self.assertEqual({c.popularity_smoothing for c in sampling_configs}, {0.25})
+        self.assertEqual({c.mixed_uniform_fraction for c in sampling_configs}, {0.7})
         with self.assertRaisesRegex(ValueError, "Unsupported"):
             ExperimentConfig(("Q1_STYLE",), objective="NDCG").validate()
 
@@ -268,9 +368,58 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
             "pending",
         )
         self.assertEqual(
+            protocol["candidate_universe"]["train_unseen_items"],
+            "eligible when required features are available",
+        )
+        self.assertEqual(
+            protocol["objective_comparison"]["use_best_model"], False
+        )
+        self.assertEqual(
             protocol["feature_groups"]["I4_HISTORICAL_POI"]["status"],
             "pending",
         )
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("catboost") is not None,
+        "CatBoost is not installed in this environment",
+    )
+    def test_catboost_synthetic_fit_accepts_nullable_categoricals(self) -> None:
+        from scripts.recommendation.catboost_ranking_experiment import fit_catboost
+
+        train_features = {
+            f"travel_style_{index}": (
+                [None, "1", pd.NA, "2"]
+                if index == 1
+                else ["a", "b", "c", "d"]
+            )
+            for index in range(1, 9)
+        }
+        validation_features = {
+            f"travel_style_{index}": (
+                [float("nan"), "1", "2", None]
+                if index == 1
+                else ["a", "b", "c", "d"]
+            )
+            for index in range(1, 9)
+        }
+        train = pd.DataFrame({
+            **train_features,
+            "label": [1, 0, 1, 0],
+            "group": ["q1", "q1", "q2", "q2"],
+        })
+        validation = pd.DataFrame({
+            **validation_features,
+            "label": [1, 0, 0, 1],
+            "group": ["q3", "q3", "q4", "q4"],
+        })
+        model = fit_catboost(
+            train,
+            validation,
+            label_column="label",
+            group_column="group",
+            config=ExperimentConfig(("Q1_STYLE",), iterations=2),
+        )
+        self.assertGreater(model.tree_count_, 0)
 
 
 if __name__ == "__main__":

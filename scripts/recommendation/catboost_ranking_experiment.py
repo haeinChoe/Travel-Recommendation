@@ -25,6 +25,11 @@ DEFAULT_K = (5, 10, 20)
 DEFAULT_OBJECTIVE = "YetiRank"
 OBJECTIVE_CANDIDATES = ("YetiRank", "PairLogit", "LambdaMart")
 DEFAULT_NEGATIVE_RATIOS = (1, 2, 4, 8, 16)
+DEFAULT_ITERATIONS = 1000
+DEFAULT_EVAL_METRIC = "NDCG:top=10"
+DEFAULT_POPULARITY_SMOOTHING = 1.0
+DEFAULT_MIXED_UNIFORM_FRACTION = 0.5
+CATBOOST_MISSING_CATEGORY = "__MISSING__"
 
 FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
     "Q1_STYLE": tuple(f"travel_style_{i}" for i in range(1, 9)),
@@ -80,6 +85,10 @@ class ExperimentConfig:
     k_values: tuple[int, ...] = DEFAULT_K
     category_depth: int = 3
     popularity_transform: str = "raw"
+    iterations: int = DEFAULT_ITERATIONS
+    eval_metric: str = DEFAULT_EVAL_METRIC
+    popularity_smoothing: float = DEFAULT_POPULARITY_SMOOTHING
+    mixed_uniform_fraction: float = DEFAULT_MIXED_UNIFORM_FRACTION
 
     def validate(self) -> None:
         if self.objective not in OBJECTIVE_CANDIDATES:
@@ -99,6 +108,19 @@ class ExperimentConfig:
             raise ValueError("category_depth must be one of 1, 2, 3")
         if self.popularity_transform not in {"raw", "log1p"}:
             raise ValueError("popularity_transform must be raw or log1p")
+        if self.iterations <= 0:
+            raise ValueError("iterations must be positive")
+        if self.eval_metric != DEFAULT_EVAL_METRIC:
+            raise ValueError(
+                f"eval_metric must stay fixed at {DEFAULT_EVAL_METRIC} during comparisons"
+            )
+        if not math.isfinite(self.popularity_smoothing) or self.popularity_smoothing < 0:
+            raise ValueError("popularity_smoothing must be non-negative")
+        if (
+            not math.isfinite(self.mixed_uniform_fraction)
+            or not 0 <= self.mixed_uniform_fraction <= 1
+        ):
+            raise ValueError("mixed_uniform_fraction must be between 0 and 1")
 
 
 @dataclass(frozen=True)
@@ -156,29 +178,55 @@ def normalize_feature_value(
     config: ExperimentConfig,
 ) -> Any:
     if column == "train_positive_interaction_count":
-        numeric = 0.0 if value is None else float(value)
+        numeric = 0.0 if _is_missing_value(value) else float(value)
         if numeric < 0:
             raise ValueError("Popularity count must be non-negative")
         if config.popularity_transform == "log1p":
             return math.log1p(numeric)
     if column == "train_observed_visit_type_codes":
-        if value is None:
-            return ""
+        if _is_missing_value(value):
+            return CATBOOST_MISSING_CATEGORY
         if isinstance(value, (list, tuple, set, frozenset)):
-            return "|".join(sorted(str(part) for part in value))
+            return "|".join(sorted(
+                CATBOOST_MISSING_CATEGORY if _is_missing_value(part) else str(part)
+                for part in value
+            ))
+    if column in CATEGORICAL_COLUMNS:
+        if _is_missing_value(value):
+            return CATBOOST_MISSING_CATEGORY
+        return str(value)
     return value
+
+
+def _is_missing_value(value: Any) -> bool:
+    """Recognize common null values without requiring pandas at import time."""
+
+    if value is None:
+        return True
+    if value.__class__.__name__ in {"NAType", "NaTType"}:
+        return True
+    try:
+        return math.isnan(value)
+    except (TypeError, ValueError):
+        return False
 
 
 def filter_region_candidates(
     item_regions: Mapping[str, str],
-    eligible_items: Iterable[str],
+    item_inventory: Iterable[str],
     target_region: str,
 ) -> tuple[str, ...]:
-    """Filter an already training-derived eligible inventory by region."""
+    """Filter the AI Hub item inventory to the request region.
+
+    Eligibility is not restricted to items observed in the training split. The
+    caller supplies the AI Hub inventory for which the configured candidate
+    feature contract can be materialized; validation positives remain external
+    ground truth. Do not build this inventory from train-observed items.
+    """
 
     return tuple(sorted(
         item
-        for item in set(eligible_items)
+        for item in set(item_inventory)
         if item_regions.get(item) == target_region
     ))
 
@@ -270,9 +318,18 @@ def sample_unobserved(
     popularity: Mapping[str, float] | None = None,
     hard_scores: Mapping[str, float] | None = None,
     statistics_scope: str | None = None,
+    popularity_smoothing: float = DEFAULT_POPULARITY_SMOOTHING,
+    mixed_uniform_fraction: float = DEFAULT_MIXED_UNIFORM_FRACTION,
 ) -> tuple[str, ...]:
     if ratio <= 0:
         raise ValueError("ratio must be positive")
+    if not math.isfinite(popularity_smoothing) or popularity_smoothing < 0:
+        raise ValueError("popularity_smoothing must be non-negative")
+    if (
+        not math.isfinite(mixed_uniform_fraction)
+        or not 0 <= mixed_uniform_fraction <= 1
+    ):
+        raise ValueError("mixed_uniform_fraction must be between 0 and 1")
     if strategy != SamplingStrategy.UNIFORM and statistics_scope != "inner-train":
         raise ValueError(
             "Weighted or hard sampling statistics must come from inner-train only"
@@ -290,7 +347,9 @@ def sample_unobserved(
 
     if strategy == SamplingStrategy.POPULARITY_WEIGHTED:
         weights = {
-            item: 1.0 + max(0.0, float((popularity or {}).get(item, 0.0)))
+            item: popularity_smoothing + max(
+                0.0, float((popularity or {}).get(item, 0.0))
+            )
             for item in available
         }
         return tuple(sorted(_weighted_without_replacement(
@@ -298,11 +357,13 @@ def sample_unobserved(
         )))
 
     if strategy == SamplingStrategy.MIXED:
-        uniform_count = count // 2
+        uniform_count = int(count * mixed_uniform_fraction)
         uniform = rng.sample(available, uniform_count)
         remaining = [item for item in available if item not in set(uniform)]
         weights = {
-            item: 1.0 + max(0.0, float((popularity or {}).get(item, 0.0)))
+            item: popularity_smoothing + max(
+                0.0, float((popularity or {}).get(item, 0.0))
+            )
             for item in remaining
         }
         weighted = _weighted_without_replacement(
@@ -327,6 +388,8 @@ def sampling_search_configs(
     *,
     objective: str = DEFAULT_OBJECTIVE,
     seed: int = 20261025,
+    popularity_smoothing: float = DEFAULT_POPULARITY_SMOOTHING,
+    mixed_uniform_fraction: float = DEFAULT_MIXED_UNIFORM_FRACTION,
 ) -> tuple[ExperimentConfig, ...]:
     return tuple(
         ExperimentConfig(
@@ -335,6 +398,8 @@ def sampling_search_configs(
             negative_ratio=ratio,
             objective=objective,
             seed=seed,
+            popularity_smoothing=popularity_smoothing,
+            mixed_uniform_fraction=mixed_uniform_fraction,
         )
         for strategy in SamplingStrategy
         for ratio in DEFAULT_NEGATIVE_RATIOS
@@ -410,6 +475,9 @@ def catboost_model_params(config: ExperimentConfig) -> dict[str, Any]:
     config.validate()
     return {
         "loss_function": config.objective,
+        "eval_metric": config.eval_metric,
+        "iterations": config.iterations,
+        "use_best_model": False,
         "random_seed": config.seed,
         "allow_writing_files": False,
         "verbose": False,
@@ -476,6 +544,8 @@ def fit_catboost(
         cat_features=categorical,
     )
     model = CatBoostRanker(**catboost_model_params(config))
+    # Keep the comparison budget fixed across objectives. The validation set
+    # reports one shared metric but never selects a different best iteration.
     model.fit(train_pool, eval_set=validation_pool)
     return model
 
@@ -485,10 +555,10 @@ def default_protocol() -> dict[str, Any]:
         "problem": "cold-user contextual POI ranking",
         "candidate_universe": {
             "source": "AI Hub 2023 only",
-            "development": "same-region items observed in inner-train",
-            "final": "same-region items observed in outer TL/train",
-            "unseen_positive":
-                "remains relevant but is not injected into candidates",
+            "development": "same-region items with the configured candidate features",
+            "final": "same-region items with the configured candidate features",
+            "train_unseen_items": "eligible when required features are available",
+            "unseen_positive": "remains external ground truth; never injected post hoc",
         },
         "split": {
             "development": "TRAVELER_ID group split; finalized by Issue #80",
@@ -496,12 +566,27 @@ def default_protocol() -> dict[str, Any]:
         },
         "prototype_objective": DEFAULT_OBJECTIVE,
         "objective_candidates": list(OBJECTIVE_CANDIDATES),
+        "objective_comparison": {
+            "iterations": DEFAULT_ITERATIONS,
+            "eval_metric": DEFAULT_EVAL_METRIC,
+            "use_best_model": False,
+            "note": (
+                "Shared prototype comparison defaults; tune only after objective "
+                "comparison and document the chosen budget in Issue #82."
+            ),
+        },
         "sampling": {
             "strategies": [s.value for s in SamplingStrategy],
             "ratios": list(DEFAULT_NEGATIVE_RATIOS),
             "label_zero":
                 "sampled-unobserved comparison row, not observed dislike",
             "statistics_scope": "inner-train only",
+            "popularity_smoothing": DEFAULT_POPULARITY_SMOOTHING,
+            "mixed_uniform_fraction": DEFAULT_MIXED_UNIFORM_FRACTION,
+            "mixed_uniform_allocation": (
+                "floor(count * fraction); remainder popularity-weighted"
+            ),
+            "sampling_parameter_status": "prototype defaults; compare in Issue #82",
         },
         "feature_groups": {
             group: {
