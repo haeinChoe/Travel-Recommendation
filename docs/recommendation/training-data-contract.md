@@ -50,7 +50,7 @@
 
 모델의 I2 location은 `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`다. 시도 및 시군구는 TC_SGG 행정구역 코드북의 코드 단위이며, SGG는 시·군·구 수준의 행정 구역이다. coarse product `region` 값(capital/west/east/jeju-islands)은 모델/카탈로그 partition이고, 사용자 요청의 target geography는 목적지 문맥이다. 이 세 의미는 서로 대체하거나 자동 변환하지 않는다.
 
-현재 builder는 AI Hub Master의 유일 POI별 정적 코드와 모호하지 않은 정적 address clue만 canonical 결정에 넣는다. 원시 좌표는 검증 기준계가 확인되지 않아 `unverified_not_used`로 provenance에 남으며 선택 근거로 쓰지 않는다. raw latitude/longitude, H3, distance, `TN_GPS_COORD`는 model feature가 아니다. 방문행 SGG/address clues는 train-side aggregate corroboration/conflict 진단에만 쓴다. TL 전체 item feature에 보완값을 쓰지 않으며 inner-validation 또는 VL positive에서 역으로 보완하지 않는다. 현재 실행 경로에 검증된 AI Hub↔TourAPI item identity link가 없으므로 TourAPI 행정구역은 canonical feature에 섞지 않는다.
+현재 builder는 AI Hub Master의 유일 POI별 정적 코드와 모호하지 않은 정적 address clue만 canonical 결정에 넣는다. Issue #69에서 matched anchor subset의 AI Hub/TourAPI 좌표 범위와 거리는 경험적으로 확인했지만, 그 결과는 전체 Master inventory의 source contract나 좌표 coverage를 보증하지 않는다. 따라서 coordinate status는 `subset_validation_only_not_used`이고 좌표는 canonical 선택 근거로 쓰지 않는다. raw latitude/longitude, H3, distance, `TN_GPS_COORD`는 model feature가 아니다. 방문행 SGG/address clues는 train-side aggregate corroboration/conflict 진단에만 쓴다. TL 전체 item feature에 보완값을 쓰지 않으며 inner-validation 또는 VL positive에서 역으로 보완하지 않는다. 현재 실행 경로에 검증된 AI Hub↔TourAPI item identity link가 없으므로 TourAPI 행정구역은 canonical feature에 섞지 않는다.
 
 Canonical state와 source provenance는 item table 및 manifest에 보존한다. 동일 코드/주소 충돌, 다중/불명확 주소, 방문 근거만 존재하는 경우 상태를 분리하고 fail-closed로 모델 행정구역 코드를 비운다. 현재 Issue #81에서는 정적 source 단위 ablation을 수행하지 않는다.
 

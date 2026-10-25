@@ -212,11 +212,11 @@ Category는 L1 / L1+L2 / L1+L2+L3를 비교할 수 있다. Popularity는 raw cou
 
 ## 5. 위치 feature 현재 범위
 
-POI 정적 좌표는 현재 canonical location 결정이나 identity 검증에 사용하지 않는다. 저장소에서 AI Hub 좌표의 CRS 및 X/Y 축 의미를 확인할 수 있는 source contract를 찾지 못했으며, 검증 가능한 static coordinate source가 확보될 때 별도 결정한다.
+Issue #69는 matched anchor subset에서 AI Hub/TourAPI 좌표의 WGS84 범위와 거리 분포(4,279 regional anchor 중 93.11%, 4,686 global anchor 중 93.45%가 200m 이내)를 경험적으로 확인했다. 이 identity 검증은 전체 AI Hub Master inventory의 CRS/X-Y source contract 및 좌표 coverage를 확립하지 않는다. 이번 I2는 subset identity evidence를 전체 정적 item feature로 일반화하지 않고 좌표를 사용하지 않는다.
 
 I2는 `TC_SGG`의 AI Hub 2023 행정 코드 체계에 맞춘 광역 시도(2자리)와 시군구(5자리)다. `canonical_admin_sido_name` 및 `canonical_admin_sgg_name`은 사람이 확인하는 코드북 이름이며 입력에는 코드를 사용한다. `region`(`capital`, `west`, `east`, `jeju-islands`)은 데이터·제품의 거친 권역이고, 행정 시군구나 개별 요청의 목적지와 같은 값이 아니다. 요청 target geography는 request context/후보 hard filter에서 별도 공급한다.
 
-학습 item feature는 Master inventory의 정적 근거만으로 생성한다. 방문 행 SGG/address는 train-only 집계 진단에 남기되 I2 모델 입력을 채우거나 덮어쓰지 않으며, inner-validation/VL positive로 자기 위치 특성을 만들지 않는다. 정적 근거가 충돌하거나 모호하면 코드 필드는 null이고 상태와 출처 토큰은 보존된다. AI Hub 정적 좌표의 CRS 및 X/Y 축 의미는 확인되지 않아 좌표, H3, distance는 검증에도 사용하지 않는다.
+학습 item feature는 Master inventory의 정적 근거만으로 생성한다. 방문 행 SGG/address는 train-only 집계 진단에 남기되 I2 모델 입력을 채우거나 덮어쓰지 않으며, inner-validation/VL positive로 자기 위치 특성을 만들지 않는다. 정적 근거가 충돌하거나 모호하면 코드 필드는 null이고 상태와 출처 토큰은 보존된다. 좌표 상태는 `subset_validation_only_not_used`: 과거 anchor subset의 empirical validation은 인정하되 좌표, H3, distance를 이번 전체 inventory I2 정제/feature에 쓰지 않는다.
 
 현재 보류:
 

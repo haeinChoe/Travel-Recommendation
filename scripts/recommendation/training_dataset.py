@@ -151,7 +151,10 @@ def _master_path(other: Path) -> Path:
 def _master_rows(path: Path, admin_lookup: Mapping[str, object]) -> tuple[dict[str, dict[str, str]], Counter[str]]:
     counts: Counter[str] = Counter()
     first: dict[str, dict[str, str]] = {}
-    for row in _read_dicts(path, ("POI_ID", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC")):
+    for row in _read_dicts(path, (
+        "POI_ID", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC",
+        "ROAD_NM_ADDR", "LOTNO_ADDR",
+    )):
         pid = _clean_str(row.get("POI_ID"))
         if not pid:
             continue
@@ -386,7 +389,7 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
                 audit["canonical_location"][region] = {
                     "master_inventory_denominator": len(master_rows),
                     "static_resolution_status_counts": dict(sorted(location_counts.items())),
-                    "coordinate_validation": "unverified_source_crs_and_axis_order; not used",
+                    "coordinate_validation": "historical_anchor_subset_empirical_check; full_inventory_semantics_not_established; not used",
                     "visit_evidence_policy": "diagnostic_only; never fills model feature",
                 }
 
@@ -494,7 +497,7 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
                         "canonical_admin_sido_name": None, "canonical_admin_sgg_name": None,
                         "canonical_admin_location_status": "unavailable",
                         "canonical_admin_provenance": [], "canonical_admin_conflict_sources": [],
-                        "coordinate_validation_status": "unverified_not_used",
+                        "coordinate_validation_status": "subset_validation_only_not_used",
                     })
                     build["VISIT_AREA_TYPE_CODES"].update(
                         validate_code_domain("VISIT_AREA_TYPE_CD", e.get("VISIT_AREA_TYPE_CD"))
@@ -623,7 +626,7 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
                 "canonical_admin_sgg_code": None, "canonical_admin_sido_name": None,
                 "canonical_admin_sgg_name": None, "canonical_admin_location_status": "unavailable",
                 "canonical_admin_provenance": [], "canonical_admin_conflict_sources": [],
-                "coordinate_validation_status": "unverified_not_used"}
+                "coordinate_validation_status": "subset_validation_only_not_used"}
         item_build[key]["split_presence"].add(row["split"])
     item_rows = []
     for key in sorted(item_build):

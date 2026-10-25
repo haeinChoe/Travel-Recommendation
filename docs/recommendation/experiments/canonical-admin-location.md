@@ -15,7 +15,7 @@ AI Hub의 여러 위치 단서를 어떻게 하나의 검증 가능한 행정구
 - Master의 정적 SGG와 정적 주소를 코드북에 대조한다. 유일한 근거만 있으면 해결하고, 서로 다른 코드면 null + `conflict`, 모호한 주소는 null + `ambiguous_address`로 보존한다.
 - visit SGG/address는 train 입력 범위 안에서 감사만 하며 I2를 채우거나 덮어쓰지 않는다. held-out positive가 자기 feature를 만들 수 없다.
 - TN_POI_MASTER 고유 행 전체가 `item_features`의 static inventory에 포함된다. `observed_in_splits=[]`인 train-unseen item도 분류 또는 위치 등 선택한 정적 특성을 제공하면 후보가 될 수 있다.
-- 저장소 문서로 좌표 CRS·X/Y 축 순서를 검증하지 못해 raw coordinate, H3, distance를 정제나 ranking에 사용하지 않는다. `coordinate_validation_status=unverified_not_used`로만 표시한다.
+- 과거 Issue #69 identity 감사는 AI Hub와 TourAPI 좌표가 WGS84 범위에 든다는 사실과 4,279 regional / 4,686 global anchor 사이의 거리 분포를 독립적으로 확인했다(각각 200m 이내 93.11% / 93.45%). 이는 매칭된 anchor subset에 대한 경험적 결과이며, 공식 CRS·X/Y source contract나 전체 Master inventory 좌표의 의미/coverage를 확립하지 않는다. 이번 I2는 기존 raw coordinate/H3/distance 제외 결정을 따르고, 위치 정제나 ranking에 좌표를 사용하지 않는다. `coordinate_validation_status=subset_validation_only_not_used`로 범위를 표시한다.
 
 ## 결정된 필드와 의미
 
@@ -27,7 +27,7 @@ AI Hub의 여러 위치 단서를 어떻게 하나의 검증 가능한 행정구
 | `canonical_admin_sido_name`, `canonical_admin_sgg_name` | 같은 `TC_SGG` 행의 이름 | 점검용 메타데이터 |
 | `canonical_admin_provenance` | 사용된 정적 출처 종류의 목록 | 감사용; 값·주소 원문 없음 |
 | `canonical_admin_conflict_sources` | 해결을 막은 출처 종류 | 감사용; 원시값 없음 |
-| `coordinate_validation_status` | 현재 `unverified_not_used` | 감사용 |
+| `coordinate_validation_status` | 현재 `subset_validation_only_not_used` | 감사용. 과거 anchor subset 검증이 있었으나 전체 정적 inventory를 보증하지 않음 |
 
 행정 granularity는 시도와 시군구다. 시군구명은 일반 행정구역 이름을 codebook 그대로 보존한다. 이 feature는 도로/동 단위 위치, 네 coarse product region, 서비스 요청에서 사용자가 지정한 target region을 뜻하지 않는다. Candidate hard filter는 별도 request geography 계약을 사용한다.
 
@@ -35,7 +35,7 @@ AI Hub의 여러 위치 단서를 어떻게 하나의 검증 가능한 행정구
 
 정적 Master SGG와 주소를 각각 `TC_SGG` 코드와 이름에 독립적으로 대응한 뒤 합친다. 입력 코드가 정확히 유효하거나 10자리 표현에서 후행 5자리가 모두 0일 때만 5자리 prefix를 인정한다. 주소는 명시된 SIDO와 SGG 이름이 codebook 한 행에 정확히 대응할 때만 근거로 인정한다. 동명 SGG가 둘 이상이면 모호하다. 느슨한 fuzzy match, 주소 일부 추측, 좌표 추정은 하지 않는다.
 
-여러 정적 근거가 같은 SGG를 지지하면 해결한다. Master 코드와 주소가 다르거나, 같은 source가 복수 SGG를 가리키거나, 보조 TourAPI 주소/행정 코드가 Master와 다른 코드를 가리키면 `conflict`로 처리하고 canonical 코드를 비운다. 주소 후보가 여러 행정구역에 맞으면 `ambiguous_address`로 처리한다. 유효 위치 근거가 없으면 `unavailable`이다. visit 신호만 있으면 `visit_only_unconfirmed`이며 위치 코드를 발급하지 않는다.
+여러 정적 근거가 같은 SGG를 지지하면 해결한다. Master 코드와 주소가 다르거나, 같은 source가 복수 SGG를 가리키거나, 보조 TourAPI 주소/행정 코드가 Master와 다른 코드를 가리키면 `conflict`로 처리하고 canonical 코드를 비운다. 주소 후보가 여러 행정구역에 맞으면 `ambiguous_address`로 처리한다. 유효 위치 근거가 없으면 `unavailable`이다. Persisted `canonical_admin_location_status`는 `resolved_single_source`, `resolved_multi_source`, `conflict`, `ambiguous_address`, `unavailable` 중 하나다. `visit_only_unconfirmed`는 visit corroboration 진단 상태일 뿐 item feature enum에 포함하지 않는다.
 
 TourAPI snapshot의 주소·행정 필드는 generic resolver의 보조 입력으로 허용한다. 그러나 현재 학습 데이터 생성 경로에는 AI Hub item과 TourAPI `contentid` 사이의 승인된 동일 항목 연결을 공급하지 않으므로 실제 item feature에는 병합하지 않는다. `contentid`/주소 유사성만으로 POI identity를 만들지 않는다. 검증된 연결이 후속으로 제공되면 동일한 concordance 정책을 통과해야 한다.
 
@@ -57,7 +57,7 @@ TourAPI snapshot의 주소·행정 필드는 generic resolver의 보조 입력�
 
 ## 좌표와 privacy
 
-이 코드 경로는 X/Y를 geometry로 해석하지 않고 feature/API에도 내보내지 않는다. CRS와 축 정의가 문서로 확인되기 전에는 좌표쌍의 범위 확인도 성공적 위치 검증으로 주장하지 않는다. 좌표, H3 cell, 거리, `TN_GPS_COORD`는 ranking feature allowlist에서 차단한다. Manifest와 PR에는 원시 ID, 주소, 좌표, 입력 경로 대신 상태 종류와 안전한 합계만 기록한다.
+이 코드 경로는 X/Y를 geometry로 해석하지 않고 feature/API에도 내보내지 않는다. Issue #69의 공개 aggregate는 anchor subset에서 좌표가 WGS84 범위에 들고 거리가 일치했음을 보였지만, 전체 Master inventory의 좌표 source contract와 coverage를 확인한 것은 아니다. 그러므로 subset 결과를 전체 정적 item 위치로 일반화하지 않는다. 좌표, H3 cell, 거리, `TN_GPS_COORD`는 ranking feature allowlist에서 차단한다. Manifest와 PR에는 원시 ID, 주소, 좌표, 입력 경로 대신 상태 종류와 안전한 합계만 기록한다.
 
 ## 재현 및 검증
 

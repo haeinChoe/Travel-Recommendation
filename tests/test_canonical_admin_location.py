@@ -48,7 +48,7 @@ class CanonicalAdminLocationTests(unittest.TestCase):
         self.assertEqual(result.sgg_code, "42110")
         self.assertIn("master_sgg_code", result.provenance)
         self.assertIn("master_address", result.provenance)
-        self.assertEqual(result.coordinate_status, "unverified_not_used")
+        self.assertEqual(result.coordinate_status, "subset_validation_only_not_used")
 
     def test_conflict_and_ambiguity_fail_closed(self) -> None:
         conflict = resolve_canonical_admin_location(

@@ -32,7 +32,7 @@ class CanonicalAdminLocation:
     sgg_name: str | None
     provenance: tuple[str, ...]
     conflict_sources: tuple[str, ...]
-    coordinate_status: str = "unverified_not_used"
+    coordinate_status: str = "subset_validation_only_not_used"
 
 
 def _clean_code(value: object) -> str:

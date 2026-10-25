@@ -45,13 +45,13 @@ def create_fixture(root: Path, *, bad_codebook: tuple[str, str] | None = None,
         master_dir = root / f"{region}-other"
         masters[region] = master_dir / "tn_poi_master_POIMaster_all.csv"
         write_csv(master_dir / "tn_poi_master_POIMaster_all.csv",
-            ["POI_ID", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC"], [
-                {"POI_ID": "POI1", "SGG_CD": "11110", "ASORT_LCLASDC": "L1", "ASORT_MLSFCDC": "M1", "ASORT_SDASDC": "S1"},
-                {"POI_ID": "POI3", "SGG_CD": "11110", "ASORT_LCLASDC": "L3", "ASORT_MLSFCDC": "M3", "ASORT_SDASDC": "S3"},
-                {"POI_ID": "POI5", "SGG_CD": "", "ASORT_LCLASDC": "", "ASORT_MLSFCDC": "", "ASORT_SDASDC": ""},
-                {"POI_ID": "POI6", "SGG_CD": "11200", "ASORT_LCLASDC": "L6", "ASORT_MLSFCDC": "M6", "ASORT_SDASDC": "S6"},
-                {"POI_ID": "POI9", "SGG_CD": "11110", "ASORT_LCLASDC": "L9", "ASORT_MLSFCDC": "M9", "ASORT_SDASDC": "S9"},
-                {"POI_ID": "POI10", "SGG_CD": "11110", "ASORT_LCLASDC": "L10", "ASORT_MLSFCDC": "M10", "ASORT_SDASDC": "S10"},
+            ["POI_ID", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC", "ROAD_NM_ADDR", "LOTNO_ADDR"], [
+                {"POI_ID": "POI1", "SGG_CD": "11110", "ASORT_LCLASDC": "L1", "ASORT_MLSFCDC": "M1", "ASORT_SDASDC": "S1", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
+                {"POI_ID": "POI3", "SGG_CD": "11110", "ASORT_LCLASDC": "L3", "ASORT_MLSFCDC": "M3", "ASORT_SDASDC": "S3", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
+                {"POI_ID": "POI5", "SGG_CD": "", "ASORT_LCLASDC": "", "ASORT_MLSFCDC": "", "ASORT_SDASDC": "", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
+                {"POI_ID": "POI6", "SGG_CD": "11200", "ASORT_LCLASDC": "L6", "ASORT_MLSFCDC": "M6", "ASORT_SDASDC": "S6", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
+                {"POI_ID": "POI9", "SGG_CD": "11110", "ASORT_LCLASDC": "L9", "ASORT_MLSFCDC": "M9", "ASORT_SDASDC": "S9", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
+                {"POI_ID": "POI10", "SGG_CD": "11110", "ASORT_LCLASDC": "L10", "ASORT_MLSFCDC": "M10", "ASORT_SDASDC": "S10", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
             ])
         for split in SPLITS:
             folder = root / f"{region}-{split}"
@@ -73,8 +73,8 @@ def create_fixture(root: Path, *, bad_codebook: tuple[str, str] | None = None,
                 for code, label in VISIT_AREA_TYPE_LABELS.items()]
             write_csv(folder / "tc_codeb.csv", ["cd_a", "cd_b", "cd_nm"], codebook)
             write_csv(folder / "tc_sgg.csv", ["SGG_CD", "SGG_CD1", "SGG_CD2", "SIDO_NM", "SGG_NM"], [
-                {"SGG_CD": "11110", "SGG_CD1": "11", "SGG_CD2": "110", "SIDO_NM": "S", "SGG_NM": "A"},
-                {"SGG_CD": "11200", "SGG_CD1": "11", "SGG_CD2": "200", "SIDO_NM": "S", "SGG_NM": "B"},
+                {"SGG_CD": "11110", "SGG_CD1": "11", "SGG_CD2": "110", "SIDO_NM": "서울특별시", "SGG_NM": "중구"},
+                {"SGG_CD": "11200", "SGG_CD1": "11", "SGG_CD2": "200", "SIDO_NM": "서울특별시", "SGG_NM": "종로구"},
             ])
             visits = [
                 {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V1", "POI_ID": "POI1", "VISIT_AREA_TYPE_CD": "1", "SGG_CD": "11110", "ROAD_NM_ADDR": "street", "LOTNO_ADDR": "", "X_COORD": "1", "Y_COORD": "2"},
@@ -116,6 +116,38 @@ def create_fixture(root: Path, *, bad_codebook: tuple[str, str] | None = None,
 
 
 class TrainingDatasetTests(unittest.TestCase):
+    def test_master_address_only_and_code_address_conflict_reach_output(self) -> None:
+        import duckdb
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            inputs, masters = create_fixture(root)
+            for master_path in masters.values():
+                with master_path.open(encoding="utf-8-sig", newline="") as stream:
+                    rows = list(csv.DictReader(stream))
+                for row in rows:
+                    if row["POI_ID"] == "POI5":
+                        row["ROAD_NM_ADDR"] = "서울특별시 중구 세종대로 1"
+                    elif row["POI_ID"] == "POI6":
+                        row["ROAD_NM_ADDR"] = "서울특별시 중구 세종대로 2"
+                write_csv(master_path, list(rows[0]), rows)
+            output = root / "out"
+            transform(inputs, masters, output, "synthetic-run")
+            con = duckdb.connect()
+            by_address = con.execute(
+                "SELECT canonical_admin_sgg_code, canonical_admin_location_status, canonical_admin_provenance "
+                "FROM read_parquet(?) WHERE canonical_admin_provenance = ['master_address']",
+                [str(output / "item_features.parquet")],
+            ).fetchall()
+            conflicts = con.execute(
+                "SELECT canonical_admin_sgg_code, canonical_admin_location_status, canonical_admin_conflict_sources "
+                "FROM read_parquet(?) WHERE source_category_l1_code = 'L6'",
+                [str(output / "item_features.parquet")],
+            ).fetchall()
+            con.close()
+            self.assertEqual(by_address, [("11110", "resolved_single_source", ["master_address"])] * len(REGIONS))
+            self.assertEqual(conflicts, [(None, "conflict", ["master"])] * len(REGIONS))
+
     def test_mapping_schema_keys_tl_isolation_and_reconciliation(self) -> None:
         import duckdb
 
