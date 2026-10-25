@@ -51,7 +51,8 @@ PENDING_FEATURE_GROUPS = {
     "I2_ADMINISTRATIVE_LOCATION":
         "Issue #81 must define canonical administrative-location columns.",
     "I4_HISTORICAL_POI":
-        "Use Issue #80 event-derived helper; keep disabled until the runner supplies inner-train TL visit events.",
+        "Issue #80's I4 recomputation helper is implemented and tested; "
+        "keep the runner disabled until Issue #82 wires inner-train TL visit events.",
 }
 TRAIN_DERIVED_GROUPS = frozenset({"I3_POPULARITY", "I4_HISTORICAL_POI"})
 CATEGORICAL_COLUMNS = frozenset({
