@@ -1,7 +1,7 @@
 # Cold-user POI ranking 학습·평가 계약
 
 **관련 Issue:** #41, #79, #80, #81, #82, #83
-**현재 상태:** 프로토콜 확정 / 실제 TL·VL 실험 미실행
+**현재 상태:** #80 traveler split·I3/I4 재계산 경계와 #81 I2 계약 반영 완료 / #82 실제 TL inner-validation 실험 대기
 
 ## 이 문서가 답하려는 질문
 
@@ -38,23 +38,23 @@ POI score → Top-K ranking
 - 평가 지표는 NDCG@K, Recall@K, MRR@K, HitRate@K
 - raw 좌표, H3, distance, TN_GPS_COORD는 현재 ranking feature에서 제외
 
-## 실제 데이터로 확인해야 하는 것
+## 확인 완료 및 남은 결정
 
-- TL의 TRAVELER_ID → TRAVEL_ID 분포와 inner split 세부 설정: #80
-- I2 Administrative Location: `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 사용한다. 이름·provenance·충돌 출처는 진단 메타데이터다.
-- I4 Historical POI의 inner-train-safe 재계산 함수 구현: #80; CatBoost runner 입력 연결: #82
+- #80 실제 감사 완료: 네 권역 모두 traveler:trip = 1:1, multi-trip traveler = 0%, seed `issue80-v1`·validation fraction 0.2에서 권역별 inner-train 2,048 / inner-validation 512 traveler와 trip, traveler overlap 0이다.
+- #81 I2 Administrative Location 계약 완료: `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용한다. 실제 AI Hub coverage/conflict/provenance 감사만 후속 입력 확보 후 수행한다.
+- #80 I4 Historical POI의 inner-train-safe 재계산 helper 구현·테스트 완료. 남은 것은 #82 CatBoost runner의 TL visit-event input 연결이다.
 - sampling / feature group / objective의 실제 최종 선택: #82
 - seed 반복 횟수: #82에서 runtime 확인 후 결정
-- bootstrap 단위와 신뢰구간: #83
+- bootstrap: 현재 데이터 기준 trip/request 단위를 기본으로 하고, #83에서 입력 데이터와 traveler identity 전제가 유지되는지 확인한 뒤 신뢰구간 설정을 확정한다.
 
-위 항목은 설계 누락이 아니라 실제 데이터나 실험 결과로 결정하도록 분리한 항목이다.
+남은 항목은 설계 누락이 아니라 #82/#83의 실제 실험 결과로 결정하도록 분리한 항목이다.
 
 ## 다음 행동
 
-1. #79에서 이 계약과 synthetic experiment harness를 구현한다.
-2. #80에서 traveler-trip 분포, traveler group split, inner-train train-derived feature를 검증한다.
-3. #81에서 canonical administrative location을 만든다.
-4. #82에서 TL inner-validation으로 sampling → feature → objective → hyperparameter 순서로 비교한다.
+1. #79 완료: 계약과 synthetic experiment harness를 구현했다.
+2. #80 완료: traveler-trip 분포 감사, traveler group split, inner-train I3/I4 재계산 경계를 구현·검증했다.
+3. #81 완료: canonical administrative location(I2) 계약과 synthetic reconciliation을 구현·검증했다.
+4. **다음 단계 #82:** TL inner-validation으로 runner integration → sampling → feature → objective → hyperparameter 순서로 비교한다.
 5. configuration을 잠근 뒤 #83에서 처음 VL을 평가하고 bootstrap 신뢰구간을 계산한다.
 
 ---
@@ -307,10 +307,10 @@ feature search는 runtime이 충분하면 exhaustive search를 사용한다. 비
 
 bootstrap은 negative sampling이 아니라 최종 metric의 변동성과 신뢰구간을 추정하는 통계 절차다.
 
-#83에서 #80 결과를 다시 확인한다.
+#80 실제 감사 결과는 네 권역 모두 traveler:trip = 1:1, multi-trip traveler = 0%다. 따라서 현재 데이터 기준 #83의 기본 bootstrap 단위는 trip/request다. #83에서는 입력 데이터와 traveler identity 전제가 바뀌지 않았는지만 재확인한다.
 
-- 반복 traveler가 의미 있게 있으면 traveler-cluster bootstrap
-- 사실상 1 traveler = 1 trip이면 trip/request bootstrap
+- 현재 데이터가 유지되면 trip/request bootstrap
+- 향후 반복 traveler가 의미 있게 생기면 traveler-cluster bootstrap으로 전환
 
 ## 11. 해석 한계
 
@@ -335,7 +335,7 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 - CatBoost thin adapter
 - machine-readable default protocol 출력
 
-실제 TL/VL 실행은 #80~#83 범위다.
+#80의 traveler 감사와 #81의 synthetic I2 검증은 완료됐다. 실제 ranking model 실행은 #82의 TL inner-validation과 #83의 untouched VL final evaluation 범위다.
 
 ## 확인된 사실 / 결정 / 한계
 
