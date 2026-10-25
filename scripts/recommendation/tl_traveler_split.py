@@ -44,6 +44,35 @@ def _clean(value: object) -> str | None:
     return result or None
 
 
+def valid_unique_trip_owner_rows(
+    trip_rows: Iterable[Mapping[str, object]],
+    traveler_rows: Iterable[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Match the canonical cohort: unique trips owned by unique traveler-master rows."""
+    traveler_counts = Counter(
+        traveler_id
+        for row in traveler_rows
+        if (traveler_id := _clean(row.get(TRAVELER_KEY)))
+    )
+    unique_travelers = {
+        traveler_id for traveler_id, count in traveler_counts.items() if count == 1
+    }
+    rows_by_trip: dict[str, list[Mapping[str, object]]] = defaultdict(list)
+    for row in trip_rows:
+        trip_id = _clean(row.get(TRIP_KEY))
+        if trip_id:
+            rows_by_trip[trip_id].append(row)
+
+    result = []
+    for trip_id, rows in rows_by_trip.items():
+        if len(rows) != 1:
+            continue
+        traveler_id = _clean(rows[0].get(TRAVELER_KEY))
+        if traveler_id in unique_travelers:
+            result.append({TRIP_KEY: trip_id, TRAVELER_KEY: traveler_id})
+    return result
+
+
 def traveler_trip_distribution(
     trip_rows: Iterable[Mapping[str, object]],
 ) -> tuple[dict[str, object], dict[str, str]]:
@@ -170,7 +199,7 @@ def recompute_inner_train_positive_interaction_count(
         trip_id = _clean(row.get("trip_id", row.get("TRAVEL_ID")))
         item_id = _clean(row.get("item_id", row.get("POI_ID")))
         if not trip_id or not item_id:
-            continue
+            raise ValueError("Inner-train interaction is missing a trip or item key")
         if _clean(row.get("observed_positive", 1)) != "1":
             raise ValueError("Only observed-positive interactions are supported")
         partition = partition_by_trip.get(trip_id)
@@ -237,35 +266,57 @@ def audit_payload(
     seed: str,
     validation_fraction: float,
 ) -> dict[str, object]:
-    """Build a serializable audit containing only aggregate counts and safe metadata."""
+    """Build aggregate-only regional stats with one traveler split shared across all regions."""
+    if set(region_rows) != set(REGION_ENV_PREFIX):
+        raise ValueError("Exactly four TL region inputs are required")
+
+    region_aggregates: dict[str, dict[str, object]] = {}
+    region_trip_keys: dict[str, list[str]] = defaultdict(list)
+    trip_owner: dict[str, str] = {}
+    for region in REGION_ENV_PREFIX:
+        aggregate, owners = traveler_trip_distribution(region_rows[region])
+        region_aggregates[region] = aggregate
+        for trip_id, traveler_id in owners.items():
+            scoped_trip_id = str(len(trip_owner))
+            trip_owner[scoped_trip_id] = traveler_id
+            region_trip_keys[region].append(scoped_trip_id)
+
+    # Group identical TRAVELER_ID values across the full TL pool, including region boundaries.
+    partitions = deterministic_traveler_group_split(
+        trip_owner, seed=seed, validation_fraction=validation_fraction
+    )
+    traveler_overlap = validate_no_traveler_overlap(trip_owner, partitions)
+    traveler_partition: dict[str, str] = {}
+    for trip_id, traveler_id in trip_owner.items():
+        partition = partitions[trip_id]
+        previous = traveler_partition.setdefault(traveler_id, partition)
+        if previous != partition:
+            raise ValueError("Traveler overlap detected across inner partitions")
+
     regions: dict[str, object] = {}
     for region in REGION_ENV_PREFIX:
-        if region not in region_rows:
-            raise ValueError("Exactly four TL region inputs are required")
-        aggregate, owners = traveler_trip_distribution(region_rows[region])
-        partitions = deterministic_traveler_group_split(
-            owners, seed=seed, validation_fraction=validation_fraction
-        )
-        validate_no_traveler_overlap(owners, partitions)
-        traveler_partition: dict[str, str] = {}
-        for trip, traveler in owners.items():
-            partition = partitions[trip]
-            previous = traveler_partition.setdefault(traveler, partition)
-            if previous != partition:
-                raise ValueError("Traveler overlap detected across inner partitions")
-        train_trips = sum(partition == "inner-train" for partition in partitions.values())
-        validation_trips = sum(partition == "inner-validation" for partition in partitions.values())
+        regional_trip_keys = region_trip_keys[region]
+        regional_travelers = {
+            trip_owner[trip_id] for trip_id in regional_trip_keys
+        }
         regions[region] = {
-            **aggregate,
+            **region_aggregates[region],
             "inner_split": {
                 "train_travelers": sum(
-                    partition == "inner-train" for partition in traveler_partition.values()
+                    traveler_partition[traveler] == "inner-train"
+                    for traveler in regional_travelers
                 ),
                 "validation_travelers": sum(
-                    partition == "inner-validation" for partition in traveler_partition.values()
+                    traveler_partition[traveler] == "inner-validation"
+                    for traveler in regional_travelers
                 ),
-                "train_trips": train_trips,
-                "validation_trips": validation_trips,
+                "train_trips": sum(
+                    partitions[trip_id] == "inner-train" for trip_id in regional_trip_keys
+                ),
+                "validation_trips": sum(
+                    partitions[trip_id] == "inner-validation"
+                    for trip_id in regional_trip_keys
+                ),
                 "traveler_overlap": 0,
             },
         }
@@ -273,9 +324,11 @@ def audit_payload(
         "audit_version": 1,
         "split": {
             "unit": "TRAVELER_ID",
+            "group_scope": "all four TL regions",
             "seed": seed,
             "validation_fraction": validation_fraction,
             "partition_names": ["inner-train", "inner-validation"],
+            "traveler_overlap": traveler_overlap,
         },
         "regions": regions,
         "privacy": {
@@ -285,25 +338,35 @@ def audit_payload(
         },
     }
 
-
-def _find_travel_csv(folder: Path) -> Path:
+def _find_table_csv(folder: Path, table_name: str) -> Path:
+    token = table_name.casefold()
     matches = [
         path for path in folder.glob("*.csv")
-        if "tn_travel" in path.name.casefold()
-        and "traveller" not in path.name.casefold()
-        and not path.is_symlink()
+        if token in path.name.casefold() and not path.is_symlink()
     ]
+    if table_name == "TN_TRAVEL":
+        matches = [path for path in matches if "traveller" not in path.name.casefold()]
     if len(matches) != 1:
-        raise ValueError("Each TL binding must contain exactly one TN_TRAVEL CSV")
+        raise ValueError(f"Each TL binding must contain exactly one {table_name} CSV")
     return matches[0]
 
 
-def _read_trip_rows(path: Path) -> list[dict[str, str]]:
+def _read_csv_rows(path: Path, required_columns: frozenset[str]) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", errors="strict", newline="") as stream:
         reader = csv.DictReader(stream)
-        if not reader.fieldnames or not TRIP_COLUMNS <= set(reader.fieldnames):
-            raise ValueError("TN_TRAVEL must include TRAVEL_ID and TRAVELER_ID")
-        return list(reader)
+        if not reader.fieldnames or any(not name.strip() for name in reader.fieldnames):
+            raise ValueError("Malformed TL source table header")
+        reader.fieldnames = [name.strip() for name in reader.fieldnames]
+        if len(set(reader.fieldnames)) != len(reader.fieldnames):
+            raise ValueError("Duplicate TL source table column")
+        if not required_columns <= set(reader.fieldnames):
+            raise ValueError("Required columns are missing from a TL source table")
+        rows = []
+        for row in reader:
+            if None in row or any(value is None for value in row.values()):
+                raise ValueError("Malformed TL source table row")
+            rows.append({str(key).strip(): value for key, value in row.items() if key is not None})
+        return rows
 
 
 class _SafeArgumentParser(argparse.ArgumentParser):
@@ -330,7 +393,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             value = os.environ.get(f"{prefix}_TL")
             if not value:
                 raise ValueError("Missing TL input binding")
-            region_rows[region] = _read_trip_rows(_find_travel_csv(Path(value)))
+            trip_rows = _read_csv_rows(
+                _find_table_csv(Path(value), "TN_TRAVEL"),
+                frozenset({TRIP_KEY, TRAVELER_KEY}),
+            )
+            traveler_rows = _read_csv_rows(
+                _find_table_csv(Path(value), "TN_TRAVELLER_MASTER"),
+                frozenset({TRAVELER_KEY}),
+            )
+            region_rows[region] = valid_unique_trip_owner_rows(trip_rows, traveler_rows)
         result = audit_payload(
             region_rows,
             seed=args.seed,

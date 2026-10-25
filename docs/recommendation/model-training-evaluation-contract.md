@@ -161,9 +161,9 @@ VL metric을 보고 feature, sampling, objective, hyperparameter를 다시 고�
 
 cold-user 문제이므로 기본 원칙은 TRAVELER_ID 기준 group split이다.
 
-같은 traveler의 모든 trip은 inner-train 또는 inner-validation 한쪽에만 둔다. #80 구현은 traveler ID와 seed의 SHA-256 정렬 순서에서 validation traveler를 선택하는 결정론적 group split을 제공한다. seed와 validation 비율은 재현 metadata에 남기며 기본값은 `issue80-v1`과 0.2다. 한 traveler만 있거나 split 비율이 유효하지 않으면 분할을 실패 처리한다. split map은 메모리에서만 유지하고 overlap이 0인지 검사한다.
+같은 traveler의 모든 trip은 inner-train 또는 inner-validation 한쪽에만 둔다. #80 구현은 4개 TL을 합친 traveler ID와 seed의 SHA-256 정렬 순서에서 validation traveler를 선택하는 결정론적 group split을 제공한다. seed와 validation 비율은 재현 metadata에 남기며 기본값은 `issue80-v1`과 0.2다. 한 traveler만 있거나 split 비율이 유효하지 않으면 분할을 실패 처리한다. split map은 메모리에서만 유지하고 권역 간을 포함한 traveler overlap이 0인지 검사한다. 분포와 split에는 유일한 `TRAVEL_ID` 및 유일한 `TN_TRAVELLER_MASTER.TRAVELER_ID` 연결만 사용한다.
 
-4개 권역의 실제 traveler-trip aggregate는 이 실행 환경에서 아직 산출하지 않았다. `scripts/recommendation/tl_traveler_split.py`의 CLI와 synthetic fixture는 준비되어 있으며, 실제 분포를 확인하기 전까지 traveler당 trip 분포에 대한 경험적 결론은 미정이다.
+4개 권역의 실제 traveler-trip aggregate와 synthetic 테스트는 이 실행 환경에서 실행하지 않았다. `scripts/recommendation/tl_traveler_split.py` CLI와 테스트 코드는 준비되어 있지만, 실제 분포를 확인하기 전까지 traveler당 trip 분포에 대한 경험적 결론은 미정이다.
 
 ### 3.3 train-derived feature의 inner split 누수
 
