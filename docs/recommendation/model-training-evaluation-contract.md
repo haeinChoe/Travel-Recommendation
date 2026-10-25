@@ -161,7 +161,9 @@ VL metric을 보고 feature, sampling, objective, hyperparameter를 다시 고�
 
 cold-user 문제이므로 기본 원칙은 TRAVELER_ID 기준 group split이다.
 
-같은 traveler의 모든 trip은 inner-train 또는 inner-validation 한쪽에만 둔다. 실제 traveler당 trip 분포와 split seed/ratio는 #80에서 확인한다.
+같은 traveler의 모든 trip은 inner-train 또는 inner-validation 한쪽에만 둔다. #80 구현은 traveler ID와 seed의 SHA-256 정렬 순서에서 validation traveler를 선택하는 결정론적 group split을 제공한다. seed와 validation 비율은 재현 metadata에 남기며 기본값은 `issue80-v1`과 0.2다. 한 traveler만 있거나 split 비율이 유효하지 않으면 분할을 실패 처리한다. split map은 메모리에서만 유지하고 overlap이 0인지 검사한다.
+
+4개 권역의 실제 traveler-trip aggregate는 이 실행 환경에서 아직 산출하지 않았다. `scripts/recommendation/tl_traveler_split.py`의 CLI와 synthetic fixture는 준비되어 있으며, 실제 분포를 확인하기 전까지 traveler당 trip 분포에 대한 경험적 결론은 미정이다.
 
 ### 3.3 train-derived feature의 inner split 누수
 
@@ -179,7 +181,7 @@ cold-user 문제이므로 기본 원칙은 TRAVELER_ID 기준 group split이다.
 
 popularity-weighted / mixed sampling의 popularity와 hard sampling의 score도 inner-train 정보만 사용한다.
 
-현재 canonical trip_item_interaction.parquet에는 visit type이 없으므로 I4를 그 파일만으로 재계산할 수 없다. #80에서 안전한 파생 경계를 구현하기 전까지 #79 harness는 I4를 pending으로 처리한다.
+canonical `trip_item_interaction.parquet`에는 visit type이 없어 그 파일만으로 I4를 재계산할 수 없다. #80 helper는 같은 TL의 `TN_VISIT_AREA_INFO` 이벤트를 inner-train 여행에 한정해 읽고, 관광 핵심 방문이 있는 trip-item의 유효 `VISIT_AREA_TYPE_CD`를 집계한다. 방문 이벤트 입력이 없으면 `I4SourceUnavailableError`로 fail-closed한다. 후속 ranking runner는 이 helper의 결과를 사용해야 하며 canonical full-TL I4 값을 inner-validation에 제공하면 안 된다. 현재 #79 harness는 raw visit-event 입력 인터페이스가 없어 I4를 계속 pending/disabled로 둔다.
 
 ## 4. Feature Group v1
 
@@ -335,7 +337,8 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 
 - canonical interaction에는 observed positive만 저장된다.
 - 현재 I3/I4 값은 outer TL 전체 기준이다.
-- canonical interaction만으로 I4를 inner-train 기준으로 다시 만들 정보는 부족하다.
+- canonical interaction만으로 I4를 inner-train 기준으로 다시 만들 정보는 부족하지만, canonical schema가 지정한 `TN_VISIT_AREA_INFO.VISIT_AREA_TYPE_CD` 원천 이벤트는 필요한 trip/item/type 경계를 제공한다. #80 helper는 이 이벤트 경로를 사용한다.
+- 실제 4개 권역 traveler-trip 집계는 현재 구현 환경에서 실행되지 않았다. 결과 숫자를 추정하지 않는다.
 
 ### 결정
 

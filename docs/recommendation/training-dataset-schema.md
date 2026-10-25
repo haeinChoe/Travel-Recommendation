@@ -69,6 +69,14 @@ Parquet null 제약은 변환 검증과 이 문서로 보장한다. “필수”
 
 원천 `TL`/`VL` 역할 표시는 파일 선택과 감사 집계에서만 쓴다. Parquet split 값과 `observed_in_splits`에는 `train`/`validation`만 허용한다. 아이템의 train-derived 값은 TL 입력에서만 만든다. validation을 `train_positive_interaction_count`나 `train_observed_visit_type_codes` 생성에 포함하면 누수다.
 
+### TL 내부 개발 분할과 재계산 (Issue #80)
+
+표준 Parquet의 `train`/`validation`은 outer TL/VL 역할을 계속 나타낸다. cold-user tuning용 inner split은 `TRAVELER_ID`를 기준으로 같은 여행자의 모든 `TRAVEL_ID`를 한 partition에 배정하며, raw ID와 경로는 메모리 안에서만 사용한다. `scripts/recommendation/tl_traveler_split.py`는 seed와 validation 비율을 받아 결정론적으로 나누고, 여행자 overlap을 검사한다. 기본 설정은 seed `issue80-v1`, validation 비율 0.2다.
+
+inner split 뒤 I3 `train_positive_interaction_count`는 outer TL의 고유 양성 trip-item interaction 중 inner-train 여행만 세어 다시 만든다. I4 `train_observed_visit_type_codes`는 canonical `trip_item_interaction.parquet`에서 가져오지 않는다. 해당 파일에는 방문 유형이 없기 때문이다. 대신 같은 TL 원천의 `TN_VISIT_AREA_INFO.TRAVEL_ID`, `POI_ID`, `VISIT_AREA_TYPE_CD` 이벤트를 inner-train 여행과 연결해 재계산한다. 최소 하나의 관광 핵심 방문 이벤트가 있는 trip-item만 item feature 대상이 되며, 이 쌍의 유효 방문유형 코드를 모은다. 원천 이벤트를 사용할 수 없으면 I4를 추정하지 않고 `I4SourceUnavailableError`로 중단한다.
+
+이 내부 분할 규칙은 기존 Parquet의 스키마나 값 의미를 바꾸지 않는다. outer-TL 전체에서 계산된 canonical I3/I4는 TL 내부 tuning에 재사용하지 않으며, outer TL→VL 최종 학습에만 사용한다. 실제 4개 권역 분포 감사는 이 실행 환경에서 수행하지 않았고, synthetic 검증만 완료했다.
+
 ## 원천→표준 컬럼 매핑
 
 다음 표는 원천 시스템 이름을 보존하는 유일한 데이터 의미 매핑이다. 출력 Parquet에는 원천 대문자 컬럼명을 그대로 내보내지 않는다.
