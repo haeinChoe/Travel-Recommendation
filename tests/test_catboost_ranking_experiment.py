@@ -14,6 +14,7 @@ from scripts.recommendation.catboost_ranking_experiment import (
     DEFAULT_OBJECTIVE,
     DEFAULT_POPULARITY_SMOOTHING,
     FEATURE_GROUPS,
+    PENDING_FEATURE_GROUPS,
     ExperimentConfig,
     SamplingStrategy,
     available_feature_groups,
@@ -53,6 +54,8 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
         )
         self.assertIn("I2_ADMINISTRATIVE_LOCATION", available_feature_groups())
         self.assertNotIn("I4_HISTORICAL_POI", available_feature_groups())
+        self.assertIn("implemented and tested", PENDING_FEATURE_GROUPS["I4_HISTORICAL_POI"])
+        self.assertIn("Issue #82", PENDING_FEATURE_GROUPS["I4_HISTORICAL_POI"])
         self.assertEqual(
             FEATURE_GROUPS["I2_ADMINISTRATIVE_LOCATION"],
             (
