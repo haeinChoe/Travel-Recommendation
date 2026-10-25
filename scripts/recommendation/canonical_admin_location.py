@@ -8,8 +8,8 @@ held-out positive cannot create or change its own item feature.
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Mapping, Sequence
 
 from scripts.recommendation.address_key_parser import normalize_sido, normalize_text_clean
 

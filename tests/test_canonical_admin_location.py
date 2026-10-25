@@ -10,7 +10,6 @@ from scripts.recommendation.canonical_admin_location import (
     resolve_canonical_admin_location,
 )
 
-
 LOOKUP = build_admin_lookup([
     {"SGG_CD": "11110", "SGG_CD1": "11", "SGG_CD2": "110",
      "SIDO_NM": "서울", "SGG_NM": "중구"},
@@ -33,7 +32,10 @@ class CanonicalAdminLocationTests(unittest.TestCase):
         self.assertIsNone(normalize_aihub_sgg_code("111100000000", LOOKUP))
 
     def test_address_requires_unique_exact_sgg_name_under_sido(self) -> None:
-        self.assertEqual(address_admin_codes("서울특별시 중구 세종대로 1", LOOKUP), ("11110", "11140"))
+        self.assertEqual(
+            address_admin_codes("서울특별시 중구 세종대로 1", LOOKUP),
+            ("11110", "11140"),
+        )
         self.assertEqual(address_admin_codes("경기도 수원시 장안구 정조로 1", LOOKUP), ("41110",))
         self.assertEqual(address_admin_codes("강원특별자치도 춘천시 중앙로 1", LOOKUP), ("42110",))
         self.assertEqual(address_admin_codes("서울특별시 종로구 세종대로 1", LOOKUP), ())
@@ -52,7 +54,9 @@ class CanonicalAdminLocationTests(unittest.TestCase):
 
     def test_conflict_and_ambiguity_fail_closed(self) -> None:
         conflict = resolve_canonical_admin_location(
-            lookup=LOOKUP, master_sgg_codes=("11110",), master_addresses=("경기도 수원시 장안구 정조로 1",)
+            lookup=LOOKUP,
+            master_sgg_codes=("11110",),
+            master_addresses=("경기도 수원시 장안구 정조로 1",),
         )
         self.assertEqual(conflict.status, "conflict")
         self.assertIsNone(conflict.sgg_code)
@@ -85,7 +89,10 @@ class CanonicalAdminLocationTests(unittest.TestCase):
             canonical_sgg_code=None, visit_sgg_codes=("11110",), visit_addresses=(), lookup=LOOKUP
         ), "visit_only_unconfirmed")
         self.assertEqual(compare_visit_location(
-            canonical_sgg_code="11110", visit_sgg_codes=("41110",), visit_addresses=(), lookup=LOOKUP
+            canonical_sgg_code="11110",
+            visit_sgg_codes=("41110",),
+            visit_addresses=(),
+            lookup=LOOKUP,
         ), "conflicts_with_static")
 
     def test_validation_positive_cannot_change_static_feature(self) -> None:
