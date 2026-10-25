@@ -45,12 +45,13 @@ from scripts.recommendation.training_data_contract import (
     COMPANION_FEATURES,
 )
 from scripts.recommendation.sgg_crosswalk import SggCrosswalk
-from scripts.recommendation.canonical_admin_location import (
+from scripts.recommendation.canonical_admin_location import (  # noqa: E402
+    AdminArea,
     build_admin_lookup,
     compare_visit_location,
     normalize_aihub_sgg_code,
     resolve_canonical_admin_location,
-)
+)  # noqa: E402
 
 DEFAULT_OUTPUT = REPO_ROOT / "data" / "processed" / "training-dataset"
 MODEL_FEATURE_ALLOWLIST = frozenset(
@@ -148,7 +149,9 @@ def _master_path(other: Path) -> Path:
     return target
 
 
-def _master_rows(path: Path, admin_lookup: Mapping[str, object]) -> tuple[dict[str, dict[str, str]], Counter[str]]:
+def _master_rows(
+    path: Path, admin_lookup: Mapping[str, AdminArea]
+) -> tuple[dict[str, dict[str, str]], Counter[str]]:
     counts: Counter[str] = Counter()
     first: dict[str, dict[str, str]] = {}
     for row in _read_dicts(path, (
@@ -353,8 +356,13 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
                     if code: sgg_codes.add(code)
             if not sgg_codes:
                 raise ValueError(f"TC_SGG missing in {region}:{split}")
-            sgg_rows = [row for p in tc_sgg_files
-                        for row in _read_dicts(p, ("SGG_CD", "SGG_CD1", "SGG_CD2", "SIDO_NM", "SGG_NM"))]
+            sgg_rows = [
+                row
+                for p in tc_sgg_files
+                for row in _read_dicts(
+                    p, ("SGG_CD", "SGG_CD1", "SGG_CD2", "SIDO_NM", "SGG_NM")
+                )
+            ]
             admin_lookup = build_admin_lookup(sgg_rows)
             if not admin_lookup:
                 raise ValueError(f"TC_SGG has no usable administrative names in {region}:{split}")
@@ -389,7 +397,10 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
                 audit["canonical_location"][region] = {
                     "master_inventory_denominator": len(master_rows),
                     "static_resolution_status_counts": dict(sorted(location_counts.items())),
-                    "coordinate_validation": "historical_anchor_subset_empirical_check; full_inventory_semantics_not_established; not used",
+                    "coordinate_validation": (
+                        "historical_anchor_subset_empirical_check; "
+                        "full_inventory_semantics_not_established; not used"
+                    ),
                     "visit_evidence_policy": "diagnostic_only; never fills model feature",
                 }
 
@@ -485,7 +496,6 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
                 trip_key = surrogate_key(run_id, "trip", region, positive.travel_id)
                 item_key = surrogate_key(run_id, "item", region, positive.poi_id)
                 evs = by_pair[(positive.travel_id, positive.poi_id)]
-                core_events = [e for e in evs if (validate_code_domain("VISIT_AREA_TYPE_CD", e.get("VISIT_AREA_TYPE_CD")) in TOURISM_CORE_VISIT_AREA_TYPES)]
                 # Only TL rows can populate item-derived values. VL can only link to an existing key.
                 if split == "TL":
                     build = item_build.setdefault((region, item_key), {
@@ -641,7 +651,9 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
             "canonical_admin_sgg_name": item["canonical_admin_sgg_name"],
             "canonical_admin_location_status": item["canonical_admin_location_status"],
             "canonical_admin_provenance": sorted(set(item["canonical_admin_provenance"])),
-            "canonical_admin_conflict_sources": sorted(set(item["canonical_admin_conflict_sources"])),
+            "canonical_admin_conflict_sources": sorted(
+                set(item["canonical_admin_conflict_sources"])
+            ),
             "coordinate_validation_status": item["coordinate_validation_status"],
             "source_category_l1_code": item["ASORT_LCLASDC"],
             "source_category_l2_code": item["ASORT_MLSFCDC"],
@@ -652,8 +664,18 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
     interaction_rows.sort(key=lambda r: (r["region"], r["split"], r["trip_key"], r["item_key"]))
     item_rows.sort(key=lambda r: (r["region"], r["item_key"]))
     validate_dataset_keys(context_rows, item_rows, interaction_rows)
-    context_features = set(MODEL_FEATURE_ALLOWLIST) - {"train_observed_visit_type_codes", "canonical_admin_sido_code", "canonical_admin_sgg_code", "canonical_admin_location_status", "source_category_l1_code", "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"}
-    item_features = {"region", "train_observed_visit_type_codes", "canonical_admin_sido_code", "canonical_admin_sgg_code", "canonical_admin_location_status", "source_category_l1_code", "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"}
+    item_only_features = {
+        "train_observed_visit_type_codes",
+        "canonical_admin_sido_code",
+        "canonical_admin_sgg_code",
+        "canonical_admin_location_status",
+        "source_category_l1_code",
+        "source_category_l2_code",
+        "source_category_l3_code",
+        "train_positive_interaction_count",
+    }
+    context_features = set(MODEL_FEATURE_ALLOWLIST) - item_only_features
+    item_features = {"region", *item_only_features}
     validate_feature_allowlist(context_features | item_features)
     output_dir.mkdir(parents=True, exist_ok=True)
     import duckdb
@@ -670,22 +692,29 @@ def transform(inputs: Mapping[tuple[str, str], Path], masters: Mapping[str, Path
         _parquet(con, output_dir / "item_features.parquet", item_rows,
             "SELECT CAST(NULL AS VARCHAR) item_key, CAST(NULL AS VARCHAR) region, CAST(NULL AS VARCHAR[]) observed_in_splits, "
             "CAST(NULL AS VARCHAR[]) train_observed_visit_type_codes, "
-            "CAST(NULL AS VARCHAR) canonical_admin_sido_code, CAST(NULL AS VARCHAR) canonical_admin_sgg_code, "
-            "CAST(NULL AS VARCHAR) canonical_admin_sido_name, CAST(NULL AS VARCHAR) canonical_admin_sgg_name, "
+            "CAST(NULL AS VARCHAR) canonical_admin_sido_code, "
+            "CAST(NULL AS VARCHAR) canonical_admin_sgg_code, "
+            "CAST(NULL AS VARCHAR) canonical_admin_sido_name, "
+            "CAST(NULL AS VARCHAR) canonical_admin_sgg_name, "
             "CAST(NULL AS VARCHAR) canonical_admin_location_status, "
-            "CAST(NULL AS VARCHAR[]) canonical_admin_provenance, CAST(NULL AS VARCHAR[]) canonical_admin_conflict_sources, "
+            "CAST(NULL AS VARCHAR[]) canonical_admin_provenance, "
+            "CAST(NULL AS VARCHAR[]) canonical_admin_conflict_sources, "
             "CAST(NULL AS VARCHAR) coordinate_validation_status, "
             "CAST(NULL AS VARCHAR) source_category_l1_code, CAST(NULL AS VARCHAR) source_category_l2_code, "
             "CAST(NULL AS VARCHAR) source_category_l3_code, CAST(NULL AS BIGINT) train_positive_interaction_count WHERE FALSE")
         _parquet(con, output_dir / "trip_item_interaction.parquet", interaction_rows,
-            "SELECT CAST(NULL AS VARCHAR) trip_key, CAST(NULL AS VARCHAR) item_key, CAST(NULL AS VARCHAR) region, "
+            "SELECT CAST(NULL AS VARCHAR) trip_key, CAST(NULL AS VARCHAR) item_key, "
+            "CAST(NULL AS VARCHAR) region, "
             "CAST(NULL AS VARCHAR) split, CAST(NULL AS INTEGER) observed_positive, "
             "CAST(NULL AS BIGINT) repeat_visit_count WHERE FALSE")
     finally:
         con.close()
     payload = {
         "generated_at_utc": datetime.now(UTC).isoformat(),
-        "dataset_type": "travel-recommendation-training", "schema_version": "2.0", "contract_version": "2.0", "outputs": {"trip_context": len(context_rows),
+        "dataset_type": "travel-recommendation-training",
+        "schema_version": "2.0",
+        "contract_version": "2.0",
+        "outputs": {"trip_context": len(context_rows),
             "item_features": len(item_rows), "trip_item_interaction": len(interaction_rows)},
         "feature_allowlist": sorted(MODEL_FEATURE_ALLOWLIST), "codebook_splits_verified": 8,
         "codebook_digest_count": len(codebook_digest), "sgg_audit": audit,

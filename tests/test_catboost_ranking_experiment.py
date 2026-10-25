@@ -55,7 +55,11 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
         self.assertNotIn("I4_HISTORICAL_POI", available_feature_groups())
         self.assertEqual(
             FEATURE_GROUPS["I2_ADMINISTRATIVE_LOCATION"],
-            ("canonical_admin_sido_code", "canonical_admin_sgg_code", "canonical_admin_location_status"),
+            (
+                "canonical_admin_sido_code",
+                "canonical_admin_sgg_code",
+                "canonical_admin_location_status",
+            ),
         )
         ExperimentConfig(("I2_ADMINISTRATIVE_LOCATION",)).validate()
         with self.assertRaisesRegex(ValueError, "Issue #80"):
@@ -84,11 +88,19 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
         config = ExperimentConfig(("I2_ADMINISTRATIVE_LOCATION",))
         self.assertEqual(
             selected_feature_columns(config),
-            ("canonical_admin_sido_code", "canonical_admin_sgg_code", "canonical_admin_location_status"),
+            (
+                "canonical_admin_sido_code",
+                "canonical_admin_sgg_code",
+                "canonical_admin_location_status",
+            ),
         )
         self.assertEqual(
             categorical_feature_columns(config),
-            ("canonical_admin_sido_code", "canonical_admin_sgg_code", "canonical_admin_location_status"),
+            (
+                "canonical_admin_sido_code",
+                "canonical_admin_sgg_code",
+                "canonical_admin_location_status",
+            ),
         )
 
     def test_popularity_transform_and_historical_normalization(self) -> None:

@@ -45,13 +45,26 @@ def create_fixture(root: Path, *, bad_codebook: tuple[str, str] | None = None,
         master_dir = root / f"{region}-other"
         masters[region] = master_dir / "tn_poi_master_POIMaster_all.csv"
         write_csv(master_dir / "tn_poi_master_POIMaster_all.csv",
-            ["POI_ID", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC", "ROAD_NM_ADDR", "LOTNO_ADDR"], [
-                {"POI_ID": "POI1", "SGG_CD": "11110", "ASORT_LCLASDC": "L1", "ASORT_MLSFCDC": "M1", "ASORT_SDASDC": "S1", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
-                {"POI_ID": "POI3", "SGG_CD": "11110", "ASORT_LCLASDC": "L3", "ASORT_MLSFCDC": "M3", "ASORT_SDASDC": "S3", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
-                {"POI_ID": "POI5", "SGG_CD": "", "ASORT_LCLASDC": "", "ASORT_MLSFCDC": "", "ASORT_SDASDC": "", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
-                {"POI_ID": "POI6", "SGG_CD": "11200", "ASORT_LCLASDC": "L6", "ASORT_MLSFCDC": "M6", "ASORT_SDASDC": "S6", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
-                {"POI_ID": "POI9", "SGG_CD": "11110", "ASORT_LCLASDC": "L9", "ASORT_MLSFCDC": "M9", "ASORT_SDASDC": "S9", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
-                {"POI_ID": "POI10", "SGG_CD": "11110", "ASORT_LCLASDC": "L10", "ASORT_MLSFCDC": "M10", "ASORT_SDASDC": "S10", "ROAD_NM_ADDR": "", "LOTNO_ADDR": ""},
+            ["POI_ID", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC",
+             "ROAD_NM_ADDR", "LOTNO_ADDR"], [
+                {"POI_ID": "POI1", "SGG_CD": "11110", "ASORT_LCLASDC": "L1",
+                 "ASORT_MLSFCDC": "M1", "ASORT_SDASDC": "S1", "ROAD_NM_ADDR": "",
+                 "LOTNO_ADDR": ""},
+                {"POI_ID": "POI3", "SGG_CD": "11110", "ASORT_LCLASDC": "L3",
+                 "ASORT_MLSFCDC": "M3", "ASORT_SDASDC": "S3", "ROAD_NM_ADDR": "",
+                 "LOTNO_ADDR": ""},
+                {"POI_ID": "POI5", "SGG_CD": "", "ASORT_LCLASDC": "",
+                 "ASORT_MLSFCDC": "", "ASORT_SDASDC": "", "ROAD_NM_ADDR": "",
+                 "LOTNO_ADDR": ""},
+                {"POI_ID": "POI6", "SGG_CD": "11200", "ASORT_LCLASDC": "L6",
+                 "ASORT_MLSFCDC": "M6", "ASORT_SDASDC": "S6", "ROAD_NM_ADDR": "",
+                 "LOTNO_ADDR": ""},
+                {"POI_ID": "POI9", "SGG_CD": "11110", "ASORT_LCLASDC": "L9",
+                 "ASORT_MLSFCDC": "M9", "ASORT_SDASDC": "S9", "ROAD_NM_ADDR": "",
+                 "LOTNO_ADDR": ""},
+                {"POI_ID": "POI10", "SGG_CD": "11110", "ASORT_LCLASDC": "L10",
+                 "ASORT_MLSFCDC": "M10", "ASORT_SDASDC": "S10", "ROAD_NM_ADDR": "",
+                 "LOTNO_ADDR": ""},
             ])
         for split in SPLITS:
             folder = root / f"{region}-{split}"
@@ -73,8 +86,10 @@ def create_fixture(root: Path, *, bad_codebook: tuple[str, str] | None = None,
                 for code, label in VISIT_AREA_TYPE_LABELS.items()]
             write_csv(folder / "tc_codeb.csv", ["cd_a", "cd_b", "cd_nm"], codebook)
             write_csv(folder / "tc_sgg.csv", ["SGG_CD", "SGG_CD1", "SGG_CD2", "SIDO_NM", "SGG_NM"], [
-                {"SGG_CD": "11110", "SGG_CD1": "11", "SGG_CD2": "110", "SIDO_NM": "서울특별시", "SGG_NM": "중구"},
-                {"SGG_CD": "11200", "SGG_CD1": "11", "SGG_CD2": "200", "SIDO_NM": "서울특별시", "SGG_NM": "종로구"},
+                {"SGG_CD": "11110", "SGG_CD1": "11", "SGG_CD2": "110",
+                 "SIDO_NM": "서울특별시", "SGG_NM": "중구"},
+                {"SGG_CD": "11200", "SGG_CD1": "11", "SGG_CD2": "200",
+                 "SIDO_NM": "서울특별시", "SGG_NM": "종로구"},
             ])
             visits = [
                 {"TRAVEL_ID": "RAW_TRIP", "VISIT_AREA_ID": "V1", "POI_ID": "POI1", "VISIT_AREA_TYPE_CD": "1", "SGG_CD": "11110", "ROAD_NM_ADDR": "street", "LOTNO_ADDR": "", "X_COORD": "1", "Y_COORD": "2"},
@@ -135,17 +150,22 @@ class TrainingDatasetTests(unittest.TestCase):
             transform(inputs, masters, output, "synthetic-run")
             con = duckdb.connect()
             by_address = con.execute(
-                "SELECT canonical_admin_sgg_code, canonical_admin_location_status, canonical_admin_provenance "
+                "SELECT canonical_admin_sgg_code, canonical_admin_location_status, "
+                "canonical_admin_provenance "
                 "FROM read_parquet(?) WHERE canonical_admin_provenance = ['master_address']",
                 [str(output / "item_features.parquet")],
             ).fetchall()
             conflicts = con.execute(
-                "SELECT canonical_admin_sgg_code, canonical_admin_location_status, canonical_admin_conflict_sources "
+                "SELECT canonical_admin_sgg_code, canonical_admin_location_status, "
+                "canonical_admin_conflict_sources "
                 "FROM read_parquet(?) WHERE source_category_l1_code = 'L6'",
                 [str(output / "item_features.parquet")],
             ).fetchall()
             con.close()
-            self.assertEqual(by_address, [("11110", "resolved_single_source", ["master_address"])] * len(REGIONS))
+            self.assertEqual(
+                by_address,
+                [("11110", "resolved_single_source", ["master_address"])] * len(REGIONS),
+            )
             self.assertEqual(conflicts, [(None, "conflict", ["master"])] * len(REGIONS))
 
     def test_mapping_schema_keys_tl_isolation_and_reconciliation(self) -> None:
@@ -165,8 +185,18 @@ class TrainingDatasetTests(unittest.TestCase):
             interactions = con.execute("SELECT * FROM read_parquet(?)", [str(output / "trip_item_interaction.parquet")]).fetchall()
             ctx_schema = {r[0]: r[1] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(output / "trip_context.parquet")]).fetchall()}
             interaction_columns = {r[0] for r in con.execute("DESCRIBE SELECT * FROM read_parquet(?)", [str(output / "trip_item_interaction.parquet")]).fetchall()}
-            unseen_static = con.execute("SELECT source_category_l1_code, canonical_admin_sgg_code, observed_in_splits, train_positive_interaction_count FROM read_parquet(?) WHERE source_category_l1_code = 'L9'", [str(output / "item_features.parquet")]).fetchall()
-            vl_only = con.execute("SELECT canonical_admin_sgg_code, canonical_admin_location_status, observed_in_splits FROM read_parquet(?) WHERE observed_in_splits = ['validation']", [str(output / "item_features.parquet")]).fetchall()
+            unseen_static = con.execute(
+                "SELECT source_category_l1_code, canonical_admin_sgg_code, observed_in_splits, "
+                "train_positive_interaction_count FROM read_parquet(?) "
+                "WHERE source_category_l1_code = 'L9'",
+                [str(output / "item_features.parquet")],
+            ).fetchall()
+            vl_only = con.execute(
+                "SELECT canonical_admin_sgg_code, canonical_admin_location_status, "
+                "observed_in_splits "
+                "FROM read_parquet(?) WHERE observed_in_splits = ['validation']",
+                [str(output / "item_features.parquet")],
+            ).fetchall()
             con.close()
             self.assertEqual(schema["train_observed_visit_type_codes"], "VARCHAR[]")
             self.assertEqual(schema["train_positive_interaction_count"], "BIGINT")
@@ -176,11 +206,18 @@ class TrainingDatasetTests(unittest.TestCase):
             self.assertEqual(manifest["dataset_type"], "travel-recommendation-training")
             self.assertEqual(manifest["schema_version"], "2.0")
             self.assertEqual(manifest["contract_version"], "2.0")
-            self.assertEqual(set(columns), {"item_key", "region", "observed_in_splits", "train_observed_visit_type_codes",
-                "canonical_admin_sido_code", "canonical_admin_sgg_code", "canonical_admin_sido_name",
-                "canonical_admin_sgg_name", "canonical_admin_location_status", "canonical_admin_provenance",
-                "canonical_admin_conflict_sources", "coordinate_validation_status", "source_category_l1_code",
-                "source_category_l2_code", "source_category_l3_code", "train_positive_interaction_count"})
+            self.assertEqual(
+                set(columns),
+                {
+                    "item_key", "region", "observed_in_splits", "train_observed_visit_type_codes",
+                    "canonical_admin_sido_code", "canonical_admin_sgg_code",
+                    "canonical_admin_sido_name", "canonical_admin_sgg_name",
+                    "canonical_admin_location_status", "canonical_admin_provenance",
+                    "canonical_admin_conflict_sources", "coordinate_validation_status",
+                    "source_category_l1_code", "source_category_l2_code", "source_category_l3_code",
+                    "train_positive_interaction_count",
+                },
+            )
             self.assertNotIn("POI_ID", columns)
             ctx_columns = set(ctx_schema)
             self.assertEqual(ctx_columns, {"trip_key", "region", "split", *(f"travel_style_{i}" for i in range(1, 9)), *(f"travel_motive_{i}" for i in range(1, 4)), "travel_status_destination", "companion_status", "companion_count", "start_month", "elapsed_days"})
@@ -189,8 +226,10 @@ class TrainingDatasetTests(unittest.TestCase):
             self.assertFalse(raw_columns & (ctx_columns | set(columns) | interaction_columns))
             self.assertTrue(all(row[3] in {"train", "validation"} for row in interactions))
             self.assertTrue(all(set(row[0]) <= {"train", "validation"} for row in observed_splits))
-            self.assertEqual(len(items), 32)  # full unique Master inventory plus observed non-Master items
-            self.assertEqual(unseen_static, [("L9", "11110", [], 0)] * len(REGIONS))  # train-unseen Master items retain static candidate features
+            self.assertEqual(len(items), 32)  # Master inventory plus observed non-Master items
+            self.assertEqual(
+                unseen_static, [("L9", "11110", [], 0)] * len(REGIONS)
+            )  # train-unseen Master items retain static candidate features
             self.assertEqual(vl_only, [(None, "unavailable", ["validation"])] * len(REGIONS))
             self.assertEqual(len(interactions), 20)
             self.assertTrue(all(row[4] == 1 for row in interactions))
@@ -304,17 +343,18 @@ class TrainingDatasetTests(unittest.TestCase):
             manifest = transform(inputs, masters, output, "synthetic-run")
             con = duckdb.connect()
             result = con.execute(
-                "SELECT item_key, canonical_admin_sgg_code FROM read_parquet(?) WHERE region='capital'",
+                    "SELECT item_key, canonical_admin_sgg_code FROM read_parquet(?) "
+                    "WHERE region='capital'",
                 [str(output / "item_features.parquet")],
             ).fetchall()
             con.close()
             sgg_by_key = dict(result)
             item_key = lambda poi: surrogate_key("synthetic-run", "item", "capital", poi)
-            self.assertEqual(sgg_by_key[item_key("POI3")], "11110")  # conflicting visits cannot alter static feature
-            self.assertEqual(sgg_by_key[item_key("POI6")], "11200")  # visit conflict stays diagnostic only
+            self.assertEqual(sgg_by_key[item_key("POI3")], "11110")
+            self.assertEqual(sgg_by_key[item_key("POI6")], "11200")
             self.assertEqual(sgg_by_key[item_key("POI9")], "11110")
             self.assertEqual(sgg_by_key[item_key("POI10")], "11110")
-            self.assertIsNone(sgg_by_key[item_key("POI11")])  # visit-only evidence cannot fill static feature
+            self.assertIsNone(sgg_by_key[item_key("POI11")])
             self.assertNotIn("synthetic-run", json.dumps(manifest))
             audit = manifest["sgg_audit"]["by_region_split_cohort"]["capital:TL:all_valid_visits"]
             self.assertEqual(audit["resolved_outcome_counts"].get("direct"), 2)
