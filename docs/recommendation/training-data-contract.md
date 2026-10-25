@@ -3,7 +3,7 @@
 - **관련 Issue:** [#17](https://github.com/haeinChoe/Travel-Recommendation/issues/17), [#45](https://github.com/haeinChoe/Travel-Recommendation/issues/45), [#69](https://github.com/haeinChoe/Travel-Recommendation/issues/69), [#71](https://github.com/haeinChoe/Travel-Recommendation/issues/71)
 - **현재 상태:** 4개 권역(수도권·서부권·동부권·제주도 및 도서지역) 실제 데이터 코호트 감사 및 `TC_CODEB`(`cd_a = 'VIS'`) 공식 코드북 검증 완료 (`issue71-training-contract-20261020T1550Z`)
 
-- **TL inner split (Issue #80):** 권역 단위 `(region, TRAVELER_ID)` 결정론적 분할과 privacy-safe 분포 감사 CLI를 추가했다. 권역 간 traveler ID 전역 유일성은 계약에 없으므로 분할은 각 TL 권역 안에서 수행한다. 분포·split은 canonical 학습 코호트처럼 유일 여행과 유일 traveler master 연결만 사용한다. 실제 4개 권역 분포와 trip-level reference의 traveler-overlap 비교는 이번 실행 환경에서 수행하지 않았으므로 traveler-trip 수치와 실증 결론은 아직 없다. I3 재계산은 inner-train TL interaction만 사용하고, I4는 inner-train 방문 이벤트 입력이 없으면 fail-closed한다.
+- **TL inner split (Issue #80):** 권역 단위 `(region, TRAVELER_ID)` 결정론적 분할과 privacy-safe 분포 감사 CLI를 추가했다. 네 권역 입력의 provenance 확인을 통과한 실제 TL 감사에서 권역별 distinct traveler/trip은 각각 2,560/2,560이었고, traveler 2,560명 모두 한 trip을 가졌다. 따라서 multi-trip share는 0%였다. seed `issue80-v1`, validation 비율 0.2의 group split은 권역마다 2,048 train / 512 validation traveler와 trip을 배정했고 traveler overlap은 0이었다. Trip-level reference의 structural traveler overlap도 모든 권역에서 0이었다. Partition-label 비교값은 별도 hash 단위 선택에 따른 값이며 split의 구조적 동등성은 뜻하지 않는다. I3 재계산은 inner-train TL interaction만 사용하고, I4는 inner-train 방문 이벤트 입력이 없으면 fail-closed한다.
 
 > 이 문서는 코호트·라벨의 의미와 승인된 분석 집계를 설명한다. 실제 세 Parquet 출력 이름, TL/VL→`train`/`validation` 변환, 모든 출력 컬럼의 null·타입·역할 규칙은 [표준 학습 데이터셋 스키마](training-dataset-schema.md)를 기준으로 한다. 여기서 언급하는 대문자 AI Hub 컬럼은 원천 필드 이름이다.
 

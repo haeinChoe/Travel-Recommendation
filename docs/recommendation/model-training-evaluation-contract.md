@@ -163,7 +163,9 @@ cold-user 문제이므로 기본 identity key인 `(region, TRAVELER_ID)` 기준 
 
 같은 traveler의 모든 trip은 inner-train 또는 inner-validation 한쪽에만 둔다. #80 구현은 각 TL 권역 안에서 `(region, TRAVELER_ID)`와 seed의 SHA-256 정렬 순서로 validation traveler를 선택하는 결정론적 group split을 제공한다. seed와 validation 비율은 재현 metadata에 남기며 기본값은 `issue80-v1`과 0.2다. 한 traveler만 있거나 split 비율이 유효하지 않으면 분할을 실패 처리한다. split map은 메모리에서만 유지하고 각 권역 안에서 traveler overlap이 0인지 검사한다. 원천 계약은 권역 간 traveler ID 전역 유일성을 선언하지 않으므로 identity key에 region을 포함한다. 분포와 split에는 유일한 `TRAVEL_ID` 및 유일한 `TN_TRAVELLER_MASTER.TRAVELER_ID` 연결만 사용한다.
 
-실제 traveler-trip aggregate, trip-level reference와의 partition 차이, synthetic 테스트는 이 실행 환경에서 실행하지 않았다. CLI는 동일 seed와 비율로 deterministic trip-level reference도 만들고, 두 split의 partition label 불일치 수/비율과 trip split에서 여러 partition에 나뉜 traveler/여행 수 비율을 aggregate로 출력한다. label 불일치는 두 hash 단위가 달라 생기는 결정론적 비교값으로, 구조적 동등성의 척도는 아니다. 구조 차이는 multi-trip traveler 비율과 trip split traveler overlap으로 판단한다. 실제 분포를 확인하기 전까지 traveler당 trip 분포와 split 차이에 대한 경험적 결론은 미정이다.
+네 TL role binding은 provenance 검사를 통과했고, Issue #80 코드를 대상으로 privacy-safe 실제 aggregate를 실행했다. 각 권역은 distinct traveler 2,560명 / distinct trip 2,560개였고, 모든 traveler가 한 trip만 보유했다 (mean/median/max = 1, multi-trip share = 0%). `issue80-v1`, validation fraction 0.2에서 각 권역의 inner-train은 2,048 traveler/trip, inner-validation은 512 traveler/trip이며 group-split traveler overlap은 0이다. Trip-level reference의 structural traveler overlap도 모든 권역에서 0이었다. Partition-label disagreement는 수도권 784/2,560 (30.6250%), 동부권 812/2,560 (31.71875%), 제주도 및 도서지역 804/2,560 (31.40625%), 서부권 818/2,560 (31.953125%)이다. 이 값은 서로 다른 hash key로 만든 두 결정론적 partition label의 비교값일 뿐 split 구조의 동등성을 뜻하지 않는다. 각 traveler가 단일 trip을 보유하고 두 방식 모두 traveler overlap이 0인 점을 structural leakage 진단으로 기록한다.
+
+synthetic fixture 테스트는 감사 함수와 4개 권역 CSV CLI를 실행하며 aggregate 출력에 ID나 입력 경로가 없는지 확인한다. 집중 테스트 12개와 전체 350개 테스트가 통과했고, 전체 테스트 중 CatBoost 의존 테스트 1개는 실행 환경에 패키지가 없어 건너뛰었다. `py_compile` 및 `git diff --check`도 통과했다. Ruff 실행 파일을 찾지 못해 Ruff 검사는 수행하지 않았다.
 
 ### 3.3 train-derived feature의 inner split 누수
 
@@ -202,7 +204,7 @@ canonical `trip_item_interaction.parquet`에는 visit type이 없어 그 파일�
 | I1 | Category | source_category_l1_code, l2, l3 |
 | I2 | Administrative Location | #81에서 canonical 컬럼 정의, 현재 pending |
 | I3 | Popularity | train_positive_interaction_count, inner-train 재계산 필수 |
-| I4 | Historical POI | train_observed_visit_type_codes, #80 완료 전 pending |
+| I4 | Historical POI | train_observed_visit_type_codes, runner visit-event input integration pending |
 
 ### Control
 
@@ -338,7 +340,7 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 - canonical interaction에는 observed positive만 저장된다.
 - 현재 I3/I4 값은 outer TL 전체 기준이다.
 - canonical interaction만으로 I4를 inner-train 기준으로 다시 만들 정보는 부족하지만, canonical schema가 지정한 `TN_VISIT_AREA_INFO.VISIT_AREA_TYPE_CD` 원천 이벤트는 필요한 trip/item/type 경계를 제공한다. #80 helper는 이 이벤트 경로를 사용한다.
-- 실제 4개 권역 traveler-trip 집계는 현재 구현 환경에서 실행되지 않았다. 결과 숫자를 추정하지 않는다.
+- 실제 4개 권역 traveler-trip 집계는 완료했고 위 aggregate만 보고한다. raw ID, row data, 입력 경로는 공개하지 않는다.
 
 ### 결정
 
@@ -350,7 +352,7 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 
 - #79는 actual AI Hub row를 읽지 않는다.
 - 실제 CatBoost 학습 성능은 아직 없다.
-- canonical location과 traveler split은 각각 #81/#80 결과가 필요하다.
+- canonical location은 #81 결과가 필요하다. #80의 traveler-trip aggregate 및 split leakage 검증은 완료했으며, #82 runner의 inner-train feature 경로 연결은 후속 작업이다.
 
 ## 재현 참고
 

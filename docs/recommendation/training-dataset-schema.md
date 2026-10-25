@@ -75,7 +75,7 @@ Parquet null 제약은 변환 검증과 이 문서로 보장한다. “필수”
 
 inner split 뒤 I3 `train_positive_interaction_count`는 outer TL의 고유 양성 trip-item interaction 중 inner-train 여행만 세어 다시 만든다. I4 `train_observed_visit_type_codes`는 canonical `trip_item_interaction.parquet`에서 가져오지 않는다. 해당 파일에는 방문 유형이 없기 때문이다. 대신 같은 TL 원천의 `TN_VISIT_AREA_INFO.TRAVEL_ID`, `POI_ID`, `VISIT_AREA_TYPE_CD` 이벤트를 inner-train 여행과 연결해 재계산한다. 최소 하나의 관광 핵심 방문 이벤트가 있는 trip-item만 item feature 대상이 되며, 이 쌍의 유효 방문유형 코드를 모은다. 원천 이벤트 입력이 없거나 trip/item/visit-type/TL split 필드를 확인할 수 없으면 I4를 추정하지 않고 `I4SourceUnavailableError`로 중단한다.
 
-승인된 실행 환경에서 `CAPITAL_TL`, `WEST_TL`, `EAST_TL`, `JEJU_TL`을 해당 TL 입력 디렉터리에 바인딩한 뒤 다음 명령으로 privacy-safe aggregate를 출력한다. 출력은 표준 출력의 JSON이며 실제 원천 경로나 ID 값은 쓰지 않는다.
+승인된 실행 환경에서 `CAPITAL_TL`, `WEST_TL`, `EAST_TL`, `JEJU_TL`을 해당 TL 입력 디렉터리에 바인딩한 뒤 다음 명령으로 privacy-safe aggregate를 출력한다. 출력은 표준 출력의 JSON이며 실제 원천 경로나 ID 값은 쓰지 않는다. Issue #80 실행에서는 네 role binding 모두 provenance 확인을 통과했다.
 
 ~~~bash
 uv run python scripts/recommendation/tl_traveler_split.py \
@@ -83,7 +83,20 @@ uv run python scripts/recommendation/tl_traveler_split.py \
   --validation-fraction 0.2
 ~~~
 
-이 내부 분할 규칙은 기존 Parquet의 스키마나 값 의미를 바꾸지 않는다. outer-TL 전체에서 계산된 canonical I3/I4는 TL 내부 tuning에 재사용하지 않으며, outer TL→VL 최종 학습에만 사용한다. 실제 4개 권역 분포 감사, trip split 비교 집계와 synthetic 테스트 실행은 이 환경에서 수행하지 않았다. synthetic 테스트 코드는 추가했지만 로컬 저장소 실행 환경이 없어 미실행이다.
+이 내부 분할 규칙은 기존 Parquet의 스키마나 값 의미를 바꾸지 않는다. outer-TL 전체에서 계산된 canonical I3/I4는 TL 내부 tuning에 재사용하지 않으며, outer TL→VL 최종 학습에만 사용한다. 네 권역 입력 provenance 확인과 실제 traveler-trip aggregate 및 split 비교를 완료했고, synthetic 회귀·CLI 테스트도 실행했다. 상세 aggregate는 다음 절에 기록한다.
+
+### Issue #80 실제 TL aggregate
+
+검증된 네 role binding으로 실행한 결과, 각 권역은 동일한 aggregate를 보였다. 각 권역에 distinct traveler 2,560명과 distinct trip 2,560개가 있었고, traveler trip-count 구간은 1 trip 2,560명, 2 trips 0명, 3+ trips 0명이었다. 평균·중앙값·최대 trips는 각각 1이며 multi-trip traveler share는 0%다.
+
+| 권역 | Inner-train travelers / trips | Inner-validation travelers / trips | Group-split traveler overlap | Trip-split structural traveler overlap | Partition-label disagreement |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 수도권 (Capital) | 2,048 / 2,048 | 512 / 512 | 0 | 0 | 784 / 2,560 (30.6250%) |
+| 동부권 (East) | 2,048 / 2,048 | 512 / 512 | 0 | 0 | 812 / 2,560 (31.71875%) |
+| 제주도 및 도서지역 (Jeju Islands) | 2,048 / 2,048 | 512 / 512 | 0 | 0 | 804 / 2,560 (31.40625%) |
+| 서부권 (West) | 2,048 / 2,048 | 512 / 512 | 0 | 0 | 818 / 2,560 (31.953125%) |
+
+분할 seed는 `issue80-v1`, validation fraction은 0.2다. Partition-label disagreement는 traveler key와 trip key로 만든 두 결정론적 split의 label 비교일 뿐 structural equivalence를 뜻하지 않는다. 이 집계에서 모든 traveler가 한 trip만 보유하며 trip-split structural traveler overlap은 권역별 0명이므로 두 split 방식 모두 traveler를 여러 partition에 나누지 않았다. 집계는 aggregate 수치만 기록하며 원천 ID와 경로는 문서화하지 않는다.
 
 ## 원천→표준 컬럼 매핑
 
