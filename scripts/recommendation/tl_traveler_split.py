@@ -160,6 +160,36 @@ def deterministic_traveler_group_split(
     return partitions
 
 
+def deterministic_trip_level_split(
+    trip_ids: Iterable[str],
+    *,
+    seed: str | int,
+    validation_fraction: float = 0.2,
+) -> dict[str, str]:
+    """Assign individual trips deterministically for an aggregate comparison baseline."""
+    if isinstance(validation_fraction, bool) or not 0 < validation_fraction < 1:
+        raise ValueError("validation_fraction must be between zero and one")
+    trips = {_clean(trip_id) for trip_id in trip_ids}
+    trips.discard(None)
+    if len(trips) < 2:
+        raise ValueError("At least two trips are required for a non-empty trip split")
+
+    seed_text = str(seed)
+    ranked = sorted(
+        trips,
+        key=lambda trip: (
+            hashlib.sha256(f"{seed_text}\0{trip}".encode("utf-8")).hexdigest(),
+            trip,
+        ),
+    )
+    validation_count = max(1, min(len(ranked) - 1, round(len(ranked) * validation_fraction)))
+    validation_trips = set(ranked[:validation_count])
+    return {
+        trip: "inner-validation" if trip in validation_trips else "inner-train"
+        for trip in trips
+    }
+
+
 def validate_no_traveler_overlap(
     trip_owner: Mapping[str, str], partition_by_trip: Mapping[str, str]
 ) -> int:
@@ -200,7 +230,9 @@ def recompute_inner_train_positive_interaction_count(
         item_id = _clean(row.get("item_id", row.get("POI_ID")))
         if not trip_id or not item_id:
             raise ValueError("Inner-train interaction is missing a trip or item key")
-        if _clean(row.get("observed_positive", 1)) != "1":
+        if "observed_positive" not in row:
+            raise ValueError("Inner-train interaction must declare observed_positive")
+        if _clean(row.get("observed_positive")) != "1":
             raise ValueError("Only observed-positive interactions are supported")
         partition = partition_by_trip.get(trip_id)
         if partition not in {"inner-train", "inner-validation"}:
@@ -291,6 +323,19 @@ def audit_payload(
             owners, seed=seed, validation_fraction=validation_fraction
         )
         overlap = validate_no_traveler_overlap(owners, partitions)
+        trip_partitions = deterministic_trip_level_split(
+            owners, seed=seed, validation_fraction=validation_fraction
+        )
+        trip_split_travelers: dict[str, set[str]] = defaultdict(set)
+        for trip_id, traveler_id in owners.items():
+            trip_split_travelers[traveler_id].add(trip_partitions[trip_id])
+        trip_split_overlap = sum(
+            len(traveler_partitions) > 1
+            for traveler_partitions in trip_split_travelers.values()
+        )
+        changed_trip_count = sum(
+            partitions[trip_id] != trip_partitions[trip_id] for trip_id in owners
+        )
         traveler_partition: dict[str, str] = {}
         for trip_id, traveler_id in owners.items():
             partition = partitions[trip_id]
@@ -314,6 +359,16 @@ def audit_payload(
                     partition == "inner-validation" for partition in partitions.values()
                 ),
                 "traveler_overlap": overlap,
+            },
+            "trip_split_comparison": {
+                "changed_trip_assignments": changed_trip_count,
+                "changed_trip_assignment_share": round(
+                    changed_trip_count / len(owners), 6
+                ),
+                "traveler_overlap": trip_split_overlap,
+                "traveler_overlap_share": round(
+                    trip_split_overlap / len(trip_split_travelers), 6
+                ),
             },
         }
     return {

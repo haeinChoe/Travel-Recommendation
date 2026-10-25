@@ -159,11 +159,11 @@ VL metric을 보고 feature, sampling, objective, hyperparameter를 다시 고�
 
 ### 3.2 TL inner split
 
-cold-user 문제이므로 기본 원칙은 TRAVELER_ID 기준 group split이다.
+cold-user 문제이므로 기본 identity key인 `(region, TRAVELER_ID)` 기준 group split을 사용한다.
 
 같은 traveler의 모든 trip은 inner-train 또는 inner-validation 한쪽에만 둔다. #80 구현은 각 TL 권역 안에서 `(region, TRAVELER_ID)`와 seed의 SHA-256 정렬 순서로 validation traveler를 선택하는 결정론적 group split을 제공한다. seed와 validation 비율은 재현 metadata에 남기며 기본값은 `issue80-v1`과 0.2다. 한 traveler만 있거나 split 비율이 유효하지 않으면 분할을 실패 처리한다. split map은 메모리에서만 유지하고 각 권역 안에서 traveler overlap이 0인지 검사한다. 원천 계약은 권역 간 traveler ID 전역 유일성을 선언하지 않으므로 identity key에 region을 포함한다. 분포와 split에는 유일한 `TRAVEL_ID` 및 유일한 `TN_TRAVELLER_MASTER.TRAVELER_ID` 연결만 사용한다.
 
-4개 권역의 실제 traveler-trip aggregate와 synthetic 테스트는 이 실행 환경에서 실행하지 않았다. `scripts/recommendation/tl_traveler_split.py` CLI와 테스트 코드는 준비되어 있지만, 실제 분포를 확인하기 전까지 traveler당 trip 분포에 대한 경험적 결론은 미정이다.
+실제 traveler-trip aggregate, trip-level reference와의 partition 차이, synthetic 테스트는 이 실행 환경에서 실행하지 않았다. CLI는 동일 seed와 비율로 deterministic trip-level split도 만들고, traveler split에서 바뀐 trip 수/비율과 trip split의 traveler overlap을 aggregate로 출력한다. 실제 분포를 확인하기 전까지 traveler당 trip 분포와 split 차이에 대한 경험적 결론은 미정이다.
 
 ### 3.3 train-derived feature의 inner split 누수
 

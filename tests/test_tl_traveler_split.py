@@ -6,6 +6,7 @@ import unittest
 from scripts.recommendation.tl_traveler_split import (
     I4SourceUnavailableError,
     audit_payload,
+    deterministic_trip_level_split,
     deterministic_traveler_group_split,
     recompute_inner_train_positive_interaction_count,
     recompute_inner_train_visit_type_codes,
@@ -100,6 +101,16 @@ class TLTravelerSplitTests(unittest.TestCase):
             }
             self.assertEqual(len(partitions), 1)
 
+    def test_trip_level_split_is_deterministic_and_complete(self) -> None:
+        first = deterministic_trip_level_split(
+            self.trip_owner, seed="trip-reference", validation_fraction=0.25
+        )
+        second = deterministic_trip_level_split(
+            self.trip_owner, seed="trip-reference", validation_fraction=0.25
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(set(first), set(self.trip_owner))
+
     def test_group_split_rejects_one_traveler_or_invalid_ratio(self) -> None:
         with self.assertRaisesRegex(ValueError, "At least two travelers"):
             deterministic_traveler_group_split(
@@ -160,6 +171,26 @@ class TLTravelerSplitTests(unittest.TestCase):
                 payload["regions"][region]["inner_split"]["validation_trips"],
                 sum(partition == "inner-validation" for partition in expected.values()),
             )
+            trip_split = deterministic_trip_level_split(
+                owners, seed=seed, validation_fraction=0.25
+            )
+            expected_changed = sum(
+                expected[trip] != trip_split[trip] for trip in owners
+            )
+            trip_partitions_by_traveler = {}
+            for trip, traveler in owners.items():
+                trip_partitions_by_traveler.setdefault(traveler, set()).add(
+                    trip_split[trip]
+                )
+            expected_trip_overlap = sum(
+                len(partitions) > 1
+                for partitions in trip_partitions_by_traveler.values()
+            )
+            comparison = payload["regions"][region]["trip_split_comparison"]
+            self.assertEqual(
+                comparison["changed_trip_assignments"], expected_changed
+            )
+            self.assertEqual(comparison["traveler_overlap"], expected_trip_overlap)
         for region in region_trip_owners:
             self.assertEqual(
                 payload["regions"][region]["inner_split"]["traveler_overlap"],
@@ -249,6 +280,17 @@ class TLTravelerSplitTests(unittest.TestCase):
                         "item_id": "poi-x",
                         "source_split": "TL",
                         "observed_positive": 0,
+                    }
+                ],
+                partitions,
+            )
+        with self.assertRaisesRegex(ValueError, "must declare observed_positive"):
+            recompute_inner_train_positive_interaction_count(
+                [
+                    {
+                        "trip_id": "trip-a1",
+                        "item_id": "poi-x",
+                        "source_split": "TL",
                     }
                 ],
                 partitions,
