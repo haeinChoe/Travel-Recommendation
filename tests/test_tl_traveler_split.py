@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
 
 from scripts.recommendation.tl_traveler_split import (
     I4SourceUnavailableError,
     audit_payload,
     deterministic_trip_level_split,
     deterministic_traveler_group_split,
+    main,
     recompute_inner_train_positive_interaction_count,
     recompute_inner_train_visit_type_codes,
     traveler_trip_distribution,
@@ -399,6 +406,76 @@ class TLTravelerSplitTests(unittest.TestCase):
             region["inner_split"]["traveler_overlap"] == 0
             for region in payload["regions"].values()
         ))
+
+    def test_cli_reads_four_synthetic_regions_and_emits_aggregate_json_only(self) -> None:
+        raw_values = set()
+        environment = {}
+        with tempfile.TemporaryDirectory(prefix="issue80-cli-smoke-") as temporary:
+            root = Path(temporary)
+            for prefix in ("CAPITAL", "WEST", "EAST", "JEJU"):
+                region_dir = root / f"{prefix.lower()}-source-path"
+                region_dir.mkdir()
+                environment[f"{prefix}_TL"] = str(region_dir)
+                traveler_rows = []
+                trip_rows = []
+                for traveler_index, trip_count in enumerate((1, 2, 3, 1)):
+                    traveler_id = f"synthetic-{prefix}-traveler-{traveler_index}"
+                    raw_values.add(traveler_id)
+                    traveler_rows.append({"TRAVELER_ID": traveler_id})
+                    for trip_index in range(trip_count):
+                        trip_id = f"synthetic-{prefix}-trip-{traveler_index}-{trip_index}"
+                        raw_values.add(trip_id)
+                        trip_rows.append(
+                            {"TRAVEL_ID": trip_id, "TRAVELER_ID": traveler_id}
+                        )
+
+                for filename, fieldnames, rows in (
+                    ("TN_TRAVEL.csv", ["TRAVEL_ID", "TRAVELER_ID"], trip_rows),
+                    (
+                        "TN_TRAVELLER_MASTER.csv",
+                        ["TRAVELER_ID"],
+                        traveler_rows,
+                    ),
+                ):
+                    with (region_dir / filename).open(
+                        "w", encoding="utf-8", newline=""
+                    ) as stream:
+                        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(rows)
+
+            output = io.StringIO()
+            with patch.dict("os.environ", environment, clear=False):
+                with redirect_stdout(output):
+                    exit_code = main(
+                        ["--seed", "synthetic-smoke", "--validation-fraction", "0.25"]
+                    )
+
+            self.assertEqual(exit_code, 0)
+            serialized = output.getvalue()
+            payload = json.loads(serialized)
+            self.assertEqual(
+                set(payload["regions"]),
+                {"capital", "west", "east", "jeju-islands"},
+            )
+            for region in payload["regions"].values():
+                self.assertEqual(region["distinct_travelers"], 4)
+                self.assertEqual(region["distinct_trips"], 7)
+                self.assertEqual(
+                    region["traveler_trip_count"]["one_trip_travelers"], 2
+                )
+                self.assertEqual(
+                    region["traveler_trip_count"]["two_trip_travelers"], 1
+                )
+                self.assertEqual(
+                    region["traveler_trip_count"]["three_or_more_trip_travelers"], 1
+                )
+                self.assertEqual(region["inner_split"]["traveler_overlap"], 0)
+            self.assertFalse(payload["privacy"]["raw_identifiers_written"])
+            self.assertFalse(payload["privacy"]["raw_paths_written"])
+            for raw_value in raw_values:
+                self.assertNotIn(raw_value, serialized)
+            self.assertNotIn(str(root), serialized)
 
 
 if __name__ == "__main__":
