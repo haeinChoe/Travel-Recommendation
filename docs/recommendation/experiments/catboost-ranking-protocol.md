@@ -44,7 +44,7 @@ VL 최종 평가 (#83)
 
 ## 선행 작업
 
-- I2 Administrative Location은 #81 결과가 필요하다.
+- I2 Administrative Location의 feature 계약은 #81에서 확정됐으며, synthetic 검증 완료 후 실제 AI Hub coverage/conflict 감사는 후속 입력 확보가 필요하다.
 - I4 Historical POI는 #80의 inner-train-safe 재계산이 필요하다.
 - I3 Popularity도 TL tuning에서는 full-TL 값이 아니라 inner-train에서 다시 계산해야 한다.
 - actual CatBoost dependency/version은 #82 실행 환경에서 고정한다.

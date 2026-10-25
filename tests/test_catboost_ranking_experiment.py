@@ -52,18 +52,25 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
                 "C1_REGION",
             },
         )
-        self.assertNotIn("I2_ADMINISTRATIVE_LOCATION", available_feature_groups())
+        self.assertIn("I2_ADMINISTRATIVE_LOCATION", available_feature_groups())
         self.assertNotIn("I4_HISTORICAL_POI", available_feature_groups())
         self.assertIn("implemented and tested", PENDING_FEATURE_GROUPS["I4_HISTORICAL_POI"])
         self.assertIn("Issue #82", PENDING_FEATURE_GROUPS["I4_HISTORICAL_POI"])
-        with self.assertRaisesRegex(ValueError, "Issue #81"):
-            ExperimentConfig(("I2_ADMINISTRATIVE_LOCATION",)).validate()
+        self.assertEqual(
+            FEATURE_GROUPS["I2_ADMINISTRATIVE_LOCATION"],
+            (
+                "canonical_admin_sido_code",
+                "canonical_admin_sgg_code",
+                "canonical_admin_location_status",
+            ),
+        )
+        ExperimentConfig(("I2_ADMINISTRATIVE_LOCATION",)).validate()
         with self.assertRaisesRegex(ValueError, "Issue #80"):
             ExperimentConfig(("I4_HISTORICAL_POI",)).validate()
 
     def test_runnable_feature_combinations_are_exhaustive(self) -> None:
-        self.assertEqual(len(available_feature_groups()), 8)
-        self.assertEqual(len(feature_group_combinations()), (2**8) - 1)
+        self.assertEqual(len(available_feature_groups()), 9)
+        self.assertEqual(len(feature_group_combinations()), (2**9) - 1)
 
     def test_category_depth_and_categorical_columns(self) -> None:
         config = ExperimentConfig(
@@ -79,6 +86,25 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
         self.assertIn("companion_status", categorical)
         self.assertNotIn("companion_count", categorical)
         self.assertNotIn("train_positive_interaction_count", categorical)
+
+    def test_i2_columns_are_categorical_static_features(self) -> None:
+        config = ExperimentConfig(("I2_ADMINISTRATIVE_LOCATION",))
+        self.assertEqual(
+            selected_feature_columns(config),
+            (
+                "canonical_admin_sido_code",
+                "canonical_admin_sgg_code",
+                "canonical_admin_location_status",
+            ),
+        )
+        self.assertEqual(
+            categorical_feature_columns(config),
+            (
+                "canonical_admin_sido_code",
+                "canonical_admin_sgg_code",
+                "canonical_admin_location_status",
+            ),
+        )
 
     def test_popularity_transform_and_historical_normalization(self) -> None:
         config = ExperimentConfig(("I3_POPULARITY",), popularity_transform="log1p")
@@ -368,7 +394,7 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
         self.assertIn("not observed dislike", protocol["sampling"]["label_zero"])
         self.assertEqual(
             protocol["feature_groups"]["I2_ADMINISTRATIVE_LOCATION"]["status"],
-            "pending",
+            "available",
         )
         self.assertEqual(
             protocol["candidate_universe"]["train_unseen_items"],

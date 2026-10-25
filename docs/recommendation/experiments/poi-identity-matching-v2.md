@@ -6,6 +6,8 @@
 
 **현재 상태: 심층 기술 검토 4대 과제(P0: SggCrosswalk 광주/전남·세종·일반구 버그 수정, Catalog Seed Coverage, 거리 임계값·마진 엄격화 및 Stage 2 veto, 신규 승격 건 교차 검증 및 층화 감사) 구현 및 검증 완료.**
 
+> Issue #81의 canonical I2 feature 계약은 [별도 문서](canonical-admin-location.md)를 기준으로 한다. 아래 좌표 거리 및 방문 행 증거는 과거 POI identity matching 실험의 엔터티 연결 근거이며, 모델 입력으로 사용하는 raw coordinate/distance 계약이나 Issue #81의 canonical-location coverage/conflict 감사 결과가 아니다. AI Hub Master 좌표계도 별도 검증되지 않아 I2 근거로 채택하지 않았다.
+
 ### 한눈에 보는 결론
 
 - **기준선(Baseline D) 대조 및 Stage 0 수치 규명**:

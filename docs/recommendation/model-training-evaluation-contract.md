@@ -41,7 +41,7 @@ POI score → Top-K ranking
 ## 실제 데이터로 확인해야 하는 것
 
 - TL의 TRAVELER_ID → TRAVEL_ID 분포와 inner split 세부 설정: #80
-- I2 Administrative Location의 canonical 컬럼: #81
+- I2 Administrative Location: `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 사용한다. 이름·provenance·충돌 출처는 진단 메타데이터다.
 - I4 Historical POI의 inner-train-safe 재계산 함수 구현: #80; CatBoost runner 입력 연결: #82
 - sampling / feature group / objective의 실제 최종 선택: #82
 - seed 반복 횟수: #82에서 runtime 확인 후 결정
@@ -202,7 +202,7 @@ canonical `trip_item_interaction.parquet`에는 visit type이 없어 그 파일�
 | ID | Group | 컬럼 / 상태 |
 | --- | --- | --- |
 | I1 | Category | source_category_l1_code, l2, l3 |
-| I2 | Administrative Location | #81에서 canonical 컬럼 정의, 현재 pending |
+| I2 | Administrative Location | `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status` |
 | I3 | Popularity | train_positive_interaction_count, inner-train 재계산 필수 |
 | I4 | Historical POI | `recompute_inner_train_visit_type_codes` 구현·테스트 완료; #82 runner visit-event input integration pending |
 
@@ -216,7 +216,11 @@ Category는 L1 / L1+L2 / L1+L2+L3를 비교할 수 있다. Popularity는 raw cou
 
 ## 5. 위치 feature 현재 범위
 
-POI 정적 좌표는 canonical location 정제와 identity 검증에 사용할 수 있지만 현재 ranking feature로 넣지 않는다.
+Issue #69는 matched anchor subset에서 AI Hub/TourAPI 좌표의 WGS84 범위와 거리 분포(4,279 regional anchor 중 93.11%, 4,686 global anchor 중 93.45%가 200m 이내)를 경험적으로 확인했다. 이 identity 검증은 전체 AI Hub Master inventory의 CRS/X-Y source contract 및 좌표 coverage를 확립하지 않는다. 이번 I2는 subset identity evidence를 전체 정적 item feature로 일반화하지 않고 좌표를 사용하지 않는다.
+
+I2는 `TC_SGG`의 AI Hub 2023 행정 코드 체계에 맞춘 광역 시도(2자리)와 시군구(5자리)다. `canonical_admin_sido_name` 및 `canonical_admin_sgg_name`은 사람이 확인하는 코드북 이름이며 입력에는 코드를 사용한다. `region`(`capital`, `west`, `east`, `jeju-islands`)은 데이터·제품의 거친 권역이고, 행정 시군구나 개별 요청의 목적지와 같은 값이 아니다. 요청 target geography는 request context/후보 hard filter에서 별도 공급한다.
+
+학습 item feature는 Master inventory의 정적 근거만으로 생성한다. 방문 행 SGG/address는 train-only 집계 진단에 남기되 I2 모델 입력을 채우거나 덮어쓰지 않으며, inner-validation/VL positive로 자기 위치 특성을 만들지 않는다. 정적 근거가 충돌하거나 모호하면 코드 필드는 null이고 상태와 출처 토큰은 보존된다. 좌표 상태는 `subset_validation_only_not_used`: 과거 anchor subset의 empirical validation은 인정하되 좌표, H3, distance를 이번 전체 inventory I2 정제/feature에 쓰지 않는다.
 
 현재 보류:
 
@@ -345,14 +349,15 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 ### 결정
 
 - TL tuning의 train-derived feature와 sampling 통계는 inner-train에서만 계산한다.
-- I2는 #81 canonical 컬럼 결정 전까지 fail-closed한다. I4 재계산 helper는 구현 완료이며, #82 runner가 visit-event input을 연결할 때까지 runner feature group만 pending/disabled로 둔다.
+- I2 canonical administrative location은 #81 코드 계약과 synthetic 검증 기준으로 available이다. I4 재계산 helper는 구현 완료이며, #82 runner가 visit-event input을 연결할 때까지 I4 runner feature group만 pending/disabled로 둔다.
 - VL은 최종 configuration을 잠글 때까지 tuning에 사용하지 않는다.
 
 ### 한계
 
 - #79는 actual AI Hub row를 읽지 않는다.
 - 실제 CatBoost 학습 성능은 아직 없다.
-- canonical location은 #81 결과가 필요하다. #80의 traveler-trip aggregate 및 split leakage 검증은 완료했으며, #82 runner의 inner-train feature 경로 연결은 후속 작업이다.
+- #81 I2 코드 계약과 synthetic 구현은 준비됐으며, 승인된 입력으로 실제 coverage/conflict 감사는 아직 수행되지 않았다.
+- #80 traveler-trip aggregate 및 split leakage 검증은 완료했다. #82 runner의 inner-train I4 visit-event input 연결은 후속 작업이다.
 
 ## 재현 참고
 
