@@ -1,7 +1,7 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
 **관련 Issue:** #79, #82
-**현재 상태:** #82 runner가 #80 traveler split과 inner-train I3/I4 재계산을 연결함 / 실제 TL smoke는 승인 입력 경로 확인 후 실행 대기
+**현재 상태:** #82 runner가 #80 traveler split과 inner-train I3/I4 재계산을 연결함 / 실제 TL smoke는 메모리 증가로 중단되어 완료 지표 없음; 사용자가 actual-data 실행을 멈췄고 현재 최적화 검증은 synthetic only
 
 ## 이 문서가 답하려는 질문
 
@@ -267,7 +267,34 @@ scripts/recommendation/catboost_ranking_experiment.py가 제공하는 것:
 - large-scale result artifact 생성
 - 실제 CatBoost tuning
 
-실행 책임은 분리되어 있다. #80은 traveler split과 I3/I4 재계산 경계를 완료했고, #81은 I2 정적 위치 계약을 완료했다. #82 runner integration은 inner-train item feature materialization까지 연결했다. 실제 입력에 대한 smoke는 별도 승인된 TL 경로가 필요하다.
+실행 책임은 분리되어 있다. #80은 traveler split과 I3/I4 재계산 경계를 완료했고, #81은 I2 정적 위치 계약을 완료했다. #82 runner integration은 inner-train item feature materialization까지 연결했다. 첫 실제 TL smoke는 메모리 증가로 중단되어 완료 지표가 없다. 사용자가 actual-data 실행을 멈춘 뒤 수행한 평가 경로 최적화와 벤치마크는 synthetic 자료만 사용했으며 실제 데이터 성능 개선을 입증하지 않는다.
+
+### 준비된 카탈로그와 bounded scoring
+
+동일 권역 후보 목록은 `PreparedItemCatalog.from_materialization(...)`으로 한 번 준비한다. 이 객체는 helper가 만든 I3/I4 및 선택한 정적 item 열을 정규화해 불변 tuple로 보관하며, feature transform 설정과 helper provenance가 일치하지 않으면 평가를 거부한다. I2 열은 category depth와 관계없이 모두 보존하고, query-context 열은 매 query 입력에서만 가져온다. 원래 학습 frame을 `fit_catboost`에 전달할 때는 기존 raw feature 값과 materialization을 사용해야 하며, catalog의 log1p 변환값을 다시 학습 전처리에 넣지 않는다.
+
+Uniform sampling은 준비된 `catalog.inventory`를 사용하면 후보 목록을 매 query마다 복사·정렬하지 않고 같은 `random.sample` 결과를 만든다. `score_inner_validation_queries(...)` 호출자는 각 query의 권위 있는 `region`을 `query_features[trip_id]["region"]`에 반드시 제공해야 하며, 값이 후보 카탈로그 권역과 다르거나 누락되면 예측 전에 실패한다. `score_inner_validation_queries(...)`는 query 하나씩 처리하고 후보 점수를 `max_rows_per_batch` 행 이하의 DataFrame으로 나눠 예측한다. 각 chunk에서 `(-score, item_id)` 순서를 유지해 정확한 global top-K를 합친다. 이 행 제한은 prediction frame 크기만 제한한다. 정규화된 전체 후보 카탈로그는 메모리에 남으므로 전체 프로세스 메모리 상한을 뜻하지 않으며, CatBoost 예측 호출도 query마다 수행한다.
+
+합성 경로 확인 명령은 다음과 같다.
+
+~~~bash
+.venv/bin/python scripts/recommendation/benchmark_catboost_validation_stream.py --catalog-size 20000 --queries 60 --batch-rows 1024
+~~~
+
+벤치마크는 legacy full-frame와 prepared chunked 경로의 metric 일치, 구간별 wall time, 최대 prediction-frame 행 수를 보고한다. 별도 `tracemalloc` 수치는 Python 관리 메모리 할당 peak이며 process RSS가 아니다. workload 크기나 실행 환경이 다른 실제 TL 실행시간·메모리의 대리값으로 해석하지 않는다.
+
+코드 검증 시 20,000개 synthetic 후보와 60개 query, 1,024행 chunk로 한 번 측정한 결과다. 비교 목적은 같은 synthetic 입력에서 전체 frame과 bounded scoring의 자원 차이를 확인하는 것이다.
+
+| 경로 | 경과 시간 | Python 할당 peak | 최대 예측 frame |
+| --- | ---: | ---: | ---: |
+| Legacy full-frame 평가 (60 queries) | 7.36초 | — | 20,000행 |
+| Prepared chunked 평가 (60 queries) | 1.44초 | — | 1,024행 |
+| Legacy uniform sampling (60회) | 0.260초 | — | — |
+| Prepared uniform sampling (60회) | 0.00046초 | — | — |
+| Legacy 1-query allocation probe | — | 10,773,814 bytes | 20,000행 |
+| Prepared 1-query allocation probe | — | 535,876 bytes | 1,024행 |
+
+합성 metric dictionary는 두 scoring 경로에서 정확히 같았다. 이 값은 이 synthetic scorer와 한 번의 로컬 측정 결과일 뿐이며, CatBoost training이나 actual TL 병목·성능을 검증하지 않는다. Prepared catalog는 전체 후보 정규화 열을 메모리에 보관하고 predict는 query마다 호출하므로, frame 행 제한을 process RSS 보장으로 해석하지 않는다.
 
 ## #79 검증 범위
 
