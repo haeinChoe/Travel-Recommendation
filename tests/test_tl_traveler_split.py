@@ -12,8 +12,8 @@ from unittest.mock import patch
 from scripts.recommendation.tl_traveler_split import (
     I4SourceUnavailableError,
     audit_payload,
-    deterministic_trip_level_split,
     deterministic_traveler_group_split,
+    deterministic_trip_level_split,
     main,
     recompute_inner_train_positive_interaction_count,
     recompute_inner_train_visit_type_codes,

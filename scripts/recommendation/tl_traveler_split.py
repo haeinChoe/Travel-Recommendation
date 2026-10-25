@@ -8,15 +8,16 @@ import json
 import os
 import sys
 from collections import Counter, defaultdict
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from statistics import mean, median
-from typing import Iterable, Mapping, Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.recommendation.training_data_contract import (
+# This import follows REPO_ROOT setup so direct script execution resolves the package.
+from scripts.recommendation.training_data_contract import (  # noqa: E402
     TOURISM_CORE_VISIT_AREA_TYPES,
     validate_code_domain,
 )
@@ -146,7 +147,7 @@ def deterministic_traveler_group_split(
     ranked = sorted(
         travelers,
         key=lambda traveler: (
-            hashlib.sha256(f"{seed_text}\0{traveler}".encode("utf-8")).hexdigest(),
+            hashlib.sha256(f"{seed_text}\0{traveler}".encode()).hexdigest(),
             traveler,
         ),
     )
@@ -178,7 +179,7 @@ def deterministic_trip_level_split(
     ranked = sorted(
         trips,
         key=lambda trip: (
-            hashlib.sha256(f"{seed_text}\0{trip}".encode("utf-8")).hexdigest(),
+            hashlib.sha256(f"{seed_text}\0{trip}".encode()).hexdigest(),
             trip,
         ),
     )
