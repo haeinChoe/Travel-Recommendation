@@ -128,14 +128,12 @@ def resolve_canonical_admin_location(
     master_addresses: Sequence[str | None] = (),
     tourapi_admin_codes: Sequence[object] = (),
     tourapi_addresses: Sequence[str | None] = (),
-    visit_sgg_codes: Sequence[object] = (),
-    visit_addresses: Sequence[str | None] = (),
 ) -> CanonicalAdminLocation:
-    """Resolve location from static evidence and report visit evidence separately.
+    """Resolve canonical location from static catalogue evidence only.
 
-    Static Master/TourAPI evidence can populate model fields. Visit evidence is
-    diagnostic only: it can flag a conflict but can never fill a missing static
-    field. This keeps validation positives from contributing to their own X.
+    Visit evidence is intentionally absent from this API. Call
+    :func:`compare_visit_location` separately for privacy-safe diagnostics so
+    interactions cannot change a model-facing item feature.
     """
     master, master_prov, master_ambiguous = _evidence_codes(
         "master", master_sgg_codes, master_addresses, lookup
@@ -143,11 +141,8 @@ def resolve_canonical_admin_location(
     tour, tour_prov, tour_ambiguous = _evidence_codes(
         "tourapi", tourapi_admin_codes, tourapi_addresses, lookup
     )
-    visit, visit_prov, visit_ambiguous = _evidence_codes(
-        "visit", visit_sgg_codes, visit_addresses, lookup
-    )
     static = master | tour
-    provenance = tuple(sorted(set(master_prov + tour_prov + visit_prov)))
+    provenance = tuple(sorted(set(master_prov + tour_prov)))
 
     conflict_sources: set[str] = set()
     if len(master) > 1:
@@ -161,12 +156,7 @@ def resolve_canonical_admin_location(
             conflict_sources.add("master")
         else:
             conflict_sources.add("tourapi")
-    if len(visit) > 1:
-        conflict_sources.add("visit")
-    if len(static) == 1 and visit and not visit.issubset(static):
-        conflict_sources.add("visit")
-
-    ambiguous = master_ambiguous or tour_ambiguous or visit_ambiguous
+    ambiguous = master_ambiguous or tour_ambiguous
     if conflict_sources:
         status = "conflict"
         selected = None
@@ -176,9 +166,6 @@ def resolve_canonical_admin_location(
     elif len(static) == 1:
         selected = next(iter(static))
         status = "resolved_multi_source" if len(master) and len(tour) else "resolved_single_source"
-    elif visit:
-        status = "visit_only_unconfirmed"
-        selected = None
     else:
         status = "unavailable"
         selected = None

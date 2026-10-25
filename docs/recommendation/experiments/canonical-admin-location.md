@@ -35,6 +35,8 @@ AI Hub의 여러 위치 단서를 어떻게 하나의 검증 가능한 행정구
 
 정적 Master SGG와 주소를 각각 `TC_SGG` 코드와 이름에 독립적으로 대응한 뒤 합친다. 입력 코드가 정확히 유효하거나 10자리 표현에서 후행 5자리가 모두 0일 때만 5자리 prefix를 인정한다. 주소는 명시된 SIDO와 SGG 이름이 codebook 한 행에 정확히 대응할 때만 근거로 인정한다. 동명 SGG가 둘 이상이면 모호하다. 느슨한 fuzzy match, 주소 일부 추측, 좌표 추정은 하지 않는다.
 
+`resolve_canonical_admin_location()`의 API는 static Master/TourAPI evidence만 받는다. 방문 SGG/address 인자는 없고, visit 값은 별도 `compare_visit_location()` 진단에서만 비교하므로 interaction evidence가 canonical code/status/provenance를 바꿀 수 없다.
+
 여러 정적 근거가 같은 SGG를 지지하면 해결한다. Master 코드와 주소가 다르거나, 같은 source가 복수 SGG를 가리키거나, 보조 TourAPI 주소/행정 코드가 Master와 다른 코드를 가리키면 `conflict`로 처리하고 canonical 코드를 비운다. 주소 후보가 여러 행정구역에 맞으면 `ambiguous_address`로 처리한다. 유효 위치 근거가 없으면 `unavailable`이다. Persisted `canonical_admin_location_status`는 `resolved_single_source`, `resolved_multi_source`, `conflict`, `ambiguous_address`, `unavailable` 중 하나다. `visit_only_unconfirmed`는 visit corroboration 진단 상태일 뿐 item feature enum에 포함하지 않는다.
 
 TourAPI snapshot의 주소·행정 필드는 generic resolver의 보조 입력으로 허용한다. 그러나 현재 학습 데이터 생성 경로에는 AI Hub item과 TourAPI `contentid` 사이의 승인된 동일 항목 연결을 공급하지 않으므로 실제 item feature에는 병합하지 않는다. `contentid`/주소 유사성만으로 POI identity를 만들지 않는다. 검증된 연결이 후속으로 제공되면 동일한 concordance 정책을 통과해야 한다.

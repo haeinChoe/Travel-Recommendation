@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from inspect import signature
 
 from scripts.recommendation.canonical_admin_location import (
     address_admin_codes,
@@ -80,11 +81,8 @@ class CanonicalAdminLocationTests(unittest.TestCase):
         self.assertIsNone(conflict.sgg_code)
 
     def test_visit_only_evidence_never_populates_static_feature(self) -> None:
-        result = resolve_canonical_admin_location(
-            lookup=LOOKUP, visit_sgg_codes=("11110",)
-        )
-        self.assertEqual(result.status, "visit_only_unconfirmed")
-        self.assertIsNone(result.sgg_code)
+        self.assertNotIn("visit_sgg_codes", signature(resolve_canonical_admin_location).parameters)
+        self.assertNotIn("visit_addresses", signature(resolve_canonical_admin_location).parameters)
         self.assertEqual(compare_visit_location(
             canonical_sgg_code=None, visit_sgg_codes=("11110",), visit_addresses=(), lookup=LOOKUP
         ), "visit_only_unconfirmed")
@@ -96,16 +94,18 @@ class CanonicalAdminLocationTests(unittest.TestCase):
         ), "conflicts_with_static")
 
     def test_validation_positive_cannot_change_static_feature(self) -> None:
-        before = resolve_canonical_admin_location(lookup=LOOKUP, master_sgg_codes=("11110",))
+        result = resolve_canonical_admin_location(
+            lookup=LOOKUP, master_sgg_codes=("11110",)
+        )
         comparison = compare_visit_location(
-            canonical_sgg_code=before.sgg_code,
+            canonical_sgg_code=result.sgg_code,
             visit_sgg_codes=("41110",),
             visit_addresses=(),
             lookup=LOOKUP,
         )
-        after = resolve_canonical_admin_location(lookup=LOOKUP, master_sgg_codes=("11110",))
         self.assertEqual(comparison, "conflicts_with_static")
-        self.assertEqual(before, after)
+        self.assertEqual(result.sgg_code, "11110")
+        self.assertEqual(result.status, "resolved_single_source")
 
 
 if __name__ == "__main__":
