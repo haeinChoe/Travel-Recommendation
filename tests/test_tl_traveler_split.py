@@ -110,7 +110,7 @@ class TLTravelerSplitTests(unittest.TestCase):
                 self.trip_owner, seed="s", validation_fraction=1.0
             )
 
-    def test_audit_keeps_repeated_traveler_in_one_partition_across_regions(self) -> None:
+    def test_audit_uses_region_scoped_traveler_groups(self) -> None:
         region_trip_owners = {
             "capital": {"c1": "traveler-a", "c2": "traveler-b",
                         "c3": "traveler-c", "c4": "traveler-d"},
@@ -118,33 +118,7 @@ class TLTravelerSplitTests(unittest.TestCase):
             "east": {"e1": "traveler-f", "e2": "traveler-g"},
             "jeju-islands": {"j1": "traveler-h", "j2": "traveler-i"},
         }
-        seed = "0"
-        for candidate in map(str, range(100)):
-            capital = deterministic_traveler_group_split(
-                region_trip_owners["capital"], seed=candidate, validation_fraction=0.25
-            )
-            west = deterministic_traveler_group_split(
-                region_trip_owners["west"], seed=candidate, validation_fraction=0.25
-            )
-            if capital["c1"] != west["w1"]:
-                seed = candidate
-                break
-
-        combined = {
-            f"{region}:{trip}": traveler
-            for region, owners in region_trip_owners.items()
-            for trip, traveler in owners.items()
-        }
-        combined_partitions = deterministic_traveler_group_split(
-            combined, seed=seed, validation_fraction=0.25
-        )
-        expected = {}
-        for region, owners in region_trip_owners.items():
-            regional_keys = {f"{region}:{trip}" for trip in owners}
-            expected[region] = sum(
-                combined_partitions[key] == "inner-validation" for key in regional_keys
-            )
-
+        seed = "region-scoped"
         rows = {
             region: [
                 {"TRAVEL_ID": trip, "TRAVELER_ID": traveler}
@@ -153,11 +127,21 @@ class TLTravelerSplitTests(unittest.TestCase):
             for region, owners in region_trip_owners.items()
         }
         payload = audit_payload(rows, seed=seed, validation_fraction=0.25)
+        self.assertEqual(payload["split"]["unit"], "(region, TRAVELER_ID)")
+        self.assertEqual(payload["split"]["group_scope"], "within each TL region")
         self.assertEqual(payload["split"]["traveler_overlap"], 0)
-        for region in region_trip_owners:
+        for region, owners in region_trip_owners.items():
+            expected = deterministic_traveler_group_split(
+                owners, seed=seed, validation_fraction=0.25
+            )
             self.assertEqual(
                 payload["regions"][region]["inner_split"]["validation_trips"],
-                expected[region],
+                sum(partition == "inner-validation" for partition in expected.values()),
+            )
+        for region in region_trip_owners:
+            self.assertEqual(
+                payload["regions"][region]["inner_split"]["traveler_overlap"],
+                0,
             )
 
     def test_i3_uses_only_unique_inner_train_tl_interactions(self) -> None:
@@ -255,6 +239,19 @@ class TLTravelerSplitTests(unittest.TestCase):
         }
         with self.assertRaises(I4SourceUnavailableError):
             recompute_inner_train_visit_type_codes(None, partitions)
+        with self.assertRaises(I4SourceUnavailableError):
+            recompute_inner_train_visit_type_codes([], partitions)
+        with self.assertRaises(I4SourceUnavailableError):
+            recompute_inner_train_visit_type_codes(
+                [
+                    {
+                        "TRAVEL_ID": "trip-a1",
+                        "POI_ID": "poi-x",
+                        "source_split": "TL",
+                    }
+                ],
+                partitions,
+            )
 
         events = [
             {

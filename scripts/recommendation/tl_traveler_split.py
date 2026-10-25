@@ -179,7 +179,7 @@ def validate_no_traveler_overlap(
 
 
 def _require_tl_source(row: Mapping[str, object]) -> None:
-    source_split = _clean(row.get("source_split", row.get("split")))
+    source_split = _clean(row.get("source_split")) or _clean(row.get("split"))
     if source_split not in {"TL", "train"}:
         raise ValueError("Inner train-derived features require outer TL interactions/events")
 
@@ -233,15 +233,25 @@ def recompute_inner_train_visit_type_codes(
     core_pairs: set[tuple[str, str]] = set()
     item_ids = {_clean(item_id) for item_id in all_item_ids}
     item_ids.discard(None)
+    event_count = 0
     for row in visit_events:
+        event_count += 1
+        has_trip = "trip_id" in row or "TRAVEL_ID" in row
+        has_item = "item_id" in row or "POI_ID" in row
+        has_type = "visit_type" in row or "VISIT_AREA_TYPE_CD" in row
+        has_split = "source_split" in row or "split" in row
+        if not (has_trip and has_item and has_type and has_split):
+            raise I4SourceUnavailableError(
+                "I4 event source must expose trip, item, visit-type, and TL split fields"
+            )
         _require_tl_source(row)
-        trip_id = _clean(row.get("trip_id", row.get("TRAVEL_ID")))
-        item_id = _clean(row.get("item_id", row.get("POI_ID")))
+        trip_id = _clean(row.get("trip_id")) or _clean(row.get("TRAVEL_ID"))
+        item_id = _clean(row.get("item_id")) or _clean(row.get("POI_ID"))
         if not trip_id or not item_id or partition_by_trip.get(trip_id) != "inner-train":
             continue
         visit_type = validate_code_domain(
             "VISIT_AREA_TYPE_CD",
-            row.get("visit_type", row.get("VISIT_AREA_TYPE_CD")),
+            _clean(row.get("visit_type")) or _clean(row.get("VISIT_AREA_TYPE_CD")),
         )
         if visit_type is None:
             continue
@@ -251,6 +261,10 @@ def recompute_inner_train_visit_type_codes(
             core_pairs.add(key)
         item_ids.add(item_id)
 
+    if event_count == 0:
+        raise I4SourceUnavailableError(
+            "I4 event source must provide rows so its required fields can be verified"
+        )
     result: dict[str, set[str]] = defaultdict(set)
     for trip_id, item_id in core_pairs:
         result[item_id].update(codes_by_pair[(trip_id, item_id)])
@@ -266,69 +280,51 @@ def audit_payload(
     seed: str,
     validation_fraction: float,
 ) -> dict[str, object]:
-    """Build aggregate-only regional stats with one traveler split shared across all regions."""
+    """Build aggregate-only regional stats and region-scoped traveler group splits."""
     if set(region_rows) != set(REGION_ENV_PREFIX):
         raise ValueError("Exactly four TL region inputs are required")
 
-    region_aggregates: dict[str, dict[str, object]] = {}
-    region_trip_keys: dict[str, list[str]] = defaultdict(list)
-    trip_owner: dict[str, str] = {}
-    for region in REGION_ENV_PREFIX:
-        aggregate, owners = traveler_trip_distribution(region_rows[region])
-        region_aggregates[region] = aggregate
-        for trip_id, traveler_id in owners.items():
-            scoped_trip_id = str(len(trip_owner))
-            trip_owner[scoped_trip_id] = traveler_id
-            region_trip_keys[region].append(scoped_trip_id)
-
-    # Group identical TRAVELER_ID values across the full TL pool, including region boundaries.
-    partitions = deterministic_traveler_group_split(
-        trip_owner, seed=seed, validation_fraction=validation_fraction
-    )
-    traveler_overlap = validate_no_traveler_overlap(trip_owner, partitions)
-    traveler_partition: dict[str, str] = {}
-    for trip_id, traveler_id in trip_owner.items():
-        partition = partitions[trip_id]
-        previous = traveler_partition.setdefault(traveler_id, partition)
-        if previous != partition:
-            raise ValueError("Traveler overlap detected across inner partitions")
-
     regions: dict[str, object] = {}
     for region in REGION_ENV_PREFIX:
-        regional_trip_keys = region_trip_keys[region]
-        regional_travelers = {
-            trip_owner[trip_id] for trip_id in regional_trip_keys
-        }
+        aggregate, owners = traveler_trip_distribution(region_rows[region])
+        partitions = deterministic_traveler_group_split(
+            owners, seed=seed, validation_fraction=validation_fraction
+        )
+        overlap = validate_no_traveler_overlap(owners, partitions)
+        traveler_partition: dict[str, str] = {}
+        for trip_id, traveler_id in owners.items():
+            partition = partitions[trip_id]
+            previous = traveler_partition.setdefault(traveler_id, partition)
+            if previous != partition:
+                raise ValueError("Traveler overlap detected across inner partitions")
         regions[region] = {
-            **region_aggregates[region],
+            **aggregate,
             "inner_split": {
                 "train_travelers": sum(
-                    traveler_partition[traveler] == "inner-train"
-                    for traveler in regional_travelers
+                    partition == "inner-train" for partition in traveler_partition.values()
                 ),
                 "validation_travelers": sum(
-                    traveler_partition[traveler] == "inner-validation"
-                    for traveler in regional_travelers
+                    partition == "inner-validation"
+                    for partition in traveler_partition.values()
                 ),
                 "train_trips": sum(
-                    partitions[trip_id] == "inner-train" for trip_id in regional_trip_keys
+                    partition == "inner-train" for partition in partitions.values()
                 ),
                 "validation_trips": sum(
-                    partitions[trip_id] == "inner-validation"
-                    for trip_id in regional_trip_keys
+                    partition == "inner-validation" for partition in partitions.values()
                 ),
-                "traveler_overlap": 0,
+                "traveler_overlap": overlap,
             },
         }
     return {
         "audit_version": 1,
         "split": {
-            "unit": "TRAVELER_ID",
-            "group_scope": "all four TL regions",
+            "unit": "(region, TRAVELER_ID)",
+            "group_scope": "within each TL region",
             "seed": seed,
             "validation_fraction": validation_fraction,
             "partition_names": ["inner-train", "inner-validation"],
-            "traveler_overlap": traveler_overlap,
+            "traveler_overlap": 0,
         },
         "regions": regions,
         "privacy": {
