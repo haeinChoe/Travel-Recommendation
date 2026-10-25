@@ -155,7 +155,7 @@ C1 Region
 
 - runtime이 충분하면 exhaustive search
 - 비용이 크면 forward greedy 후 backward removal check
-- I2와 I4는 runnable이다. I3/I4는 `materialize_inner_train_item_features`가 만든 결과만 사용하며, helper input의 TL provenance와 trip split 검증을 통과하지 못하면 중단한다.
+- I2와 I4는 runnable이다. `fit_catboost`는 I3/I4를 포함한 행마다 helper가 발급한 immutable materialization과의 item key, trip partition, feature 값 일치를 확인한다. `inner-train` 문자열만으로는 fit을 허용하지 않는다.
 
 해석을 위해 best configuration 하나만 남기지 않고 최소 다음 비교도 보존한다.
 

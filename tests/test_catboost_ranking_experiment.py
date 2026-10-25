@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import math
+import sys
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -24,6 +27,7 @@ from scripts.recommendation.catboost_ranking_experiment import (
     feature_group_combinations,
     feature_search_configs,
     filter_region_candidates,
+    fit_catboost,
     normalize_feature_value,
     objective_search_configs,
     ranking_metric_at_k,
@@ -223,6 +227,129 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
                 visit_events=None,
                 split_seed="smoke",
             )
+
+    def test_fit_rejects_arbitrary_train_derived_frames_even_with_scope_string(self) -> None:
+        train = pd.DataFrame({
+            "item_id": ["item-a", "item-b"],
+            "trip_id": ["trip-train", "trip-train"],
+            "train_positive_interaction_count": [999, 999],
+            "train_observed_visit_type_codes": [["13"], ["13"]],
+            "label": [1, 0],
+            "group": ["query-train", "query-train"],
+        })
+        validation = pd.DataFrame({
+            "item_id": ["item-a", "item-b"],
+            "trip_id": ["trip-validation", "trip-validation"],
+            "train_positive_interaction_count": [999, 999],
+            "train_observed_visit_type_codes": [["13"], ["13"]],
+            "label": [1, 0],
+            "group": ["query-validation", "query-validation"],
+        })
+        with self.assertRaisesRegex(ValueError, "requires output from materialize"):
+            fit_catboost(
+                train,
+                validation,
+                label_column="label",
+                group_column="group",
+                config=ExperimentConfig(("I3_POPULARITY", "I4_HISTORICAL_POI")),
+                train_derived_source_scope="inner-train",
+            )
+
+    def test_fit_rejects_rows_that_disagree_with_helper_materialization(self) -> None:
+        materialized, train, validation = self._helper_backed_fit_frames()
+        train.loc[0, "train_positive_interaction_count"] = 999
+        with self.assertRaisesRegex(ValueError, "do not match inner-train materialization"):
+            fit_catboost(
+                train,
+                validation,
+                label_column="label",
+                group_column="group",
+                config=ExperimentConfig(("I3_POPULARITY", "I4_HISTORICAL_POI")),
+                train_derived_source_scope="inner-train",
+                inner_train_materialization=materialized,
+            )
+
+    def test_helper_materialization_can_reach_model_fit_boundary(self) -> None:
+        materialized, train, validation = self._helper_backed_fit_frames()
+        with self.assertRaises(TypeError):
+            materialized.item_features[0]["train_positive_interaction_count"] = 999  # type: ignore[index]
+
+        class FakePool:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+        class FakeRanker:
+            def __init__(self, **kwargs: object) -> None:
+                self.tree_count_ = 0
+
+            def fit(self, *args: object, **kwargs: object) -> None:
+                self.tree_count_ = 1
+
+        fake_catboost = SimpleNamespace(CatBoostRanker=FakeRanker, Pool=FakePool)
+        config = ExperimentConfig(
+            ("I2_ADMINISTRATIVE_LOCATION", "I3_POPULARITY", "I4_HISTORICAL_POI")
+        )
+        with patch.dict(sys.modules, {"catboost": fake_catboost}):
+            model = fit_catboost(
+                train,
+                validation,
+                label_column="label",
+                group_column="group",
+                config=config,
+                train_derived_source_scope="inner-train",
+                inner_train_materialization=materialized,
+            )
+        self.assertEqual(model.tree_count_, 1)
+
+    @staticmethod
+    def _helper_backed_fit_frames() -> tuple[object, pd.DataFrame, pd.DataFrame]:
+        from scripts.recommendation.tl_traveler_split import (
+            deterministic_traveler_group_split,
+        )
+
+        trip_owner = {"trip-a": "traveler-a", "trip-b": "traveler-b"}
+        partitions = deterministic_traveler_group_split(trip_owner, seed="fit")
+        materialized = materialize_inner_train_item_features(
+            trip_owner=trip_owner,
+            item_features=[
+                {"item_id": "item-a", "region": "capital", "canonical_admin_sido_code": "11",
+                 "canonical_admin_sgg_code": "11010", "canonical_admin_location_status": "direct",
+                 "train_positive_interaction_count": 999, "train_observed_visit_type_codes": ["13"]},
+                {"item_id": "item-b", "region": "capital", "canonical_admin_sido_code": "11",
+                 "canonical_admin_sgg_code": "11020", "canonical_admin_location_status": "direct",
+                 "train_positive_interaction_count": 999, "train_observed_visit_type_codes": ["13"]},
+            ],
+            positive_interactions=[
+                {"TRAVEL_ID": trip, "POI_ID": "item-a", "observed_positive": 1, "source_split": "TL"}
+                for trip in trip_owner
+            ],
+            visit_events=[
+                {"TRAVEL_ID": trip, "POI_ID": "item-a", "VISIT_AREA_TYPE_CD": "1", "source_split": "TL"}
+                for trip in trip_owner
+            ],
+            split_seed="fit",
+        )
+        items = {row["item_id"]: row for row in materialized.item_features}
+
+        def rows_for(partition: str) -> pd.DataFrame:
+            trip_id = next(trip for trip, value in partitions.items() if value == partition)
+            rows = []
+            for item_id, label in (("item-a", 1), ("item-b", 0)):
+                item = items[item_id]
+                rows.append({
+                    "item_id": item_id,
+                    "trip_id": trip_id,
+                    "group": trip_id,
+                    "label": label,
+                    **{column: item[column] for column in (
+                        "canonical_admin_sido_code", "canonical_admin_sgg_code",
+                        "canonical_admin_location_status", "train_positive_interaction_count",
+                        "train_observed_visit_type_codes",
+                    )},
+                })
+            return pd.DataFrame(rows)
+
+        return materialized, rows_for("inner-train"), rows_for("inner-validation")
 
     def test_uniform_sampling_is_deterministic_and_excludes_positives(self) -> None:
         candidates = {"a", "b", "c", "d", "e"}

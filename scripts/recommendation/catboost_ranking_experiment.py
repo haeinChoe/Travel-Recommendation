@@ -16,10 +16,11 @@ import math
 import random
 import sys
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import combinations
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -154,7 +155,11 @@ class InnerTrainItemFeatures:
     """
 
     partition_by_trip: Mapping[str, str]
-    item_features: tuple[dict[str, Any], ...]
+    item_features: tuple[Mapping[str, Any], ...]
+    _provenance_token: object = field(default=None, repr=False, compare=False)
+
+
+_INNER_TRAIN_MATERIALIZATION_TOKEN = object()
 
 
 def materialize_inner_train_item_features(
@@ -207,9 +212,46 @@ def materialize_inner_train_item_features(
         row["train_observed_visit_type_codes"] = i4[item_id]
 
     return InnerTrainItemFeatures(
-        partition_by_trip=dict(partition_by_trip),
-        item_features=tuple(candidates),
+        partition_by_trip=MappingProxyType(dict(partition_by_trip)),
+        item_features=tuple(MappingProxyType(row) for row in candidates),
+        _provenance_token=_INNER_TRAIN_MATERIALIZATION_TOKEN,
     )
+
+
+def _validate_inner_train_materialization_rows(
+    frame: Any,
+    *,
+    materialization: InnerTrainItemFeatures,
+    expected_partition: str,
+    derived_columns: Sequence[str],
+) -> None:
+    """Bind every model row to exact helper output and its traveler split."""
+    if materialization._provenance_token is not _INNER_TRAIN_MATERIALIZATION_TOKEN:
+        raise ValueError("Train-derived features lack runner materialization provenance")
+    required = {"item_id", "trip_id", *derived_columns}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError("Train-derived model rows require item/trip provenance columns")
+
+    by_item = {str(row["item_id"]): row for row in materialization.item_features}
+    for item_id, trip_id, *feature_values in frame[
+        ["item_id", "trip_id", *derived_columns]
+    ].itertuples(index=False, name=None):
+        item_key = str(item_id).strip()
+        trip_key = str(trip_id).strip()
+        source = by_item.get(item_key)
+        if source is None:
+            raise ValueError("Model row is outside the materialized AI Hub candidate inventory")
+        if materialization.partition_by_trip.get(trip_key) != expected_partition:
+            raise ValueError("Model query does not match the materialized inner partition")
+        for column, actual in zip(derived_columns, feature_values, strict=True):
+            if actual != source[column]:
+                raise ValueError("Model row train-derived features do not match inner-train materialization")
+
+
+TRAIN_DERIVED_COLUMNS = frozenset({
+    column for group in TRAIN_DERIVED_GROUPS for column in FEATURE_GROUPS[group]
+})
 
 
 def available_feature_groups() -> tuple[str, ...]:
@@ -573,20 +615,15 @@ def fit_catboost(
     group_column: str,
     config: ExperimentConfig,
     train_derived_source_scope: str | None = None,
+    inner_train_materialization: InnerTrainItemFeatures | None = None,
 ) -> Any:
     """Thin adapter; Issue #82 owns actual CatBoost execution and tuning."""
 
     config.validate()
     validate_train_derived_scope(config, train_derived_source_scope)
-    try:
-        from catboost import CatBoostRanker, Pool
-    except ImportError as exc:
-        raise RuntimeError(
-            "CatBoost is not installed; execution belongs to Issue #82"
-        ) from exc
-
     features = list(selected_feature_columns(config))
     categorical = list(categorical_feature_columns(config))
+    derived_features = [column for column in features if column in TRAIN_DERIVED_COLUMNS]
     required = {*features, label_column, group_column}
     missing_train = required - set(train_frame.columns)
     missing_validation = required - set(validation_frame.columns)
@@ -594,6 +631,31 @@ def fit_catboost(
         raise ValueError(f"Training frame missing: {sorted(missing_train)}")
     if missing_validation:
         raise ValueError(f"Validation frame missing: {sorted(missing_validation)}")
+
+    if derived_features:
+        if inner_train_materialization is None:
+            raise ValueError(
+                "I3/I4 fitting requires output from materialize_inner_train_item_features"
+            )
+        _validate_inner_train_materialization_rows(
+            train_frame,
+            materialization=inner_train_materialization,
+            expected_partition="inner-train",
+            derived_columns=derived_features,
+        )
+        _validate_inner_train_materialization_rows(
+            validation_frame,
+            materialization=inner_train_materialization,
+            expected_partition="inner-validation",
+            derived_columns=derived_features,
+        )
+
+    try:
+        from catboost import CatBoostRanker, Pool
+    except ImportError as exc:
+        raise RuntimeError(
+            "CatBoost is not installed; execution belongs to Issue #82"
+        ) from exc
 
     validate_ranking_group_layout(
         list(train_frame[group_column]), list(train_frame[label_column])
