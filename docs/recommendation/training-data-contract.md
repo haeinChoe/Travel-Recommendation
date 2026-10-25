@@ -3,6 +3,8 @@
 - **관련 Issue:** [#17](https://github.com/haeinChoe/Travel-Recommendation/issues/17), [#45](https://github.com/haeinChoe/Travel-Recommendation/issues/45), [#69](https://github.com/haeinChoe/Travel-Recommendation/issues/69), [#71](https://github.com/haeinChoe/Travel-Recommendation/issues/71)
 - **현재 상태:** 4개 권역(수도권·서부권·동부권·제주도 및 도서지역) 실제 데이터 코호트 감사 및 `TC_CODEB`(`cd_a = 'VIS'`) 공식 코드북 검증 완료 (`issue71-training-contract-20261020T1550Z`)
 
+- **TL inner split (Issue #80):** 권역 단위 `(region, TRAVELER_ID)` 결정론적 분할과 privacy-safe 분포 감사 CLI를 추가했다. 네 권역 입력의 provenance 확인을 통과한 실제 TL 감사에서 권역별 distinct traveler/trip은 각각 2,560/2,560이었고 traveler 모두 한 trip을 가졌다 (multi-trip share 0%). 현재 표본에서는 trip split도 traveler를 나누지 않아 traveler leakage 관점에서 구조적으로 동등하지만, 미래의 반복 traveler에 안전하도록 기본 계약은 `(region, TRAVELER_ID)` group split으로 유지한다. seed `issue80-v1`, validation 비율 0.2의 group split은 권역마다 2,048 train / 512 validation traveler와 trip을 배정했고 traveler overlap은 0이었다. Partition-label disagreement는 서로 다른 hash key의 deterministic assignment 간 label 차이일 뿐 leakage metric가 아니다. I3 재계산은 inner-train TL interaction만 사용한다. I4 inner-train 이벤트 재계산 함수는 구현·테스트 완료했으며, 현재 남은 작업은 #82 runner에서 이벤트 입력으로 helper를 연결하는 것이다.
+
 > 이 문서는 코호트·라벨의 의미와 승인된 분석 집계를 설명한다. 실제 세 Parquet 출력 이름, TL/VL→`train`/`validation` 변환, 모든 출력 컬럼의 null·타입·역할 규칙은 [표준 학습 데이터셋 스키마](training-dataset-schema.md)를 기준으로 한다. 여기서 언급하는 대문자 AI Hub 컬럼은 원천 필드 이름이다.
 
 ## 한눈에 보기

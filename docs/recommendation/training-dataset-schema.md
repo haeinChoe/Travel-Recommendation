@@ -69,6 +69,35 @@ Parquet null 제약은 변환 검증과 이 문서로 보장한다. “필수”
 
 원천 `TL`/`VL` 역할 표시는 파일 선택과 감사 집계에서만 쓴다. Parquet split 값과 `observed_in_splits`에는 `train`/`validation`만 허용한다. 아이템의 train-derived 값은 TL 입력에서만 만든다. validation을 `train_positive_interaction_count`나 `train_observed_visit_type_codes` 생성에 포함하면 누수다.
 
+### TL 내부 개발 분할과 재계산 (Issue #80)
+
+표준 Parquet의 `train`/`validation`은 outer TL/VL 역할을 계속 나타낸다. cold-user tuning용 inner split은 canonical 관측 단위인 `(region, TRAVELER_ID, TRAVEL_ID)`에서 `(region, TRAVELER_ID)`를 group key로 삼아 같은 권역 내 같은 여행자의 모든 `TRAVEL_ID`를 한 partition에 배정하며, raw ID와 경로는 메모리 안에서만 사용한다. 원천 계약은 traveler ID의 권역 간 전역 유일성을 보장하지 않으므로 권역을 포함해 식별한다. 분포·split 대상은 canonical 학습 코호트와 맞추기 위해 `TN_TRAVEL`의 유일한 여행 행 중 유일한 `TN_TRAVELLER_MASTER` traveler 행과 연결되는 trip으로 한정한다. `scripts/recommendation/tl_traveler_split.py`는 seed와 validation 비율을 받아 결정론적으로 나누고, 여행자 overlap을 검사한다. 같은 seed로 trip 단위 reference split도 생성해 partition label 불일치 trip 수/비율을 계산하고, trip split에서 여러 partition에 나뉜 traveler 수/비율과 그 traveler의 여행 수/비율을 집계한다. label 불일치는 두 hash 단위가 달라 생기는 결정론적 비교값일 뿐 split 구조의 동등성이나 leakage 측정값을 뜻하지 않는다. 실제 구조 차이는 multi-trip traveler 비율과 trip split의 traveler overlap으로 판단한다. 실측 네 권역에서는 모두 traveler:trip 1:1이고 multi-trip share가 0%였으므로 현재 표본에서 trip split도 traveler를 분할하지 않았다. 다만 반복 traveler가 있는 미래 입력에서도 cold-user leakage를 막도록 기본 계약은 traveler group split으로 둔다. 기본 설정은 seed `issue80-v1`, validation 비율 0.2다.
+
+inner split 뒤 I3 `train_positive_interaction_count`는 outer TL의 고유 양성 trip-item interaction 중 inner-train 여행만 세어 다시 만든다. I4 `train_observed_visit_type_codes`는 canonical `trip_item_interaction.parquet`에서 가져오지 않는다. 해당 파일에는 방문 유형이 없기 때문이다. 대신 같은 TL 원천의 `TN_VISIT_AREA_INFO.TRAVEL_ID`, `POI_ID`, `VISIT_AREA_TYPE_CD` 이벤트를 inner-train 여행과 연결해 재계산한다. 이 계산 함수 `recompute_inner_train_visit_type_codes`는 Issue #80에서 구현했고 synthetic tests로 검증했다. 최소 하나의 관광 핵심 방문 이벤트가 있는 trip-item만 item feature 대상이 되며, 이 쌍의 유효 방문유형 코드를 모은다. 원천 이벤트 입력이 없거나 trip/item/visit-type/TL split 필드를 확인할 수 없으면 I4를 추정하지 않고 `I4SourceUnavailableError`로 중단한다. 아직 남은 작업은 #82의 CatBoost runner가 TL visit-event 입력을 helper에 연결하는 것이다. 이는 I4 계산 방법 구현의 미완료 상태를 뜻하지 않는다.
+
+승인된 실행 환경에서 `CAPITAL_TL`, `WEST_TL`, `EAST_TL`, `JEJU_TL`을 해당 TL 입력 디렉터리에 바인딩한 뒤 다음 명령으로 privacy-safe aggregate를 출력한다. 출력은 표준 출력의 JSON이며 실제 원천 경로나 ID 값은 쓰지 않는다. Issue #80 실행에서는 네 role binding 모두 provenance 확인을 통과했다.
+
+~~~bash
+uv run python scripts/recommendation/tl_traveler_split.py \
+  --seed issue80-v1 \
+  --validation-fraction 0.2
+~~~
+
+이 내부 분할 규칙은 기존 Parquet의 스키마나 값 의미를 바꾸지 않는다. outer-TL 전체에서 계산된 canonical I3/I4는 TL 내부 tuning에 재사용하지 않으며, outer TL→VL 최종 학습에만 사용한다. 네 권역 입력 provenance 확인과 실제 traveler-trip aggregate 및 split 비교를 완료했고, synthetic 회귀·CLI 테스트도 실행했다. 상세 aggregate는 다음 절에 기록한다.
+
+### Issue #80 실제 TL aggregate
+
+검증된 네 role binding으로 실행한 결과, 각 권역은 동일한 aggregate를 보였다. 각 권역에 distinct traveler 2,560명과 distinct trip 2,560개가 있었고, traveler trip-count 구간은 1 trip 2,560명, 2 trips 0명, 3+ trips 0명이었다. 평균·중앙값·최대 trips는 각각 1이며 multi-trip traveler share는 0%다.
+
+| 권역 | Inner-train travelers / trips | Inner-validation travelers / trips | Group-split traveler overlap | Trip-split structural traveler overlap | Partition-label disagreement |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 수도권 (Capital) | 2,048 / 2,048 | 512 / 512 | 0 | 0 | 784 / 2,560 (30.6250%) |
+| 동부권 (East) | 2,048 / 2,048 | 512 / 512 | 0 | 0 | 812 / 2,560 (31.71875%) |
+| 제주도 및 도서지역 (Jeju Islands) | 2,048 / 2,048 | 512 / 512 | 0 | 0 | 804 / 2,560 (31.40625%) |
+| 서부권 (West) | 2,048 / 2,048 | 512 / 512 | 0 | 0 | 818 / 2,560 (31.953125%) |
+
+분할 seed는 `issue80-v1`, validation fraction은 0.2다. 현재 표본에서 모든 traveler가 한 trip만 보유하고 trip-split structural traveler overlap은 권역별 0명이므로, 두 split은 traveler leakage 방지 구조 측면에서 동등하다. 기본 계약은 미래 반복 traveler를 고려해 traveler group split을 유지한다. Partition-label disagreement는 traveler key와 trip key로 만든 두 deterministic assignment의 label 비교일 뿐 structural equivalence나 leakage metric가 아니다. 집계는 aggregate 수치만 기록하며 원천 ID와 경로는 문서화하지 않는다.
+
 ## 원천→표준 컬럼 매핑
 
 다음 표는 원천 시스템 이름을 보존하는 유일한 데이터 의미 매핑이다. 출력 Parquet에는 원천 대문자 컬럼명을 그대로 내보내지 않는다.

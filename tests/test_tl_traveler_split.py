@@ -1,0 +1,482 @@
+from __future__ import annotations
+
+import csv
+import io
+import json
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
+
+from scripts.recommendation.tl_traveler_split import (
+    I4SourceUnavailableError,
+    audit_payload,
+    deterministic_traveler_group_split,
+    deterministic_trip_level_split,
+    main,
+    recompute_inner_train_positive_interaction_count,
+    recompute_inner_train_visit_type_codes,
+    traveler_trip_distribution,
+    valid_unique_trip_owner_rows,
+    validate_no_traveler_overlap,
+)
+
+
+class TLTravelerSplitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.trip_owner = {
+            "trip-a1": "traveler-a",
+            "trip-b1": "traveler-b",
+            "trip-b2": "traveler-b",
+            "trip-c1": "traveler-c",
+            "trip-c2": "traveler-c",
+            "trip-c3": "traveler-c",
+            "trip-d1": "traveler-d",
+        }
+
+    def test_distribution_reports_only_required_aggregate_statistics(self) -> None:
+        rows = [
+            {"TRAVEL_ID": trip, "TRAVELER_ID": traveler}
+            for trip, traveler in self.trip_owner.items()
+        ]
+        aggregate, owners = traveler_trip_distribution(rows)
+        self.assertEqual(aggregate["distinct_travelers"], 4)
+        self.assertEqual(aggregate["distinct_trips"], 7)
+        self.assertEqual(
+            aggregate["traveler_trip_count"],
+            {
+                "one_trip_travelers": 2,
+                "two_trip_travelers": 1,
+                "three_or_more_trip_travelers": 1,
+            },
+        )
+        self.assertEqual(aggregate["mean_trips_per_traveler"], 1.75)
+        self.assertEqual(aggregate["median_trips_per_traveler"], 1.5)
+        self.assertEqual(aggregate["max_trips_per_traveler"], 3)
+        self.assertEqual(aggregate["multi_trip_traveler_share"], 0.5)
+        self.assertEqual(owners, self.trip_owner)
+        self.assertNotIn("traveler-a", json.dumps(aggregate))
+        self.assertNotIn("trip-a1", json.dumps(aggregate))
+
+    def test_canonical_owner_rows_exclude_ambiguous_trips_and_travelers(self) -> None:
+        trip_rows = [
+            {"TRAVEL_ID": "trip-a", "TRAVELER_ID": "traveler-a"},
+            {"TRAVEL_ID": "trip-b", "TRAVELER_ID": "traveler-b"},
+            {"TRAVEL_ID": "trip-b", "TRAVELER_ID": "traveler-b"},
+            {"TRAVEL_ID": "trip-c", "TRAVELER_ID": "traveler-c"},
+            {"TRAVEL_ID": "trip-d", "TRAVELER_ID": "traveler-orphan"},
+        ]
+        traveler_rows = [
+            {"TRAVELER_ID": "traveler-a"},
+            {"TRAVELER_ID": "traveler-b"},
+            {"TRAVELER_ID": "traveler-c"},
+            {"TRAVELER_ID": "traveler-c"},
+        ]
+        self.assertEqual(
+            valid_unique_trip_owner_rows(trip_rows, traveler_rows),
+            [{"TRAVEL_ID": "trip-a", "TRAVELER_ID": "traveler-a"}],
+        )
+
+    def test_distribution_deduplicates_trips_and_rejects_conflicting_owners(self) -> None:
+        rows = [
+            {"TRAVEL_ID": "trip-a", "TRAVELER_ID": "traveler-a"},
+            {"TRAVEL_ID": "trip-a", "TRAVELER_ID": "traveler-a"},
+        ]
+        aggregate, _ = traveler_trip_distribution(rows)
+        self.assertEqual(aggregate["distinct_trips"], 1)
+        with self.assertRaisesRegex(ValueError, "conflicting traveler ownership"):
+            traveler_trip_distribution(
+                rows + [{"TRAVEL_ID": "trip-a", "TRAVELER_ID": "traveler-b"}]
+            )
+
+    def test_group_split_is_deterministic_and_has_no_traveler_overlap(self) -> None:
+        first = deterministic_traveler_group_split(
+            self.trip_owner, seed=41, validation_fraction=0.25
+        )
+        second = deterministic_traveler_group_split(
+            self.trip_owner, seed=41, validation_fraction=0.25
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(validate_no_traveler_overlap(self.trip_owner, first), 0)
+        self.assertEqual(set(first), set(self.trip_owner))
+        for traveler in set(self.trip_owner.values()):
+            partitions = {
+                first[trip]
+                for trip, owner in self.trip_owner.items()
+                if owner == traveler
+            }
+            self.assertEqual(len(partitions), 1)
+
+    def test_trip_level_split_is_deterministic_and_complete(self) -> None:
+        first = deterministic_trip_level_split(
+            self.trip_owner, seed="trip-reference", validation_fraction=0.25
+        )
+        second = deterministic_trip_level_split(
+            self.trip_owner, seed="trip-reference", validation_fraction=0.25
+        )
+        self.assertEqual(first, second)
+        self.assertEqual(set(first), set(self.trip_owner))
+
+    def test_group_split_rejects_one_traveler_or_invalid_ratio(self) -> None:
+        with self.assertRaisesRegex(ValueError, "At least two travelers"):
+            deterministic_traveler_group_split(
+                {"trip-a": "traveler-a"}, seed="s", validation_fraction=0.2
+            )
+        with self.assertRaisesRegex(ValueError, "between zero and one"):
+            deterministic_traveler_group_split(
+                self.trip_owner, seed="s", validation_fraction=1.0
+            )
+
+    def test_audit_uses_region_scoped_traveler_groups(self) -> None:
+        region_trip_owners = {
+            "capital": {"c1": "traveler-a", "c2": "traveler-b",
+                        "c3": "traveler-c", "c4": "traveler-d"},
+            "west": {"w1": "traveler-a", "w2": "traveler-e"},
+            "east": {"e1": "traveler-f", "e2": "traveler-g"},
+            "jeju-islands": {"j1": "traveler-h", "j2": "traveler-i"},
+        }
+        seed = "region-scoped"
+        for candidate in map(str, range(100)):
+            regional = {
+                region: deterministic_traveler_group_split(
+                    owners, seed=candidate, validation_fraction=0.25
+                )
+                for region, owners in region_trip_owners.items()
+            }
+            combined = {
+                f"{region}:{trip}": traveler
+                for region, owners in region_trip_owners.items()
+                for trip, traveler in owners.items()
+            }
+            combined_partitions = deterministic_traveler_group_split(
+                combined, seed=candidate, validation_fraction=0.25
+            )
+            if (
+                regional["capital"]["c1"]
+                != combined_partitions["capital:c1"]
+                or regional["west"]["w1"] != combined_partitions["west:w1"]
+            ):
+                seed = candidate
+                break
+        rows = {
+            region: [
+                {"TRAVEL_ID": trip, "TRAVELER_ID": traveler}
+                for trip, traveler in owners.items()
+            ]
+            for region, owners in region_trip_owners.items()
+        }
+        payload = audit_payload(rows, seed=seed, validation_fraction=0.25)
+        self.assertEqual(payload["split"]["unit"], "(region, TRAVELER_ID)")
+        self.assertEqual(payload["split"]["group_scope"], "within each TL region")
+        self.assertEqual(payload["split"]["traveler_overlap"], 0)
+        for region, owners in region_trip_owners.items():
+            expected = deterministic_traveler_group_split(
+                owners, seed=seed, validation_fraction=0.25
+            )
+            self.assertEqual(
+                payload["regions"][region]["inner_split"]["validation_trips"],
+                sum(partition == "inner-validation" for partition in expected.values()),
+            )
+            trip_split = deterministic_trip_level_split(
+                owners, seed=seed, validation_fraction=0.25
+            )
+            trip_partitions_by_traveler = {}
+            for trip, traveler in owners.items():
+                trip_partitions_by_traveler.setdefault(traveler, set()).add(
+                    trip_split[trip]
+                )
+            split_travelers = {
+                traveler
+                for traveler, partitions in trip_partitions_by_traveler.items()
+                if len(partitions) > 1
+            }
+            label_disagreement_count = sum(
+                expected[trip] != trip_split[trip] for trip in owners
+            )
+            comparison = payload["regions"][region]["trip_split_comparison"]
+            self.assertEqual(
+                comparison["partition_label_disagreement_count"],
+                label_disagreement_count,
+            )
+            self.assertEqual(comparison["split_traveler_count"], len(split_travelers))
+            self.assertEqual(
+                comparison["trips_of_split_travelers"],
+                sum(traveler in split_travelers for traveler in owners.values()),
+            )
+        for region in region_trip_owners:
+            self.assertEqual(
+                payload["regions"][region]["inner_split"]["traveler_overlap"],
+                0,
+            )
+
+    def test_i3_uses_only_unique_inner_train_tl_interactions(self) -> None:
+        partitions = {
+            "trip-a1": "inner-train",
+            "trip-b1": "inner-train",
+            "trip-b2": "inner-validation",
+            "trip-c1": "inner-validation",
+        }
+        base = [
+            {
+                "trip_id": "trip-a1",
+                "item_id": "poi-x",
+                "source_split": "TL",
+                "observed_positive": 1,
+            },
+            {
+                "trip_id": "trip-b1",
+                "item_id": "poi-x",
+                "source_split": "TL",
+                "observed_positive": 1,
+            },
+            {
+                "trip_id": "trip-b1",
+                "item_id": "poi-x",
+                "source_split": "TL",
+                "observed_positive": 1,
+            },
+            {
+                "trip_id": "trip-b2",
+                "item_id": "poi-y",
+                "source_split": "TL",
+                "observed_positive": 1,
+            },
+        ]
+        expected = {"poi-x": 2, "poi-y": 0, "poi-unseen": 0}
+        self.assertEqual(
+            recompute_inner_train_positive_interaction_count(
+                base, partitions, all_item_ids=["poi-y", "poi-unseen"]
+            ),
+            expected,
+        )
+        changed_validation = base + [
+            {
+                "trip_id": "trip-c1",
+                "item_id": "poi-x",
+                "source_split": "TL",
+                "observed_positive": 1,
+            },
+            {
+                "trip_id": "trip-b2",
+                "item_id": "poi-z",
+                "source_split": "TL",
+                "observed_positive": 1,
+            },
+        ]
+        self.assertEqual(
+            recompute_inner_train_positive_interaction_count(
+                changed_validation, partitions, all_item_ids=["poi-y", "poi-unseen"]
+            ),
+            expected,
+        )
+
+    def test_i3_rejects_non_tl_or_nonpositive_rows(self) -> None:
+        partitions = {"trip-a1": "inner-train"}
+        with self.assertRaisesRegex(ValueError, "outer TL"):
+            recompute_inner_train_positive_interaction_count(
+                [
+                    {
+                        "trip_id": "trip-a1",
+                        "item_id": "poi-x",
+                        "source_split": "VL",
+                        "observed_positive": 1,
+                    }
+                ],
+                partitions,
+            )
+        with self.assertRaisesRegex(ValueError, "observed-positive"):
+            recompute_inner_train_positive_interaction_count(
+                [
+                    {
+                        "trip_id": "trip-a1",
+                        "item_id": "poi-x",
+                        "source_split": "TL",
+                        "observed_positive": 0,
+                    }
+                ],
+                partitions,
+            )
+        with self.assertRaisesRegex(ValueError, "must declare observed_positive"):
+            recompute_inner_train_positive_interaction_count(
+                [
+                    {
+                        "trip_id": "trip-a1",
+                        "item_id": "poi-x",
+                        "source_split": "TL",
+                    }
+                ],
+                partitions,
+            )
+
+    def test_i4_requires_events_and_uses_inner_train_visit_events_only(self) -> None:
+        partitions = {
+            "trip-a1": "inner-train",
+            "trip-b1": "inner-validation",
+        }
+        with self.assertRaises(I4SourceUnavailableError):
+            recompute_inner_train_visit_type_codes(None, partitions)
+        with self.assertRaises(I4SourceUnavailableError):
+            recompute_inner_train_visit_type_codes([], partitions)
+        with self.assertRaises(I4SourceUnavailableError):
+            recompute_inner_train_visit_type_codes(
+                [
+                    {
+                        "TRAVEL_ID": "trip-a1",
+                        "POI_ID": "poi-x",
+                        "source_split": "TL",
+                    }
+                ],
+                partitions,
+            )
+
+        events = [
+            {
+                "TRAVEL_ID": "trip-a1",
+                "POI_ID": "poi-x",
+                "VISIT_AREA_TYPE_CD": "1",
+                "source_split": "TL",
+            },
+            {
+                "TRAVEL_ID": "trip-a1",
+                "POI_ID": "poi-x",
+                "VISIT_AREA_TYPE_CD": "4",
+                "source_split": "TL",
+            },
+            {
+                "TRAVEL_ID": "trip-b1",
+                "POI_ID": "poi-x",
+                "VISIT_AREA_TYPE_CD": "2",
+                "source_split": "TL",
+            },
+            {
+                "TRAVEL_ID": "trip-b1",
+                "POI_ID": "poi-y",
+                "VISIT_AREA_TYPE_CD": "3",
+                "source_split": "TL",
+            },
+        ]
+        expected = {"poi-x": ["1", "4"], "poi-y": []}
+        self.assertEqual(
+            recompute_inner_train_visit_type_codes(
+                events, partitions, all_item_ids=["poi-y"]
+            ),
+            expected,
+        )
+        changed_validation = events + [
+            {
+                "TRAVEL_ID": "trip-b1",
+                "POI_ID": "poi-x",
+                "VISIT_AREA_TYPE_CD": "12",
+                "source_split": "TL",
+            }
+        ]
+        self.assertEqual(
+            recompute_inner_train_visit_type_codes(
+                changed_validation, partitions, all_item_ids=["poi-y"]
+            ),
+            {"poi-x": ["1", "4"], "poi-y": []},
+        )
+
+    def test_audit_payload_contains_only_aggregate_and_split_metadata(self) -> None:
+        rows = [
+            {"TRAVEL_ID": trip, "TRAVELER_ID": traveler}
+            for trip, traveler in self.trip_owner.items()
+        ]
+        payload = audit_payload(
+            {
+                "capital": rows,
+                "west": rows,
+                "east": rows,
+                "jeju-islands": rows,
+            },
+            seed="test-seed",
+            validation_fraction=0.25,
+        )
+        serialized = json.dumps(payload)
+        for raw_value in self.trip_owner:
+            self.assertNotIn(raw_value, serialized)
+        for raw_value in set(self.trip_owner.values()):
+            self.assertNotIn(raw_value, serialized)
+        self.assertFalse(payload["privacy"]["raw_identifiers_written"])
+        self.assertFalse(payload["privacy"]["raw_paths_written"])
+        self.assertEqual(payload["split"]["group_scope"], "within each TL region")
+        self.assertEqual(payload["split"]["traveler_overlap"], 0)
+        self.assertTrue(all(
+            region["inner_split"]["traveler_overlap"] == 0
+            for region in payload["regions"].values()
+        ))
+
+    def test_cli_reads_four_synthetic_regions_and_emits_aggregate_json_only(self) -> None:
+        raw_values = set()
+        environment = {}
+        with tempfile.TemporaryDirectory(prefix="issue80-cli-smoke-") as temporary:
+            root = Path(temporary)
+            for prefix in ("CAPITAL", "WEST", "EAST", "JEJU"):
+                region_dir = root / f"{prefix.lower()}-source-path"
+                region_dir.mkdir()
+                environment[f"{prefix}_TL"] = str(region_dir)
+                traveler_rows = []
+                trip_rows = []
+                for traveler_index, trip_count in enumerate((1, 2, 3, 1)):
+                    traveler_id = f"synthetic-{prefix}-traveler-{traveler_index}"
+                    raw_values.add(traveler_id)
+                    traveler_rows.append({"TRAVELER_ID": traveler_id})
+                    for trip_index in range(trip_count):
+                        trip_id = f"synthetic-{prefix}-trip-{traveler_index}-{trip_index}"
+                        raw_values.add(trip_id)
+                        trip_rows.append(
+                            {"TRAVEL_ID": trip_id, "TRAVELER_ID": traveler_id}
+                        )
+
+                for filename, fieldnames, rows in (
+                    ("TN_TRAVEL.csv", ["TRAVEL_ID", "TRAVELER_ID"], trip_rows),
+                    (
+                        "TN_TRAVELLER_MASTER.csv",
+                        ["TRAVELER_ID"],
+                        traveler_rows,
+                    ),
+                ):
+                    with (region_dir / filename).open(
+                        "w", encoding="utf-8", newline=""
+                    ) as stream:
+                        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+                        writer.writeheader()
+                        writer.writerows(rows)
+
+            output = io.StringIO()
+            with patch.dict("os.environ", environment, clear=False):
+                with redirect_stdout(output):
+                    exit_code = main(
+                        ["--seed", "synthetic-smoke", "--validation-fraction", "0.25"]
+                    )
+
+            self.assertEqual(exit_code, 0)
+            serialized = output.getvalue()
+            payload = json.loads(serialized)
+            self.assertEqual(
+                set(payload["regions"]),
+                {"capital", "west", "east", "jeju-islands"},
+            )
+            for region in payload["regions"].values():
+                self.assertEqual(region["distinct_travelers"], 4)
+                self.assertEqual(region["distinct_trips"], 7)
+                self.assertEqual(
+                    region["traveler_trip_count"]["one_trip_travelers"], 2
+                )
+                self.assertEqual(
+                    region["traveler_trip_count"]["two_trip_travelers"], 1
+                )
+                self.assertEqual(
+                    region["traveler_trip_count"]["three_or_more_trip_travelers"], 1
+                )
+                self.assertEqual(region["inner_split"]["traveler_overlap"], 0)
+            self.assertFalse(payload["privacy"]["raw_identifiers_written"])
+            self.assertFalse(payload["privacy"]["raw_paths_written"])
+            for raw_value in raw_values:
+                self.assertNotIn(raw_value, serialized)
+            self.assertNotIn(str(root), serialized)
+
+
+if __name__ == "__main__":
+    unittest.main()

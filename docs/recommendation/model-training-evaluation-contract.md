@@ -42,7 +42,7 @@ POI score → Top-K ranking
 
 - TL의 TRAVELER_ID → TRAVEL_ID 분포와 inner split 세부 설정: #80
 - I2 Administrative Location의 canonical 컬럼: #81
-- I4 Historical POI의 inner-train-safe 재계산 경로: #80
+- I4 Historical POI의 inner-train-safe 재계산 함수 구현: #80; CatBoost runner 입력 연결: #82
 - sampling / feature group / objective의 실제 최종 선택: #82
 - seed 반복 횟수: #82에서 runtime 확인 후 결정
 - bootstrap 단위와 신뢰구간: #83
@@ -159,9 +159,13 @@ VL metric을 보고 feature, sampling, objective, hyperparameter를 다시 고�
 
 ### 3.2 TL inner split
 
-cold-user 문제이므로 기본 원칙은 TRAVELER_ID 기준 group split이다.
+cold-user 문제이므로 기본 identity key인 `(region, TRAVELER_ID)` 기준 group split을 사용한다.
 
-같은 traveler의 모든 trip은 inner-train 또는 inner-validation 한쪽에만 둔다. 실제 traveler당 trip 분포와 split seed/ratio는 #80에서 확인한다.
+같은 traveler의 모든 trip은 inner-train 또는 inner-validation 한쪽에만 둔다. #80 구현은 각 TL 권역 안에서 `(region, TRAVELER_ID)`와 seed의 SHA-256 정렬 순서로 validation traveler를 선택하는 결정론적 group split을 제공한다. seed와 validation 비율은 재현 metadata에 남기며 기본값은 `issue80-v1`과 0.2다. 한 traveler만 있거나 split 비율이 유효하지 않으면 분할을 실패 처리한다. split map은 메모리에서만 유지하고 각 권역 안에서 traveler overlap이 0인지 검사한다. 원천 계약은 권역 간 traveler ID 전역 유일성을 선언하지 않으므로 identity key에 region을 포함한다. 분포와 split에는 유일한 `TRAVEL_ID` 및 유일한 `TN_TRAVELLER_MASTER.TRAVELER_ID` 연결만 사용한다.
+
+네 TL role binding은 provenance 검사를 통과했고, Issue #80 코드를 대상으로 privacy-safe 실제 aggregate를 실행했다. 각 권역은 distinct traveler 2,560명 / distinct trip 2,560개였고, 모든 traveler가 한 trip만 보유했다 (mean/median/max = 1, multi-trip share = 0%). `issue80-v1`, validation fraction 0.2에서 각 권역의 inner-train은 2,048 traveler/trip, inner-validation은 512 traveler/trip이며 group-split traveler overlap은 0이다. Trip-level reference의 structural traveler overlap도 모든 권역에서 0이었다. 현재 표본에서 두 split은 traveler leakage 방지 구조 측면에서 동등하다. 다만 반복 traveler가 있는 미래 데이터에도 안전하도록 기본 계약은 `TRAVELER_ID` group split으로 유지한다. Partition-label disagreement는 수도권 784/2,560 (30.6250%), 동부권 812/2,560 (31.71875%), 제주도 및 도서지역 804/2,560 (31.40625%), 서부권 818/2,560 (31.953125%)이다. 이 값은 서로 다른 hash key로 만든 두 결정론적 assignment의 label 차이이며 leakage metric가 아니다.
+
+synthetic fixture 테스트는 감사 함수와 4개 권역 CSV CLI를 실행하며 aggregate 출력에 ID나 입력 경로가 없는지 확인한다. CatBoost 1.2.10이 설치된 임시 Python 3.12 환경에서 집중 테스트 12개와 전체 350개 테스트가 모두 통과했으며 건너뛴 테스트는 없다. Ruff 0.17.2, `py_compile`, `git diff --check`도 통과했다.
 
 ### 3.3 train-derived feature의 inner split 누수
 
@@ -179,7 +183,7 @@ cold-user 문제이므로 기본 원칙은 TRAVELER_ID 기준 group split이다.
 
 popularity-weighted / mixed sampling의 popularity와 hard sampling의 score도 inner-train 정보만 사용한다.
 
-현재 canonical trip_item_interaction.parquet에는 visit type이 없으므로 I4를 그 파일만으로 재계산할 수 없다. #80에서 안전한 파생 경계를 구현하기 전까지 #79 harness는 I4를 pending으로 처리한다.
+canonical `trip_item_interaction.parquet`에는 visit type이 없어 그 파일만으로 I4를 재계산할 수 없다. #80의 `recompute_inner_train_visit_type_codes` 함수는 같은 TL의 `TN_VISIT_AREA_INFO` 이벤트를 inner-train 여행에 한정해 읽고, 관광 핵심 방문이 있는 trip-item의 유효 `VISIT_AREA_TYPE_CD`를 집계하도록 구현·테스트 완료했다. 방문 이벤트 입력이 없거나 필수 trip/item/visit-type/TL split 필드가 빠지면 `I4SourceUnavailableError`로 fail-closed한다. 후속 ranking runner는 이 helper의 결과를 사용해야 하며 canonical full-TL I4 값을 inner-validation에 제공하면 안 된다. 현재 CatBoost runner에는 visit-event input이 연결되지 않았으므로 #82에서 runner를 helper에 연결해야 한다. 따라서 pending/disabled는 runner integration 상태만 가리키며 I4 계산 방법은 구현 완료다.
 
 ## 4. Feature Group v1
 
@@ -200,7 +204,7 @@ popularity-weighted / mixed sampling의 popularity와 hard sampling의 score도 
 | I1 | Category | source_category_l1_code, l2, l3 |
 | I2 | Administrative Location | #81에서 canonical 컬럼 정의, 현재 pending |
 | I3 | Popularity | train_positive_interaction_count, inner-train 재계산 필수 |
-| I4 | Historical POI | train_observed_visit_type_codes, #80 완료 전 pending |
+| I4 | Historical POI | `recompute_inner_train_visit_type_codes` 구현·테스트 완료; #82 runner visit-event input integration pending |
 
 ### Control
 
@@ -335,19 +339,20 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 
 - canonical interaction에는 observed positive만 저장된다.
 - 현재 I3/I4 값은 outer TL 전체 기준이다.
-- canonical interaction만으로 I4를 inner-train 기준으로 다시 만들 정보는 부족하다.
+- canonical interaction만으로 I4를 inner-train 기준으로 다시 만들 정보는 부족하지만, canonical schema가 지정한 `TN_VISIT_AREA_INFO.VISIT_AREA_TYPE_CD` 원천 이벤트는 필요한 trip/item/type 경계를 제공한다. #80 helper는 이 이벤트 경로를 사용한다.
+- 실제 4개 권역 traveler-trip 집계는 완료했고 위 aggregate만 보고한다. raw ID, row data, 입력 경로는 공개하지 않는다.
 
 ### 결정
 
 - TL tuning의 train-derived feature와 sampling 통계는 inner-train에서만 계산한다.
-- I2와 I4는 선행 작업이 끝날 때까지 fail closed한다.
+- I2는 #81 canonical 컬럼 결정 전까지 fail-closed한다. I4 재계산 helper는 구현 완료이며, #82 runner가 visit-event input을 연결할 때까지 runner feature group만 pending/disabled로 둔다.
 - VL은 최종 configuration을 잠글 때까지 tuning에 사용하지 않는다.
 
 ### 한계
 
 - #79는 actual AI Hub row를 읽지 않는다.
 - 실제 CatBoost 학습 성능은 아직 없다.
-- canonical location과 traveler split은 각각 #81/#80 결과가 필요하다.
+- canonical location은 #81 결과가 필요하다. #80의 traveler-trip aggregate 및 split leakage 검증은 완료했으며, #82 runner의 inner-train feature 경로 연결은 후속 작업이다.
 
 ## 재현 참고
 
