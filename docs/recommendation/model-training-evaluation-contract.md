@@ -165,7 +165,7 @@ cold-user 문제이므로 기본 identity key인 `(region, TRAVELER_ID)` 기준 
 
 네 TL role binding은 provenance 검사를 통과했고, Issue #80 코드를 대상으로 privacy-safe 실제 aggregate를 실행했다. 각 권역은 distinct traveler 2,560명 / distinct trip 2,560개였고, 모든 traveler가 한 trip만 보유했다 (mean/median/max = 1, multi-trip share = 0%). `issue80-v1`, validation fraction 0.2에서 각 권역의 inner-train은 2,048 traveler/trip, inner-validation은 512 traveler/trip이며 group-split traveler overlap은 0이다. Trip-level reference의 structural traveler overlap도 모든 권역에서 0이었다. Partition-label disagreement는 수도권 784/2,560 (30.6250%), 동부권 812/2,560 (31.71875%), 제주도 및 도서지역 804/2,560 (31.40625%), 서부권 818/2,560 (31.953125%)이다. 이 값은 서로 다른 hash key로 만든 두 결정론적 partition label의 비교값일 뿐 split 구조의 동등성을 뜻하지 않는다. 각 traveler가 단일 trip을 보유하고 두 방식 모두 traveler overlap이 0인 점을 structural leakage 진단으로 기록한다.
 
-synthetic fixture 테스트는 감사 함수와 4개 권역 CSV CLI를 실행하며 aggregate 출력에 ID나 입력 경로가 없는지 확인한다. 집중 테스트 12개와 전체 350개 테스트가 통과했고, 전체 테스트 중 CatBoost 의존 테스트 1개는 실행 환경에 패키지가 없어 건너뛰었다. `py_compile` 및 `git diff --check`도 통과했다. Ruff 실행 파일을 찾지 못해 Ruff 검사는 수행하지 않았다.
+synthetic fixture 테스트는 감사 함수와 4개 권역 CSV CLI를 실행하며 aggregate 출력에 ID나 입력 경로가 없는지 확인한다. CatBoost 1.2.10이 설치된 임시 Python 3.12 환경에서 집중 테스트 12개와 전체 350개 테스트가 모두 통과했으며 건너뛴 테스트는 없다. Ruff 0.17.2, `py_compile`, `git diff --check`도 통과했다.
 
 ### 3.3 train-derived feature의 inner split 누수
 
