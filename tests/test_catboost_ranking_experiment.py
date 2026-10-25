@@ -30,13 +30,14 @@ from scripts.recommendation.catboost_ranking_experiment import (
     sample_unobserved,
     sampling_search_configs,
     selected_feature_columns,
+    materialize_inner_train_item_features,
     validate_ranking_group_layout,
     validate_train_derived_scope,
 )
 
 
 class CatBoostRankingExperimentTests(unittest.TestCase):
-    def test_feature_group_contract_and_pending_groups_fail_closed(self) -> None:
+    def test_feature_group_contract_enables_inner_train_i4_after_wiring(self) -> None:
         self.assertEqual(
             set(FEATURE_GROUPS),
             {
@@ -53,9 +54,8 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
             },
         )
         self.assertIn("I2_ADMINISTRATIVE_LOCATION", available_feature_groups())
-        self.assertNotIn("I4_HISTORICAL_POI", available_feature_groups())
-        self.assertIn("implemented and tested", PENDING_FEATURE_GROUPS["I4_HISTORICAL_POI"])
-        self.assertIn("Issue #82", PENDING_FEATURE_GROUPS["I4_HISTORICAL_POI"])
+        self.assertIn("I4_HISTORICAL_POI", available_feature_groups())
+        self.assertEqual(PENDING_FEATURE_GROUPS, {})
         self.assertEqual(
             FEATURE_GROUPS["I2_ADMINISTRATIVE_LOCATION"],
             (
@@ -65,12 +65,11 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
             ),
         )
         ExperimentConfig(("I2_ADMINISTRATIVE_LOCATION",)).validate()
-        with self.assertRaisesRegex(ValueError, "Issue #80"):
-            ExperimentConfig(("I4_HISTORICAL_POI",)).validate()
+        ExperimentConfig(("I4_HISTORICAL_POI",)).validate()
 
     def test_runnable_feature_combinations_are_exhaustive(self) -> None:
-        self.assertEqual(len(available_feature_groups()), 9)
-        self.assertEqual(len(feature_group_combinations()), (2**9) - 1)
+        self.assertEqual(len(available_feature_groups()), 10)
+        self.assertEqual(len(feature_group_combinations()), (2**10) - 1)
 
     def test_category_depth_and_categorical_columns(self) -> None:
         config = ExperimentConfig(
@@ -112,10 +111,10 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
             normalize_feature_value("train_positive_interaction_count", 9, config),
             math.log(10),
         )
-        pending = ExperimentConfig(("I4_HISTORICAL_POI",))
+        wired = ExperimentConfig(("I4_HISTORICAL_POI",))
         self.assertEqual(
             normalize_feature_value(
-                "train_observed_visit_type_codes", ["13", "1"], pending
+                "train_observed_visit_type_codes", ["13", "1"], wired
             ),
             "1|13",
         )
@@ -146,6 +145,84 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
             regions, {"a", "c", "vl-only"}, "capital"
         )
         self.assertEqual(candidates, ("a", "vl-only"))
+
+    def test_inner_train_materialization_replaces_outer_tl_i3_i4_and_preserves_i2(self) -> None:
+        from scripts.recommendation.tl_traveler_split import (
+            deterministic_traveler_group_split,
+        )
+
+        trip_owner = {f"trip-{i}": f"traveler-{i}" for i in range(10)}
+        partitions = deterministic_traveler_group_split(trip_owner, seed="smoke")
+        positives = [
+            {
+                "TRAVEL_ID": trip,
+                "POI_ID": "item-a",
+                "observed_positive": 1,
+                "source_split": "TL",
+            }
+            for trip in trip_owner
+        ]
+        events = [
+            {
+                "TRAVEL_ID": trip,
+                "POI_ID": "item-a",
+                "VISIT_AREA_TYPE_CD": "1" if partition == "inner-train" else "3",
+                "source_split": "TL",
+            }
+            for trip, partition in partitions.items()
+        ]
+        source_candidates = [
+            {
+                "item_id": "item-a",
+                "region": "capital",
+                "canonical_admin_sido_code": "11",
+                "canonical_admin_sgg_code": "11010",
+                "canonical_admin_location_status": "direct",
+                "train_positive_interaction_count": 999,
+                "train_observed_visit_type_codes": ["13"],
+            },
+            {
+                "item_id": "item-b",
+                "region": "capital",
+                "canonical_admin_sido_code": "11",
+                "canonical_admin_sgg_code": "11020",
+                "canonical_admin_location_status": "direct",
+                "train_positive_interaction_count": 999,
+                "train_observed_visit_type_codes": ["13"],
+            },
+        ]
+        materialized = materialize_inner_train_item_features(
+            trip_owner=trip_owner,
+            item_features=source_candidates,
+            positive_interactions=positives,
+            visit_events=events,
+            split_seed="smoke",
+        )
+        rows = {row["item_id"]: row for row in materialized.item_features}
+        train_trip_count = sum(partition == "inner-train" for partition in partitions.values())
+        self.assertEqual(rows["item-a"]["train_positive_interaction_count"], train_trip_count)
+        self.assertEqual(rows["item-a"]["train_observed_visit_type_codes"], ["1"])
+        self.assertEqual(rows["item-b"]["train_positive_interaction_count"], 0)
+        self.assertEqual(rows["item-b"]["train_observed_visit_type_codes"], [])
+        for item_id in rows:
+            self.assertEqual(
+                rows[item_id]["canonical_admin_sido_code"],
+                source_candidates[0 if item_id == "item-a" else 1]["canonical_admin_sido_code"],
+            )
+        self.assertEqual(set(materialized.partition_by_trip.values()), {"inner-train", "inner-validation"})
+
+    def test_inner_train_materialization_fails_closed_without_tl_visit_events(self) -> None:
+        with self.assertRaisesRegex(ValueError, "I4 requires"):
+            materialize_inner_train_item_features(
+                trip_owner={"trip-a": "traveler-a", "trip-b": "traveler-b"},
+                item_features=[{"item_id": "item-a", "region": "capital"}],
+                positive_interactions=[
+                    {"TRAVEL_ID": "trip-a", "POI_ID": "item-a", "observed_positive": 1, "source_split": "TL"},
+                    {"TRAVEL_ID": "trip-b", "POI_ID": "item-a", "observed_positive": 1, "source_split": "TL"},
+                ],
+                visit_events=None,
+                split_seed="smoke",
+            )
 
     def test_uniform_sampling_is_deterministic_and_excludes_positives(self) -> None:
         candidates = {"a", "b", "c", "d", "e"}
@@ -405,7 +482,7 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
         )
         self.assertEqual(
             protocol["feature_groups"]["I4_HISTORICAL_POI"]["status"],
-            "pending",
+            "requires-inner-train-recompute",
         )
 
     @unittest.skipUnless(

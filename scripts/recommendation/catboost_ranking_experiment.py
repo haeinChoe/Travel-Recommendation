@@ -14,12 +14,23 @@ import argparse
 import json
 import math
 import random
+import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from itertools import combinations
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.recommendation.tl_traveler_split import (
+    deterministic_traveler_group_split,
+    recompute_inner_train_positive_interaction_count,
+    recompute_inner_train_visit_type_codes,
+)
 
 DEFAULT_K = (5, 10, 20)
 DEFAULT_OBJECTIVE = "YetiRank"
@@ -51,11 +62,7 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
     "I4_HISTORICAL_POI": ("train_observed_visit_type_codes",),
     "C1_REGION": ("region",),
 }
-PENDING_FEATURE_GROUPS = {
-    "I4_HISTORICAL_POI":
-        "Issue #80's I4 recomputation helper is implemented and tested; "
-        "keep the runner disabled until Issue #82 wires inner-train TL visit events.",
-}
+PENDING_FEATURE_GROUPS: dict[str, str] = {}
 TRAIN_DERIVED_GROUPS = frozenset({"I3_POPULARITY", "I4_HISTORICAL_POI"})
 CATEGORICAL_COLUMNS = frozenset({
     *(f"travel_style_{i}" for i in range(1, 9)),
@@ -135,6 +142,74 @@ class RankingMetric:
     recall: float
     mrr: float
     hit_rate: float
+
+
+@dataclass(frozen=True)
+class InnerTrainItemFeatures:
+    """Candidate features rebuilt from one region's inner-train TL only.
+
+    ``partition_by_trip`` contains raw keys and is intentionally in-memory only.
+    ``item_features`` preserves the caller's AI Hub candidate inventory and static
+    features, replacing only I3/I4 with values recomputed from inner-train rows.
+    """
+
+    partition_by_trip: Mapping[str, str]
+    item_features: tuple[dict[str, Any], ...]
+
+
+def materialize_inner_train_item_features(
+    *,
+    trip_owner: Mapping[str, str],
+    item_features: Iterable[Mapping[str, Any]],
+    positive_interactions: Iterable[Mapping[str, Any]],
+    visit_events: Iterable[Mapping[str, Any]] | None,
+    split_seed: str | int,
+    validation_fraction: float = 0.2,
+) -> InnerTrainItemFeatures:
+    """Wire the #80 traveler split and I3/I4 recomputation into this runner.
+
+    Inputs are one region at a time. ``positive_interactions`` must contain
+    ``TRAVEL_ID``, ``POI_ID``, ``observed_positive=1``, and ``source_split=TL``.
+    ``visit_events`` must be the corresponding TL ``TN_VISIT_AREA_INFO`` event
+    rows. Any existing I3/I4 values on ``item_features`` are discarded, so
+    full-TL aggregates cannot be reused in inner-validation.
+    """
+    partition_by_trip = deterministic_traveler_group_split(
+        trip_owner, seed=split_seed, validation_fraction=validation_fraction
+    )
+
+    candidates = [dict(row) for row in item_features]
+    if not candidates:
+        raise ValueError("AI Hub candidate item features must not be empty")
+    item_ids: list[str] = []
+    regions: set[str] = set()
+    for row in candidates:
+        item_id = str(row.get("item_id", "")).strip()
+        region = str(row.get("region", "")).strip()
+        if not item_id or not region:
+            raise ValueError("Candidate feature rows require item_id and region")
+        item_ids.append(item_id)
+        regions.add(region)
+    if len(regions) != 1:
+        raise ValueError("Inner-train feature materialization requires one region")
+    if len(set(item_ids)) != len(item_ids):
+        raise ValueError("AI Hub candidate inventory contains duplicate item ids")
+
+    # Always replace, never trust precomputed outer-TL I3/I4 columns.
+    i3 = recompute_inner_train_positive_interaction_count(
+        positive_interactions, partition_by_trip, all_item_ids=item_ids
+    )
+    i4 = recompute_inner_train_visit_type_codes(
+        visit_events, partition_by_trip, all_item_ids=item_ids
+    )
+    for row, item_id in zip(candidates, item_ids, strict=True):
+        row["train_positive_interaction_count"] = i3[item_id]
+        row["train_observed_visit_type_codes"] = i4[item_id]
+
+    return InnerTrainItemFeatures(
+        partition_by_trip=dict(partition_by_trip),
+        item_features=tuple(candidates),
+    )
 
 
 def available_feature_groups() -> tuple[str, ...]:

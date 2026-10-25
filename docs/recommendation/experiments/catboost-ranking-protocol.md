@@ -1,7 +1,7 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
 **관련 Issue:** #79, #82
-**현재 상태:** #80 traveler split·I3/I4 재계산 경계와 #81 I2 계약 반영 완료 / #82 실제 TL inner-validation 실험 대기
+**현재 상태:** #82 runner가 #80 traveler split과 inner-train I3/I4 재계산을 연결함 / 실제 TL smoke는 승인 입력 경로 확인 후 실행 대기
 
 ## 이 문서가 답하려는 질문
 
@@ -46,7 +46,7 @@ VL 최종 평가 (#83)
 
 - I2 Administrative Location의 feature 계약과 synthetic 검증은 #81에서 완료됐다. `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용하며, 실제 AI Hub coverage/conflict 감사만 후속 입력 확보 후 수행한다.
 - I3 Popularity의 inner-train 재계산 경계와 I4 Historical POI의 `recompute_inner_train_visit_type_codes` helper는 #80에서 구현·검증 완료됐다.
-- I4는 계산 방법이 미완료인 것이 아니라, #82 runner가 TL visit-event input을 helper에 연결하기 전까지 runner feature group만 pending/disabled 상태다.
+- #82 runner는 한 권역의 TL trip-owner, positive interaction, `TN_VISIT_AREA_INFO` 이벤트, AI Hub 후보 feature를 받아 traveler-group split을 만들고 I3/I4를 inner-train에서 다시 계산한다. 기존 outer-TL I3/I4 값은 덮어쓴다.
 - actual CatBoost dependency/version은 #82 실행 환경에서 고정한다.
 
 ## 다음 행동
@@ -155,7 +155,7 @@ C1 Region
 
 - runtime이 충분하면 exhaustive search
 - 비용이 크면 forward greedy 후 backward removal check
-- I2는 runnable이다. I4는 #82 runner의 visit-event input 연결이 끝날 때까지 search space에서 제외하고 fail closed한다.
+- I2와 I4는 runnable이다. I3/I4는 `materialize_inner_train_item_features`가 만든 결과만 사용하며, helper input의 TL provenance와 trip split 검증을 통과하지 못하면 중단한다.
 
 해석을 위해 best configuration 하나만 남기지 않고 최소 다음 비교도 보존한다.
 
@@ -247,7 +247,7 @@ scripts/recommendation/catboost_ranking_experiment.py가 제공하는 것:
 
 - ExperimentConfig
 - Feature Group v1
-- pending group fail-closed
+- I3/I4 inner-train feature materialization with full-TL aggregate replacement
 - train-derived source scope guard
 - same-region candidate filter
 - 네 sampling strategy
@@ -262,19 +262,19 @@ scripts/recommendation/catboost_ranking_experiment.py가 제공하는 것:
 이 파일이 하지 않는 것:
 
 - raw AI Hub data loading
-- traveler split materialization
 - canonical location reconciliation
+- request-ranking frame assembly
 - large-scale result artifact 생성
 - 실제 CatBoost tuning
 
-실행 책임은 분리되어 있다. #80은 traveler split과 I3/I4 재계산 경계를 완료했고, #81은 I2 정적 위치 계약을 완료했다. #82는 runner integration과 실제 CatBoost 실험을 담당한다.
+실행 책임은 분리되어 있다. #80은 traveler split과 I3/I4 재계산 경계를 완료했고, #81은 I2 정적 위치 계약을 완료했다. #82 runner integration은 inner-train item feature materialization까지 연결했다. 실제 입력에 대한 smoke는 별도 승인된 TL 경로가 필요하다.
 
 ## #79 검증 범위
 
 synthetic unit test로 다음을 확인한다.
 
 - Feature Group v1
-- I2 available 계약과 I4 runner-integration pending fail-closed
+- I2 available 계약과 I3/I4 inner-train 재계산 및 누수 방지 경계
 - category depth와 popularity transform
 - region candidate filtering
 - deterministic uniform sampling
@@ -285,4 +285,4 @@ synthetic unit test로 다음을 확인한다.
 - group contiguity와 binary label
 - VL tuning 금지 protocol
 
-실제 AI Hub 성능 수치는 #82 전에는 존재하지 않는다.
+실제 AI Hub 성능 수치는 smoke run을 마치기 전에는 존재하지 않는다.
