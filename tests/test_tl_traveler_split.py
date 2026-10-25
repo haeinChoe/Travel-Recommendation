@@ -174,23 +174,29 @@ class TLTravelerSplitTests(unittest.TestCase):
             trip_split = deterministic_trip_level_split(
                 owners, seed=seed, validation_fraction=0.25
             )
-            expected_changed = sum(
-                expected[trip] != trip_split[trip] for trip in owners
-            )
             trip_partitions_by_traveler = {}
             for trip, traveler in owners.items():
                 trip_partitions_by_traveler.setdefault(traveler, set()).add(
                     trip_split[trip]
                 )
-            expected_trip_overlap = sum(
-                len(partitions) > 1
-                for partitions in trip_partitions_by_traveler.values()
+            split_travelers = {
+                traveler
+                for traveler, partitions in trip_partitions_by_traveler.items()
+                if len(partitions) > 1
+            }
+            label_disagreement_count = sum(
+                expected[trip] != trip_split[trip] for trip in owners
             )
             comparison = payload["regions"][region]["trip_split_comparison"]
             self.assertEqual(
-                comparison["changed_trip_assignments"], expected_changed
+                comparison["partition_label_disagreement_count"],
+                label_disagreement_count,
             )
-            self.assertEqual(comparison["traveler_overlap"], expected_trip_overlap)
+            self.assertEqual(comparison["split_traveler_count"], len(split_travelers))
+            self.assertEqual(
+                comparison["trips_of_split_travelers"],
+                sum(traveler in split_travelers for traveler in owners.values()),
+            )
         for region in region_trip_owners:
             self.assertEqual(
                 payload["regions"][region]["inner_split"]["traveler_overlap"],

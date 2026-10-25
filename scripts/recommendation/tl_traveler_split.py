@@ -329,11 +329,16 @@ def audit_payload(
         trip_split_travelers: dict[str, set[str]] = defaultdict(set)
         for trip_id, traveler_id in owners.items():
             trip_split_travelers[traveler_id].add(trip_partitions[trip_id])
-        trip_split_overlap = sum(
-            len(traveler_partitions) > 1
-            for traveler_partitions in trip_split_travelers.values()
+        split_travelers = {
+            traveler_id
+            for traveler_id, traveler_partitions in trip_split_travelers.items()
+            if len(traveler_partitions) > 1
+        }
+        trip_split_overlap = len(split_travelers)
+        trips_of_split_travelers = sum(
+            traveler_id in split_travelers for traveler_id in owners.values()
         )
-        changed_trip_count = sum(
+        label_disagreement_count = sum(
             partitions[trip_id] != trip_partitions[trip_id] for trip_id in owners
         )
         traveler_partition: dict[str, str] = {}
@@ -361,13 +366,17 @@ def audit_payload(
                 "traveler_overlap": overlap,
             },
             "trip_split_comparison": {
-                "changed_trip_assignments": changed_trip_count,
-                "changed_trip_assignment_share": round(
-                    changed_trip_count / len(owners), 6
+                "partition_label_disagreement_count": label_disagreement_count,
+                "partition_label_disagreement_share": round(
+                    label_disagreement_count / len(owners), 6
                 ),
-                "traveler_overlap": trip_split_overlap,
-                "traveler_overlap_share": round(
+                "split_traveler_count": trip_split_overlap,
+                "split_traveler_share": round(
                     trip_split_overlap / len(trip_split_travelers), 6
+                ),
+                "trips_of_split_travelers": trips_of_split_travelers,
+                "trip_share_of_split_travelers": round(
+                    trips_of_split_travelers / len(owners), 6
                 ),
             },
         }
