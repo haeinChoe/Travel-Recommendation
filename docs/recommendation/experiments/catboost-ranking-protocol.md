@@ -1,7 +1,7 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
 **관련 Issue:** #79, #82
-**현재 상태:** synthetic experiment harness 구현 / 실제 AI Hub 학습 미실행
+**현재 상태:** #80 traveler split·I3/I4 재계산 경계와 #81 I2 계약 반영 완료 / #82 실제 TL inner-validation 실험 대기
 
 ## 이 문서가 답하려는 질문
 
@@ -42,16 +42,16 @@ VL 최종 평가 (#83)
 - seed 반복 횟수는 실제 runtime 확인 뒤 결정
 - 공식 VL은 모든 tuning이 끝난 뒤 사용
 
-## 선행 작업
+## 선행 작업 상태
 
-- I2 Administrative Location의 feature 계약은 #81에서 확정됐으며, synthetic 검증 완료 후 실제 AI Hub coverage/conflict 감사는 후속 입력 확보가 필요하다.
-- I4 Historical POI는 #80의 inner-train-safe 재계산이 필요하다.
-- I3 Popularity도 TL tuning에서는 full-TL 값이 아니라 inner-train에서 다시 계산해야 한다.
+- I2 Administrative Location의 feature 계약과 synthetic 검증은 #81에서 완료됐다. `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용하며, 실제 AI Hub coverage/conflict 감사만 후속 입력 확보 후 수행한다.
+- I3 Popularity의 inner-train 재계산 경계와 I4 Historical POI의 `recompute_inner_train_visit_type_codes` helper는 #80에서 구현·검증 완료됐다.
+- I4는 계산 방법이 미완료인 것이 아니라, #82 runner가 TL visit-event input을 helper에 연결하기 전까지 runner feature group만 pending/disabled 상태다.
 - actual CatBoost dependency/version은 #82 실행 환경에서 고정한다.
 
 ## 다음 행동
 
-#80과 #81이 완료되면 #82에서 아래 단계 순서대로 실제 TL inner-validation 실험을 수행한다.
+#80과 #81은 완료됐다. 다음 단계는 #82이며, 아래 순서대로 실제 TL inner-validation 실험을 수행한다.
 
 ---
 
@@ -155,7 +155,7 @@ C1 Region
 
 - runtime이 충분하면 exhaustive search
 - 비용이 크면 forward greedy 후 backward removal check
-- pending group은 구현 전 search space에서 제외하고 fail closed
+- I2는 runnable이다. I4는 #82 runner의 visit-event input 연결이 끝날 때까지 search space에서 제외하고 fail closed한다.
 
 해석을 위해 best configuration 하나만 남기지 않고 최소 다음 비교도 보존한다.
 
@@ -236,10 +236,10 @@ VL을 보기 전에 다음을 하나의 고정 configuration으로 기록한다.
 
 VL 결과를 본 뒤 #82로 돌아가 feature, sampling, objective를 다시 선택하면 VL은 holdout이 아니게 되므로 금지한다.
 
-bootstrap 단위는 #80의 traveler-trip 분포를 다시 확인해 정한다.
+#80 실제 감사에서 네 권역 모두 traveler:trip = 1:1이고 multi-trip traveler가 0%였다. 따라서 현재 데이터 기준 #83 bootstrap 기본 단위는 trip/request다. #83에서는 입력 데이터와 traveler identity 전제가 바뀌지 않았는지만 재확인한다.
 
-- 반복 traveler가 의미 있게 있으면 traveler-cluster bootstrap
-- 사실상 1 traveler = 1 trip이면 trip/request bootstrap
+- 현재 데이터가 유지되면 trip/request bootstrap
+- 향후 반복 traveler가 의미 있게 생기면 traveler-cluster bootstrap으로 전환
 
 ## Harness 책임 범위
 
@@ -267,14 +267,14 @@ scripts/recommendation/catboost_ranking_experiment.py가 제공하는 것:
 - large-scale result artifact 생성
 - 실제 CatBoost tuning
 
-위 실행 책임은 #80~#82에 분리한다.
+실행 책임은 분리되어 있다. #80은 traveler split과 I3/I4 재계산 경계를 완료했고, #81은 I2 정적 위치 계약을 완료했다. #82는 runner integration과 실제 CatBoost 실험을 담당한다.
 
 ## #79 검증 범위
 
 synthetic unit test로 다음을 확인한다.
 
 - Feature Group v1
-- I2/I4 pending fail-closed
+- I2 available 계약과 I4 runner-integration pending fail-closed
 - category depth와 popularity transform
 - region candidate filtering
 - deterministic uniform sampling
