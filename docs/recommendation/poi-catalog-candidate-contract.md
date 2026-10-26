@@ -893,6 +893,41 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 - 향후 카탈로그 정책 v2에서 음식점(`39`) 및 쇼핑시설(`38`)을 추천 지원 대상으로 포함할지 여부는 비즈니스 카테고리 기획 및 서빙 인덱스 용량 분석을 거쳐 별도 Issue로 검토함.
 
 
+## Issue #82: 수도권 TL inner-validation 후보 누락 진단
+
+이 진단은 Issue #82 수도권 TL inner-validation smoke에서 정적 POI Master 후보 집합이 관측 양성을 얼마나 포함했는지 설명하기 위한 것이다. 아래 누락 수치는 해당 smoke의 후보-universe 관측이며, 다른 분석 실행의 모집단과 합산하지 않는다.
+
+### 확인된 사실
+
+- 공식 AI Hub 네 권역 데이터셋 설명은 각 권역 패키지에 Other 역할의 POI Master 1 set을 열거한다.
+- 전담 분석에서 네 권역 master는 동일 내용으로 확인되었다. 각 master는 7,442,866행과 7,442,866개의 고유한 비공백 `POI_ID`를 가졌다. 따라서 다른 권역 master를 union해도 후보 집합은 늘지 않는다.
+- 수도권 TL inner-validation smoke의 관련 양성 `(trip, POI_ID)` 883개 가운데 638개가 static-master 후보와 exact trimmed key로 겹쳤다. 나머지 245개는 189개 여행에 분포했고, 모두 비공백 visit `POI_ID`였다.
+- 이 smoke에서 master의 공백 또는 중복 key, 그리고 runner filter로 설명되는 누락은 각각 0건이었다.
+- AI Hub schema 설명은 visit `POI_ID`를 optional로 표시하며, visit과 master 사이의 외래 키나 양쪽 ID의 동일성을 보장한다고 선언하지 않는다.
+- 별도의 2026-10-18 광범위 진단에서는 양성 97,640개 중 26,884개가 같은 권역 master에 없었고, 다른 권역 master union으로 회복된 양성은 0개였다. 이 실행은 Issue #82와 모집단 및 데이터 버전이 다르므로 두 결과를 합산하지 않는다.
+
+다음 표는 이번 smoke에서 확인된 구조적 설명과 아직 시험하지 않은 가설을 분리한다.
+
+| 가설 | 상태 | 근거와 한계 |
+| --- | --- | --- |
+| 다른 권역 master를 union하면 복구된다 | 기각 | 네 권역 master 내용이 동일하고, 별도 광범위 진단에서도 union으로 회복된 양성이 없었다. |
+| master의 blank/duplicate key 또는 runner filter가 누락을 설명한다 | 기각 | Issue #82 smoke에서 각 설명으로 집계된 건수는 0이며, 누락된 visit key는 모두 비공백이다. |
+| 문자열 표현 차이로 exact key overlap을 놓쳤다 | 미검증 | case, Unicode, 선행 0 정규화는 이번 smoke에서 시험하지 않았다. |
+| visit ID와 master ID의 domain이 다르거나, master가 과거 참고 자료다 | 가능한 설명, 원인 미확정 | schema에는 외래 키 및 동일 ID 보장이 없다. 현재 근거만으로 실제 ID 관계나 누락 원인을 확정할 수 없다. |
+| 데이터 버전 차이가 누락을 만들었다 | 미검증 | 이번 follow-up에서 filekey 및 release metadata를 독립 검증하지 않았다. |
+
+### 해석
+
+관측된 불일치는 Issue #82 smoke가 사용한 정적 후보 집합과 수도권 inner-validation 양성 사이의 exact `POI_ID` 후보 포함 문제로 한정한다. 이는 데이터 계약상 canonical POI identity를 증명하지 않으며, 문자열 정규화로 해결될 것이라는 근거도 제공하지 않는다.
+
+### 결정
+
+현재 exact `POI_ID` 연결 및 후보 계약을 유지한다. 임의 ID 정규화, visit 행의 이름·좌표 fallback, 또는 이 진단만을 근거로 한 모델·후보 정책 변경을 하지 않는다. 이번 진단으로 기존 다른 분석의 모집단이나 수치를 재해석하지 않는다.
+
+### 미결정 및 다음 증거
+
+실제 연결 의미는 AI Hub의 명시적 ID contract 또는 승인된 crosswalk로 확인해야 한다. 버전 차이 가설은 해당 입력의 filekey/release provenance를 검증해야 판단할 수 있다. 이 증거가 확보될 때까지 문자열 표현 차이, 다른 ID domain, 역사적 master, release mismatch의 원인은 미확정이다.
+
 ## Synthetic validation and use
 
 Run `python3 -m unittest discover -s tests -p 'test_poi_catalog_candidate_contract.py' -v`, plus the TourAPI snapshot adapter and experiment-design audit test modules. Tests cover deterministic exact-signal matching, ambiguity, conflict handling, coordinate exclusion, fail-closed eligibility, normalized code handling, independent request-region coverage, proxy rejection from product coverage, explicit CSV field maps, and domain-review checks. The adapter also includes a credential-safe read-only collector; the collection CLI persists only under ignored `results/`. `derive_proxy_requests_from_observations` returns a distinct `HistoricalRequestProxy` for historical-feasibility analysis only, requires one explicit region per request, and does not infer district selection. Product candidate coverage uses independently supplied `CandidateRequest` contexts. The candidate eligibility function must not receive observed category or post-event feedback.
