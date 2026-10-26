@@ -933,7 +933,7 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 #### 3. 단순 문자열 표현 차이
 
-다음 변환은 `A − B`에만 각각 독립 적용했다. 회복 수는 `고유 positive POI_ID / positive pair` 순서다. 충돌 그룹은 여러 원본 문자열이 같은 변환 key로 합쳐지는 경우다.
+다음 변환은 `A_ID − B_ID`에 속하는 누락 positive ID에만 각각 독립 적용했다. 회복 수는 `고유 positive POI_ID / 해당 ID를 포함한 positive pair` 순서다. 충돌 그룹은 여러 원본 문자열이 같은 변환 key로 합쳐지는 경우다.
 
 | 진단 | 회복된 ID / 쌍 | 충돌 그룹 |
 | --- | ---: | ---: |
@@ -950,7 +950,7 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 - [runner](../../scripts/recommendation/run_catboost_tl_smoke.py)는 `utf-8-sig`와 `csv.reader`로 선택 열을 읽어 문자열을 유지한다. pandas dtype 추론이나 숫자형 ID 변환은 사용하지 않는다. 후보 키 생성의 `_clean_str`은 문자열 trim만 한다.
 - 이번 읽기에서 필요한 헤더가 확인됐고 엄격한 UTF-8 파싱 오류는 0건이었다. 입력 파일의 UTF-8 BOM은 없었으며, reader가 반환한 POI 값은 문자열이었다.
-- `A − B`의 누락 positive 중 reader 값이 `_clean_str`에서 바뀐 ID/쌍은 0/0, 과학적 표기법 형태는 0개였다. 따라서 trim, null 변환, dtype 추론, BOM 또는 인코딩이 이 누락을 만들었다는 증거는 없다.
+- `A_ID − B_ID`에 속하는 누락 positive ID와 `A_pair` 중 그 ID를 포함한 쌍에서 reader 값이 `_clean_str`로 바뀐 항목은 0 ID / 0쌍이고, 과학적 표기법 형태는 0개였다. 따라서 trim, null 변환, dtype 추론, BOM 또는 인코딩이 이 누락을 만들었다는 증거는 없다.
 - 유효 방문 이벤트 중 빈 Visit `POI_ID` 6,710행은 positive를 만들 때 제외됐다. 이는 비어 있지 않은 195개 누락 positive ID의 설명이 아니다.
 
 #### 5. Master 중복 및 runner 필터
@@ -960,7 +960,7 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 #### 6. 선택한 로컬 Master에서 확인된 부재
 
-1–5단계에서 `A − B`에 해당하는 195개 고유 positive ID와 245개 positive pair를 설명하는 문자열·파싱·중복·필터 원인은 확인되지 않았다. 이 값들은 **이번 smoke가 사용한 로컬 Master 사본에서의 exact-key 부재**로 확정한다. 로컬 취득 release가 확인되지 않았으므로 이 결과를 다른 release의 Master 부재로 일반화하지 않는다.
+1–5단계에서 `A_ID − B_ID`에 해당하는 195개 고유 positive ID와 `A_pair` 중 그 ID를 포함하는 245개 positive pair를 설명하는 문자열·파싱·중복·필터 원인은 확인되지 않았다. 이 값들은 **이번 smoke가 사용한 로컬 Master 사본에서의 exact-key 부재**로 확정한다. 로컬 취득 release가 확인되지 않았으므로 이 결과를 다른 release의 Master 부재로 일반화하지 않는다.
 
 #### 7. Visit ↔ Master ID 의미
 
@@ -970,14 +970,14 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 #### 8. release mismatch 가설
 
-공식 현재 목록에는 두 역할 입력이 dataset 71776의 filekey로 나타나고 페이지 버전 이력은 1.2를 표시한다. 다만 로컬 취득본과 그 release를 묶는 기록은 검증되지 않았다. 따라서 **version skew는 관측된 사실이 아니며, 누락 원인으로 채택하지 않는다.** 같은 release의 Master 입력이 확인되면 동일한 A 집합을 다시 비교해야 인과를 검증할 수 있다.
+공식 현재 목록에는 두 역할 입력이 dataset 71776의 filekey로 나타나고 페이지 버전 이력은 1.2를 표시한다. 다만 로컬 취득본과 그 release를 묶는 기록은 검증되지 않았다. 따라서 **version skew는 관측된 사실이 아니며, 누락 원인으로 채택하지 않는다.** 같은 release의 Master 입력이 확인되면 동일한 `A_ID`와 `A_pair`를 새 `B_ID`에 다시 대조해야 인과를 검증할 수 있다.
 
 ### 결과 분류
 
 #### 확인된 사실
 
 - inner-validation 양성은 883개 trip–POI 쌍과 610개 고유 POI ID다.
-- 원본 Master `B`와 runner 후보 `C`는 각각 7,442,866개이며, `A − B`는 195개 고유 ID / 245개 쌍이다.
+- 원본 Master `B_ID`와 runner 후보 `C_ID`는 각각 7,442,866개다. `A_ID − B_ID`는 195개 고유 ID이며, `A_pair`에서 그 ID를 포함하는 쌍은 245개다.
 - 문자열 변환 회복, duplicate, parser/dtype 및 후보 필터에 의한 설명은 0건이다.
 - 공식 schema는 ID 열 타입/필수 여부를 정의하지만 Visit ↔ Master 동일 namespace를 보장하지 않는다.
 
@@ -998,7 +998,7 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 #### 결정
 
-최종 분류는 **D — 선택한 로컬 Master에서 실제 부재 확인, 근본 원인 미확정**이다. 후보 계약은 trimmed exact string으로 유지한다. 이름/좌표 fuzzy matching, 선행 0 제거, 숫자 변환, Visit 기반 Master feature 보강, positive 평가 제외는 적용하지 않는다. 로컬 취득 release가 확인될 때만 같은 A/B 비교를 그 입력으로 반복한다.
+최종 분류는 **D — 선택한 로컬 Master에서 실제 부재 확인, 근본 원인 미확정**이다. 후보 계약은 trimmed exact string으로 유지한다. 이름/좌표 fuzzy matching, 선행 0 제거, 숫자 변환, Visit 기반 Master feature 보강, positive 평가 제외는 적용하지 않는다. 로컬 취득 release가 확인될 때만 같은 `A_ID` / `A_pair`를 해당 입력의 `B_ID`와 다시 비교한다.
 
 #### 실행 참고
 
