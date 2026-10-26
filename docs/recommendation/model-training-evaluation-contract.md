@@ -54,7 +54,7 @@ POI score → Top-K ranking
 1. #79 완료: 계약과 synthetic experiment harness를 구현했다.
 2. #80 완료: traveler-trip 분포 감사, traveler group split, inner-train I3/I4 재계산 경계를 구현·검증했다.
 3. #81 완료: canonical administrative location(I2) 계약과 synthetic reconciliation을 구현·검증했다.
-4. **#82 진행:** PR #88 runner smoke 이후 scoring runtime을 최적화하고 같은 TL inner-validation에서 재측정했다. Metric parity를 확인했으며 measured full-configuration cost를 근거로 sampling → forward/backward greedy feature → objective → hyperparameter 순서와 1-seed screening / 3-seed final budget을 정했다. 다음 checkpoint에서 negative sampling부터 시작한다.
+4. **#82 진행:** PR #88 runner smoke 이후 scoring runtime을 최적화하고 같은 TL inner-validation에서 재측정했다. #88에 공개된 다섯째 소수점 정밀도 기준으로 metric parity를 확인했으며, full-precision parity는 주장하지 않는다. Measured full-configuration cost를 근거로 sampling → forward/backward greedy feature → objective → hyperparameter 순서와 1-seed screening / 3-seed final budget을 정했다. 다음 checkpoint에서 negative sampling부터 시작한다.
 5. configuration을 잠근 뒤 #83에서 처음 VL을 평가하고 bootstrap 신뢰구간을 계산한다.
 
 ---
