@@ -932,6 +932,19 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 따라서 이전에 보고한 누락 245는 서로 다른 POI 수가 아니라 양성 trip–POI 쌍 수다. `A_ID − B_ID`에 속하는 195개 고유 positive ID는 245개 `A_pair`에 나타난다. 원본 Master에 exact key가 있던 양성은 runner 후보에서도 모두 유지됐다.
 
+#### Inner-train 및 inner-validation coverage
+
+전담 데이터 분석의 descriptive aggregate는 deterministic traveler-group split(seed 20261025, validation fraction 20%)에서 같은 trip-owner/query 구성, tourism-core positive 정의, unique `(TRAVEL_ID, POI_ID)` 쌍, trimmed exact Master membership을 사용했다.
+
+| Split | 양성 쌍 | Master 후보에 포함 | Master 밖 | 양성 query | 후보 positive가 있는 query | 후보 positive가 없는 query |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Inner-train | 3,542 | 2,560 | 982 | 1,740 | 1,483 | 257 |
+| Inner-validation smoke | 883 | 638 | 245 | 432 | 370 | 62 |
+
+runner의 `_make_frame`은 관측 positive를 trip별로 모은 뒤 각 trip의 positive ID를 후보 inventory와 교차시키며, 후보 positive가 하나도 없는 trip은 training frame에 넣지 않는다. 그 결과 inner-train의 후보 positive가 있는 1,483개 query가 runner의 1,483개 training group이 되고, 후보 positive가 없는 257개 query는 training frame에 포함되지 않는다. 검증에서는 ground truth를 전체 inner-validation positive로 유지하므로 후보 positive가 없는 62개 query도 end-to-end 평가에서 miss로 남는다.
+
+이 집계는 이 split 및 smoke cohort 안의 candidate-coverage 관측이다. Train과 validation 양쪽에서 Master 밖 positive가 확인됐다는 사실은 catalog coverage가 validation에만 국한된 문제가 아님을 보여주지만, 원인·모델 품질·일반화 성능을 입증하지 않는다. Covered-query만의 결과가 산출되더라도 전체 end-to-end 평가를 대체하지 않는 보조 진단이다.
+
 #### 3. 단순 문자열 표현 차이
 
 다음 변환은 `A_ID − B_ID`에 속하는 누락 positive ID에만 각각 독립 적용했다. 회복 수는 `고유 positive POI_ID / 해당 ID를 포함한 positive pair` 순서다. 충돌 그룹은 여러 원본 문자열이 같은 변환 key로 합쳐지는 경우다.
@@ -997,7 +1010,7 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 - 로컬로 취득한 TL과 Master 사본의 정확한 build/release 동일성은 미확인이다. 현재 version mismatch는 관측되지 않았고, 공식 가이드의 catalog history는 가능한 맥락이지 이 누락 원인의 입증이 아니다.
 - 공식 schema는 Visit ID와 Master ID의 동일성을 보장하지 않지만, 서로 다른 namespace라고 선언하지도 않는다. 원인 판별에는 명시적 contract 또는 승인된 crosswalk가 필요하다.
-- 별도의 inner-train positive coverage aggregate는 이번 활성 세션에서 승인된 전담 raw-data 경로를 사용할 수 없어 실행하지 않았다. 이는 현재 후보·모델 계약 결정의 blocker가 아니며, 승인된 경로가 확보되면 개인정보 안전 aggregate로 후속 확인할 수 있다.
+- Inner-train aggregate는 위의 split-specific candidate coverage를 설명하며 root cause를 결정하지 않는다. AI Hub build/release provenance와 ID contract 또는 승인된 crosswalk가 확보되면 원인에 관한 별도 근거로 검토할 수 있다.
 
 #### 결정
 
