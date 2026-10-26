@@ -899,12 +899,12 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 ### 확인된 사실
 
-- 공식 AI Hub 네 권역 데이터셋 설명은 각 권역 패키지에 Other 역할의 POI Master 1 set을 열거한다.
+- 공식 AI Hub 네 권역 데이터셋 설명은 각 권역 패키지에 Other 역할의 POI Master 1 set을 열거한다 ([수도권](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71776), [서부권](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71779), [동부권](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71778), [제주권](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71780)).
 - 전담 분석에서 네 권역 master는 동일 내용으로 확인되었다. 각 master는 7,442,866행과 7,442,866개의 고유한 비공백 `POI_ID`를 가졌다. 따라서 다른 권역 master를 union해도 후보 집합은 늘지 않는다.
 - 수도권 TL inner-validation smoke의 관련 양성 `(trip, POI_ID)` 883개 가운데 638개가 static-master 후보와 exact trimmed key로 겹쳤다. 나머지 245개는 189개 여행에 분포했고, 모두 비공백 visit `POI_ID`였다.
 - 이 smoke에서 master의 공백 또는 중복 key, 그리고 runner filter로 설명되는 누락은 각각 0건이었다.
 - AI Hub schema 설명은 visit `POI_ID`를 optional로 표시하며, visit과 master 사이의 외래 키나 양쪽 ID의 동일성을 보장한다고 선언하지 않는다.
-- 별도의 2026-10-18 광범위 진단에서는 양성 97,640개 중 26,884개가 같은 권역 master에 없었고, 다른 권역 master union으로 회복된 양성은 0개였다. 이 실행은 Issue #82와 모집단 및 데이터 버전이 다르므로 두 결과를 합산하지 않는다.
+- 별도의 2026-10-18 광범위 진단에서는 양성 97,640개 중 26,884개가 같은 권역 master에 없었고, 다른 권역 master union으로 회복된 양성은 0개였다. 모집단과 실행이 다르므로 수치를 합산하지 않는다. 입력 release/filekey 동일성은 별도 확인되지 않았다.
 
 다음 표는 이번 smoke에서 확인된 구조적 설명과 아직 시험하지 않은 가설을 분리한다.
 
