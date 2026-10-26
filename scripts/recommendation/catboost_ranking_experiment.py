@@ -11,15 +11,28 @@ an observed user dislike.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import math
 import random
+import sys
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import combinations
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.recommendation.tl_traveler_split import (
+    deterministic_traveler_group_split,
+    recompute_inner_train_positive_interaction_count,
+    recompute_inner_train_visit_type_codes,
+)
 
 DEFAULT_K = (5, 10, 20)
 DEFAULT_OBJECTIVE = "YetiRank"
@@ -51,11 +64,7 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
     "I4_HISTORICAL_POI": ("train_observed_visit_type_codes",),
     "C1_REGION": ("region",),
 }
-PENDING_FEATURE_GROUPS = {
-    "I4_HISTORICAL_POI":
-        "Issue #80's I4 recomputation helper is implemented and tested; "
-        "keep the runner disabled until Issue #82 wires inner-train TL visit events.",
-}
+PENDING_FEATURE_GROUPS: dict[str, str] = {}
 TRAIN_DERIVED_GROUPS = frozenset({"I3_POPULARITY", "I4_HISTORICAL_POI"})
 CATEGORICAL_COLUMNS = frozenset({
     *(f"travel_style_{i}" for i in range(1, 9)),
@@ -137,6 +146,231 @@ class RankingMetric:
     hit_rate: float
 
 
+@dataclass(frozen=True)
+class InnerTrainItemFeatures:
+    """Candidate features rebuilt from one region's inner-train TL only.
+
+    ``partition_by_trip`` contains raw keys and is intentionally in-memory only.
+    ``item_features`` preserves the caller's AI Hub candidate inventory and static
+    features, replacing only I3/I4 with values recomputed from inner-train rows.
+    """
+
+    partition_by_trip: Mapping[str, str]
+    item_features: tuple[Mapping[str, Any], ...]
+    _provenance_token: object = field(default=None, repr=False, compare=False)
+
+
+_INNER_TRAIN_MATERIALIZATION_TOKEN = object()
+
+
+@dataclass(frozen=True, init=False)
+class CandidateInventory:
+    """Sorted immutable candidate universe for one region.
+
+    Uniform sampling from this object draws indices into the compressed
+    available catalog, avoiding a full sorted catalog difference per query.
+    """
+
+    region: str
+    items: tuple[str, ...]
+    _item_index: Mapping[str, int] = field(repr=False, compare=False)
+
+    @classmethod
+    def from_items(cls, items: Iterable[str], *, region: str) -> CandidateInventory:
+        clean_region = str(region).strip()
+        if not clean_region:
+            raise ValueError("Candidate inventory requires a region")
+        values = tuple(items)
+        if any(not isinstance(item, str) for item in values):
+            raise ValueError("Candidate inventory ids must be strings")
+        clean_items = tuple(sorted(set(values)))
+        if not clean_items:
+            raise ValueError("Candidate inventory must not be empty")
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "region", clean_region)
+        object.__setattr__(instance, "items", clean_items)
+        object.__setattr__(
+            instance,
+            "_item_index",
+            MappingProxyType({item: index for index, item in enumerate(clean_items)}),
+        )
+        return instance
+
+
+@dataclass(frozen=True, init=False)
+class PreparedItemCatalog:
+    """Immutable normalized item columns derived from helper materialization.
+
+    Query scoring reads only from this cache and the exact materialization it
+    was built from. This keeps I3/I4 provenance checkable without repeating a
+    Python row-by-row comparison for every validation query.
+    """
+
+    materialization: InnerTrainItemFeatures = field(repr=False, compare=False)
+    region: str
+    item_ids: tuple[str, ...]
+    feature_columns: tuple[str, ...]
+    item_columns: Mapping[str, tuple[Any, ...]] = field(repr=False, compare=False)
+    _row_index: Mapping[str, int] = field(repr=False, compare=False)
+    inventory: CandidateInventory
+    _normalization_key: tuple[Any, ...] = field(repr=False, compare=False)
+    _provenance_token: object = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def from_materialization(
+        cls,
+        materialization: InnerTrainItemFeatures,
+        config: ExperimentConfig,
+        *,
+        region: str,
+    ) -> PreparedItemCatalog:
+        if materialization._provenance_token is not _INNER_TRAIN_MATERIALIZATION_TOKEN:
+            raise ValueError("Catalog features lack runner materialization provenance")
+        selected = selected_feature_columns(config)
+        rows = materialization.item_features
+        if not rows:
+            raise ValueError("Materialized candidate catalog must not be empty")
+        region = str(region).strip()
+        item_regions = {str(row.get("region", "")).strip() for row in rows}
+        if item_regions != {region}:
+            raise ValueError("Prepared candidate catalog must contain one matching region")
+        ids = tuple(str(row.get("item_id", "")).strip() for row in rows)
+        if any(not item for item in ids) or len(set(ids)) != len(ids):
+            raise ValueError("Materialized item inventory must have unique non-empty ids")
+
+        # Feature ownership comes from the experiment contract. Missing item
+        # columns fail closed; query-context columns cannot be overridden by
+        # similarly named static catalog fields.
+        item_feature_columns = _item_feature_columns(config)
+        missing = {
+            column for column in item_feature_columns
+            if any(column not in row for row in rows)
+        }
+        if missing:
+            raise ValueError(
+                f"Materialized candidate catalog missing item features: {sorted(missing)}"
+            )
+        normalized: dict[str, tuple[Any, ...]] = {}
+        for column in item_feature_columns:
+            normalized[column] = tuple(
+                normalize_feature_value(column, row[column], config) for row in rows
+            )
+        inventory = CandidateInventory.from_items(ids, region=region)
+        instance = object.__new__(cls)
+        object.__setattr__(instance, "materialization", materialization)
+        object.__setattr__(instance, "region", region)
+        object.__setattr__(instance, "item_ids", ids)
+        object.__setattr__(instance, "feature_columns", selected)
+        object.__setattr__(instance, "item_columns", MappingProxyType(normalized))
+        object.__setattr__(
+            instance,
+            "_row_index",
+            MappingProxyType({item: index for index, item in enumerate(ids)}),
+        )
+        object.__setattr__(instance, "inventory", inventory)
+        object.__setattr__(instance, "_normalization_key", _normalization_key(config))
+        object.__setattr__(instance, "_provenance_token", _INNER_TRAIN_MATERIALIZATION_TOKEN)
+        return instance
+
+
+def materialize_inner_train_item_features(
+    *,
+    trip_owner: Mapping[str, str],
+    item_features: Iterable[Mapping[str, Any]],
+    positive_interactions: Iterable[Mapping[str, Any]],
+    visit_events: Iterable[Mapping[str, Any]] | None,
+    split_seed: str | int,
+    validation_fraction: float = 0.2,
+) -> InnerTrainItemFeatures:
+    """Wire the #80 traveler split and I3/I4 recomputation into this runner.
+
+    Inputs are one region at a time. ``positive_interactions`` must contain
+    ``TRAVEL_ID``, ``POI_ID``, ``observed_positive=1``, and ``source_split=TL``.
+    ``visit_events`` must be the corresponding TL ``TN_VISIT_AREA_INFO`` event
+    rows. Any existing I3/I4 values on ``item_features`` are discarded, so
+    full-TL aggregates cannot be reused in inner-validation.
+    """
+    partition_by_trip = deterministic_traveler_group_split(
+        trip_owner, seed=split_seed, validation_fraction=validation_fraction
+    )
+
+    candidates = [dict(row) for row in item_features]
+    if not candidates:
+        raise ValueError("AI Hub candidate item features must not be empty")
+    item_ids: list[str] = []
+    regions: set[str] = set()
+    for row in candidates:
+        item_id = str(row.get("item_id", "")).strip()
+        region = str(row.get("region", "")).strip()
+        if not item_id or not region:
+            raise ValueError("Candidate feature rows require item_id and region")
+        item_ids.append(item_id)
+        regions.add(region)
+    if len(regions) != 1:
+        raise ValueError("Inner-train feature materialization requires one region")
+    if len(set(item_ids)) != len(item_ids):
+        raise ValueError("AI Hub candidate inventory contains duplicate item ids")
+
+    # Always replace, never trust precomputed outer-TL I3/I4 columns.
+    i3 = recompute_inner_train_positive_interaction_count(
+        positive_interactions, partition_by_trip, all_item_ids=item_ids
+    )
+    i4 = recompute_inner_train_visit_type_codes(
+        visit_events, partition_by_trip, all_item_ids=item_ids
+    )
+    for row, item_id in zip(candidates, item_ids, strict=True):
+        row["train_positive_interaction_count"] = i3[item_id]
+        row["train_observed_visit_type_codes"] = tuple(i4[item_id])
+        row["item_id"] = item_id
+        row["region"] = next(iter(regions))
+
+    return InnerTrainItemFeatures(
+        partition_by_trip=MappingProxyType(dict(partition_by_trip)),
+        item_features=tuple(MappingProxyType(row) for row in candidates),
+        _provenance_token=_INNER_TRAIN_MATERIALIZATION_TOKEN,
+    )
+
+
+def _validate_inner_train_materialization_rows(
+    frame: Any,
+    *,
+    materialization: InnerTrainItemFeatures,
+    expected_partition: str,
+    derived_columns: Sequence[str],
+) -> None:
+    """Bind every model row to exact helper output and its traveler split."""
+    if materialization._provenance_token is not _INNER_TRAIN_MATERIALIZATION_TOKEN:
+        raise ValueError("Train-derived features lack runner materialization provenance")
+    required = {"item_id", "trip_id", *derived_columns}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError("Train-derived model rows require item/trip provenance columns")
+
+    by_item = {str(row["item_id"]): row for row in materialization.item_features}
+    for item_id, trip_id, *feature_values in frame[
+        ["item_id", "trip_id", *derived_columns]
+    ].itertuples(index=False, name=None):
+        item_key = str(item_id).strip()
+        trip_key = str(trip_id).strip()
+        source = by_item.get(item_key)
+        if source is None:
+            raise ValueError("Model row is outside the materialized AI Hub candidate inventory")
+        if materialization.partition_by_trip.get(trip_key) != expected_partition:
+            raise ValueError("Model query does not match the materialized inner partition")
+        for column, actual in zip(derived_columns, feature_values, strict=True):
+            expected = source[column]
+            equal = actual == expected
+            if column == "train_observed_visit_type_codes" and isinstance(actual, (list, tuple)):
+                equal = tuple(actual) == tuple(expected)
+            if not equal:
+                raise ValueError("Model row train-derived features do not match inner-train materialization")
+
+
+TRAIN_DERIVED_COLUMNS = frozenset({
+    column for group in TRAIN_DERIVED_GROUPS for column in FEATURE_GROUPS[group]
+})
+
+
 def available_feature_groups() -> tuple[str, ...]:
     return tuple(g for g in FEATURE_GROUPS if g not in PENDING_FEATURE_GROUPS)
 
@@ -171,6 +405,36 @@ def selected_feature_columns(config: ExperimentConfig) -> tuple[str, ...]:
         columns.extend(group_columns)
     return tuple(dict.fromkeys(columns))
 
+
+def _normalization_key(config: ExperimentConfig) -> tuple[Any, ...]:
+    return (
+        selected_feature_columns(config),
+        config.category_depth,
+        config.popularity_transform,
+    )
+
+
+def _item_feature_columns(config: ExperimentConfig) -> tuple[str, ...]:
+    item_groups = {
+        "I1_CATEGORY", "I2_ADMINISTRATIVE_LOCATION", "I3_POPULARITY",
+        "I4_HISTORICAL_POI", "C1_REGION",
+    }
+    return tuple(dict.fromkeys(
+        column
+        for group in config.feature_groups if group in item_groups
+        for column in (
+            FEATURE_GROUPS[group][:config.category_depth]
+            if group == "I1_CATEGORY" else FEATURE_GROUPS[group]
+        )
+    ))
+
+
+def _query_feature_columns(config: ExperimentConfig) -> tuple[str, ...]:
+    item_columns = set(_item_feature_columns(config))
+    return tuple(
+        column for column in selected_feature_columns(config)
+        if column not in item_columns
+    )
 
 def categorical_feature_columns(config: ExperimentConfig) -> tuple[str, ...]:
     return tuple(
@@ -314,8 +578,23 @@ def _weighted_without_replacement(
     return chosen
 
 
+def _available_rank_to_catalog_index(rank: int, excluded: Sequence[int]) -> int:
+    """Map a zero-based rank in catalog-minus-exclusions to catalog index."""
+    low = rank
+    high = rank + len(excluded)
+    target_count = rank + 1
+    while low < high:
+        mid = (low + high) // 2
+        available_through_mid = mid + 1 - bisect.bisect_right(excluded, mid)
+        if available_through_mid >= target_count:
+            high = mid
+        else:
+            low = mid + 1
+    return low
+
+
 def sample_unobserved(
-    candidate_items: Iterable[str],
+    candidate_items: Iterable[str] | CandidateInventory,
     positive_items: Iterable[str],
     *,
     strategy: SamplingStrategy,
@@ -342,14 +621,32 @@ def sample_unobserved(
         )
 
     positives = set(positive_items)
-    available = sorted(set(candidate_items) - positives)
-    count = min(len(available), len(positives) * ratio)
-    if count == 0:
-        return ()
-
     rng = random.Random(seed)
-    if strategy == SamplingStrategy.UNIFORM:
-        return tuple(sorted(rng.sample(available, count)))
+    if isinstance(candidate_items, CandidateInventory):
+        inventory = candidate_items
+        excluded = sorted(
+            inventory._item_index[item]
+            for item in positives
+            if item in inventory._item_index
+        )
+        available_count = len(inventory.items) - len(excluded)
+        count = min(available_count, len(positives) * ratio)
+        if count == 0:
+            return ()
+        if strategy == SamplingStrategy.UNIFORM:
+            ranks = rng.sample(range(available_count), count)
+            return tuple(sorted(
+                inventory.items[_available_rank_to_catalog_index(rank, excluded)]
+                for rank in ranks
+            ))
+        available = [item for item in inventory.items if item not in positives]
+    else:
+        available = sorted(set(candidate_items) - positives)
+        count = min(len(available), len(positives) * ratio)
+        if count == 0:
+            return ()
+        if strategy == SamplingStrategy.UNIFORM:
+            return tuple(sorted(rng.sample(available, count)))
 
     if strategy == SamplingStrategy.POPULARITY_WEIGHTED:
         weights = {
@@ -477,6 +774,160 @@ def ranking_metric_at_k(
     )
 
 
+def aggregate_ranking_metrics(
+    query_rankings: Iterable[tuple[Sequence[str], Iterable[str]]],
+    *,
+    k_values: Sequence[int] = DEFAULT_K,
+) -> dict[str, float]:
+    """Average query-level ranking metrics without retaining prior queries."""
+
+    if not k_values or any(k <= 0 for k in k_values):
+        raise ValueError("k_values must contain positive integers")
+    names = ("ndcg", "recall", "mrr", "hit_rate")
+    sums = {f"{name}@{k}": 0.0 for name in names for k in k_values}
+    query_count = 0
+    for ranked_items, relevant_items in query_rankings:
+        query_count += 1
+        # Ground truth may be a one-shot iterator. Freeze once per query so
+        # each requested K sees the same relevant set.
+        relevant = frozenset(relevant_items)
+        for k in k_values:
+            metric = ranking_metric_at_k(ranked_items, relevant, k)
+            for name in names:
+                sums[f"{name}@{k}"] += getattr(metric, name)
+    if query_count == 0:
+        raise ValueError("at least one validation query is required")
+    return {name: value / query_count for name, value in sums.items()}
+
+
+def prepare_feature_frame(frame: Any, config: ExperimentConfig) -> Any:
+    """Select and normalize model columns for fit or bounded query scoring."""
+
+    features = list(selected_feature_columns(config))
+    result = frame.loc[:, features].copy()
+    for column in features:
+        result[column] = result[column].map(
+            lambda value, c=column: normalize_feature_value(c, value, config)
+        )
+    return result
+
+
+@dataclass(frozen=True)
+class StreamingEvaluationResult:
+    metrics: Mapping[str, float]
+    query_count: int
+    candidate_count: int
+    scored_rows: int
+    max_batch_rows: int
+
+
+def score_inner_validation_queries(
+    model: Any,
+    catalog: PreparedItemCatalog,
+    query_ground_truth: Iterable[tuple[str, Iterable[str]]],
+    *,
+    query_features: Mapping[str, Mapping[str, Any]],
+    config: ExperimentConfig,
+    max_rows_per_batch: int = 2048,
+) -> StreamingEvaluationResult:
+    """Score the region inventory in bounded chunks, one query at a time.
+
+    The catalog must come from ``materialize_inner_train_item_features`` and
+    must be prepared for the same feature transform. Query IDs are checked
+    against the helper's split before scoring. The row bound applies to each
+    prediction frame; the immutable prepared catalog itself remains resident.
+    """
+    if max_rows_per_batch <= 0:
+        raise ValueError("max_rows_per_batch must be positive")
+    if catalog._provenance_token is not _INNER_TRAIN_MATERIALIZATION_TOKEN:
+        raise ValueError("Prepared candidate catalog lacks runner provenance")
+    if catalog.materialization._provenance_token is not _INNER_TRAIN_MATERIALIZATION_TOKEN:
+        raise ValueError("Candidate features lack runner materialization provenance")
+    if catalog._normalization_key != _normalization_key(config):
+        raise ValueError("Prepared catalog normalization does not match experiment config")
+    if catalog.feature_columns != selected_feature_columns(config):
+        raise ValueError("Prepared catalog feature columns do not match experiment config")
+    if catalog.inventory.region != catalog.region:
+        raise ValueError("Candidate inventory region does not match prepared catalog")
+    if not catalog.inventory.items:
+        raise ValueError("Same-region candidate inventory must not be empty")
+
+    try:
+        import pandas as pd
+    except ImportError as exc:
+        raise RuntimeError("pandas is required for bounded CatBoost scoring") from exc
+
+    item_columns = set(_item_feature_columns(config))
+    query_columns = _query_feature_columns(config)
+    if set(catalog.item_columns) != item_columns:
+        raise ValueError("Prepared catalog item columns do not match experiment contract")
+    inventory_indices = tuple(catalog._row_index[item] for item in catalog.inventory.items)
+    max_k = max(config.k_values)
+    scored_rows = 0
+    max_batch = 0
+    query_count = 0
+
+    def scored_rankings() -> Iterable[tuple[tuple[str, ...], frozenset[str]]]:
+        nonlocal scored_rows, max_batch, query_count
+        for query_id, relevant_items in query_ground_truth:
+            query_key = str(query_id).strip()
+            if catalog.materialization.partition_by_trip.get(query_key) != "inner-validation":
+                raise ValueError("Scoring query is not in the materialized inner-validation partition")
+            if query_key not in query_features:
+                raise ValueError("Inner-validation query is missing authoritative context")
+            source_context = query_features[query_key]
+            if "region" not in source_context:
+                raise ValueError("Query context region is required for same-region candidate scoring")
+            if str(source_context["region"]).strip() != catalog.region:
+                raise ValueError("Query context region conflicts with the prepared candidate region")
+            query_count += 1
+            relevant = frozenset(str(item) for item in relevant_items)
+            normalized_query = {
+                column: normalize_feature_value(column, source_context[column], config)
+                for column in query_columns if column in source_context
+            }
+            missing_query = set(query_columns) - set(normalized_query)
+            if missing_query:
+                raise ValueError(f"Query context missing selected features: {sorted(missing_query)}")
+
+            best: list[tuple[str, float]] = []
+            items = catalog.inventory.items
+            for start in range(0, len(items), max_rows_per_batch):
+                stop = min(start + max_rows_per_batch, len(items))
+                batch_ids = items[start:stop]
+                batch_positions = inventory_indices[start:stop]
+                frame_columns: dict[str, list[Any]] = {}
+                for column in catalog.feature_columns:
+                    if column in item_columns:
+                        values = catalog.item_columns[column]
+                        frame_columns[column] = [values[position] for position in batch_positions]
+                    else:
+                        frame_columns[column] = [normalized_query[column]] * len(batch_ids)
+                frame = pd.DataFrame(frame_columns, columns=catalog.feature_columns)
+                scores = model.predict(frame)
+                if len(scores) != len(batch_ids):
+                    raise ValueError("Model returned a score count that does not match the batch")
+                batch_scored: list[tuple[str, float]] = []
+                for item, raw_score in zip(batch_ids, scores, strict=True):
+                    score = float(raw_score)
+                    if not math.isfinite(score):
+                        raise ValueError("Model returned a non-finite ranking score")
+                    batch_scored.append((item, score))
+                scored_rows += len(batch_ids)
+                max_batch = max(max_batch, len(batch_ids))
+                best = sorted((*best, *batch_scored), key=lambda row: (-row[1], row[0]))[:max_k]
+            yield tuple(item for item, _ in best), relevant
+
+    metrics = aggregate_ranking_metrics(scored_rankings(), k_values=config.k_values)
+    return StreamingEvaluationResult(
+        metrics=MappingProxyType(metrics),
+        query_count=query_count,
+        candidate_count=len(catalog.inventory.items),
+        scored_rows=scored_rows,
+        max_batch_rows=max_batch,
+    )
+
+
 def catboost_model_params(config: ExperimentConfig) -> dict[str, Any]:
     config.validate()
     return {
@@ -492,17 +943,52 @@ def catboost_model_params(config: ExperimentConfig) -> dict[str, Any]:
 
 def fit_catboost(
     train_frame: Any,
-    validation_frame: Any,
+    validation_frame: Any | None = None,
     *,
     label_column: str,
     group_column: str,
     config: ExperimentConfig,
     train_derived_source_scope: str | None = None,
+    inner_train_materialization: InnerTrainItemFeatures | None = None,
 ) -> Any:
     """Thin adapter; Issue #82 owns actual CatBoost execution and tuning."""
 
     config.validate()
     validate_train_derived_scope(config, train_derived_source_scope)
+    features = list(selected_feature_columns(config))
+    categorical = list(categorical_feature_columns(config))
+    derived_features = [column for column in features if column in TRAIN_DERIVED_COLUMNS]
+    required = {*features, label_column, group_column}
+    missing_train = required - set(train_frame.columns)
+    missing_validation = (
+        required - set(validation_frame.columns)
+        if validation_frame is not None
+        else set()
+    )
+    if missing_train:
+        raise ValueError(f"Training frame missing: {sorted(missing_train)}")
+    if missing_validation:
+        raise ValueError(f"Validation frame missing: {sorted(missing_validation)}")
+
+    if derived_features:
+        if inner_train_materialization is None:
+            raise ValueError(
+                "I3/I4 fitting requires output from materialize_inner_train_item_features"
+            )
+        _validate_inner_train_materialization_rows(
+            train_frame,
+            materialization=inner_train_materialization,
+            expected_partition="inner-train",
+            derived_columns=derived_features,
+        )
+        if validation_frame is not None:
+            _validate_inner_train_materialization_rows(
+                validation_frame,
+                materialization=inner_train_materialization,
+                expected_partition="inner-validation",
+                derived_columns=derived_features,
+            )
+
     try:
         from catboost import CatBoostRanker, Pool
     except ImportError as exc:
@@ -510,49 +996,38 @@ def fit_catboost(
             "CatBoost is not installed; execution belongs to Issue #82"
         ) from exc
 
-    features = list(selected_feature_columns(config))
-    categorical = list(categorical_feature_columns(config))
-    required = {*features, label_column, group_column}
-    missing_train = required - set(train_frame.columns)
-    missing_validation = required - set(validation_frame.columns)
-    if missing_train:
-        raise ValueError(f"Training frame missing: {sorted(missing_train)}")
-    if missing_validation:
-        raise ValueError(f"Validation frame missing: {sorted(missing_validation)}")
-
     validate_ranking_group_layout(
         list(train_frame[group_column]), list(train_frame[label_column])
     )
-    validate_ranking_group_layout(
-        list(validation_frame[group_column]),
-        list(validation_frame[label_column]),
-        require_both_labels=False,
-    )
-
-    def prepared(frame: Any) -> Any:
-        result = frame.loc[:, features].copy()
-        for column in features:
-            result[column] = result[column].map(
-                lambda value, c=column: normalize_feature_value(c, value, config)
-            )
-        return result
+    if validation_frame is not None:
+        validate_ranking_group_layout(
+            list(validation_frame[group_column]),
+            list(validation_frame[label_column]),
+            require_both_labels=False,
+        )
 
     train_pool = Pool(
-        prepared(train_frame),
+        prepare_feature_frame(train_frame, config),
         label=train_frame[label_column],
         group_id=train_frame[group_column],
         cat_features=categorical,
     )
-    validation_pool = Pool(
-        prepared(validation_frame),
-        label=validation_frame[label_column],
-        group_id=validation_frame[group_column],
-        cat_features=categorical,
-    )
     model = CatBoostRanker(**catboost_model_params(config))
-    # Keep the comparison budget fixed across objectives. The validation set
-    # reports one shared metric but never selects a different best iteration.
-    model.fit(train_pool, eval_set=validation_pool)
+    if validation_frame is None:
+        # The caller can score validation queries incrementally after fitting.
+        # Since best-model selection is disabled, an eval set does not affect
+        # the fitted model and need not be retained in memory.
+        model.fit(train_pool)
+    else:
+        validation_pool = Pool(
+            prepare_feature_frame(validation_frame, config),
+            label=validation_frame[label_column],
+            group_id=validation_frame[group_column],
+            cat_features=categorical,
+        )
+        # Keep the comparison budget fixed across objectives. The validation
+        # set reports a metric but never selects a different best iteration.
+        model.fit(train_pool, eval_set=validation_pool)
     return model
 
 

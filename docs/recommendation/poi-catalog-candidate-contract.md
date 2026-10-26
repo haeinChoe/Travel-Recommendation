@@ -893,6 +893,134 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 - 향후 카탈로그 정책 v2에서 음식점(`39`) 및 쇼핑시설(`38`)을 추천 지원 대상으로 포함할지 여부는 비즈니스 카테고리 기획 및 서빙 인덱스 용량 분석을 거쳐 별도 Issue로 검토함.
 
 
+## Issue #82: 수도권 TL inner-validation positive 후보 누락 진단
+
+**결론: D — 선택한 로컬 POI Master에서 실제 후보 부재가 확인됐고, 그 원인은 미확정이다.** 이번 진단은 수도권 TL inner-validation의 관측 양성과 같은 수도권 `Other` 역할 Master 사이의 키 포함 여부만 다룬다. 선행 기록의 `883/638/245`는 `(TRAVEL_ID, POI_ID)` 쌍 수다. 고유 `POI_ID` 수는 별도로 계산했다.
+
+### 조사 순서
+
+#### 1. 입력 출처와 release
+
+- 공식 [AI Hub 수도권 데이터셋 #71776](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71776)은 `TN_VISIT_AREA_INFO`를 여행 로그 표로, `TN_POI_MASTER`를 `Other` 역할의 POI Master 1 set으로 설명한다. 페이지 변경 이력의 최신 표시는 1.2 (2024-12-04)다.
+- 공식 [AI Hub 데이터 구축·활용 가이드](https://aihub.or.kr/file/down.do?cnstcPrcuseFileSn=22340&dataSetSn=71776&fileSn=22340)는 `TN_POI_MASTER`가 국토지리정보원(NGII)의 전국 POI 자료를 바탕으로 하며, 2021년에 최초 수집한 뒤 갱신했고, TourAPI를 이용해 보강·중복 제거했다고 설명한다. 이는 시점에 따른 정적 카탈로그 coverage 차이를 설명할 수 있는 맥락이지만, 이번 누락 195개 ID의 원인으로 입증된 것은 아니다.
+- 사용자가 지정한 TL 및 Other 역할 바인딩을 적용했다. 공식 비다운로드 파일 목록에서 두 바인딩에 해당하는 filekey가 모두 같은 dataset 71776 목록에 있는 것을 확인했다. 구체 filekey와 로컬 경로는 기록하지 않는다.
+- **미확인:** 로컬 사본의 build/release provenance는 공식 버전 이력에 연결되지 않았다. 현재 입력에서 version mismatch가 관측된 것은 아니며, 이 provenance 미확인은 이번 exact-key 비교의 blocker가 아니다. 공식 페이지의 1.2 표시는 로컬 사본의 취득 버전을 증명하지 않는다.
+
+#### 2. 원본 Master와 runner 후보 비교
+
+`A_ID`는 inner-validation positive의 고유 POI ID 집합, `B_ID`는 선택한 원본 Master의 비공백 `POI_ID`를 trim한 exact key 집합, `C_ID`는 PR #88 runner의 같은 권역 후보 ID 집합이다. 별도로 `A_pair`는 고유한 양성 `(TRAVEL_ID, POI_ID)` 쌍 집합이다. 아래 표는 ID 집합 연산과 pair-level membership을 분리한다.
+
+- `|B_ID| = 7,442,866`, `|C_ID| = 7,442,866`.
+
+| ID 집합 연산 | 고유 POI ID 수 |
+| --- | ---: |
+| `A_ID` | 610 |
+| `A_ID ∩ B_ID` | 415 |
+| `A_ID − B_ID` | 195 |
+| `A_ID ∩ C_ID` | 415 |
+| `A_ID − C_ID` | 195 |
+| `(A_ID ∩ B_ID) − C_ID` | 0 |
+
+| Pair-level membership | 양성 쌍 수 |
+| --- | ---: |
+| `A_pair` | 883 |
+| `A_pair` 중 `POI_ID ∈ B_ID` | 638 |
+| `A_pair` 중 `POI_ID ∉ B_ID` | 245 |
+| `A_pair` 중 `POI_ID ∈ C_ID` | 638 |
+| `A_pair` 중 `POI_ID ∉ C_ID` | 245 |
+| `A_pair` 중 `POI_ID ∈ B_ID` 이고 `POI_ID ∉ C_ID` | 0 |
+
+따라서 이전에 보고한 누락 245는 서로 다른 POI 수가 아니라 양성 trip–POI 쌍 수다. `A_ID − B_ID`에 속하는 195개 고유 positive ID는 245개 `A_pair`에 나타난다. 원본 Master에 exact key가 있던 양성은 runner 후보에서도 모두 유지됐다.
+
+#### Inner-train 및 inner-validation coverage
+
+전담 데이터 분석의 descriptive aggregate는 deterministic traveler-group split(seed 20261025, validation fraction 20%)에서 같은 trip-owner/query 구성, tourism-core positive 정의, unique `(TRAVEL_ID, POI_ID)` 쌍, trimmed exact Master membership을 사용했다.
+
+| Split | 양성 쌍 | Master 후보에 포함 | Master 밖 | 양성 query | 후보 positive가 있는 query | 후보 positive가 없는 query |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Inner-train | 3,542 | 2,560 | 982 | 1,740 | 1,483 | 257 |
+| Inner-validation smoke | 883 | 638 | 245 | 432 | 370 | 62 |
+
+runner의 `_make_frame`은 관측 positive를 trip별로 모은 뒤 각 trip의 positive ID를 후보 inventory와 교차시키며, 후보 positive가 하나도 없는 trip은 training frame에 넣지 않는다. 그 결과 inner-train의 후보 positive가 있는 1,483개 query가 runner의 1,483개 training group이 되고, 후보 positive가 없는 257개 query는 training frame에 포함되지 않는다. 검증에서는 ground truth를 전체 inner-validation positive로 유지하므로 후보 positive가 없는 62개 query도 end-to-end 평가에서 miss로 남는다.
+
+이 집계는 이 split 및 smoke cohort 안의 candidate-coverage 관측이다. Train과 validation 양쪽에서 Master 밖 positive가 확인됐다는 사실은 catalog coverage가 validation에만 국한된 문제가 아님을 보여주지만, 원인·모델 품질·일반화 성능을 입증하지 않는다. Covered-query만의 결과가 산출되더라도 전체 end-to-end 평가를 대체하지 않는 보조 진단이다.
+
+#### 3. 단순 문자열 표현 차이
+
+다음 변환은 `A_ID − B_ID`에 속하는 누락 positive ID에만 각각 독립 적용했다. 회복 수는 `고유 positive POI_ID / 해당 ID를 포함한 positive pair` 순서다. 충돌 그룹은 여러 원본 문자열이 같은 변환 key로 합쳐지는 경우다.
+
+| 진단 | 회복된 ID / 쌍 | 충돌 그룹 |
+| --- | ---: | ---: |
+| 원문 문자열 exact | 0 / 0 | 0 |
+| trim | 0 / 0 | 0 |
+| Unicode NFC | 0 / 0 | 0 |
+| Unicode NFKC | 0 / 0 | 0 |
+| ASCII 대소문자 통일 | 0 / 0 | 0 |
+| 숫자 문자열의 선행 0 제거 | 0 / 0 | 0 |
+
+이 변환들로 설명되는 누락은 없다. ID 의미의 동등성을 보장하지 않는 정규화 규칙을 후보 계약에 추가할 근거도 없다.
+
+#### 4. CSV 파싱과 dtype 변환
+
+- [runner](../../scripts/recommendation/run_catboost_tl_smoke.py)는 `utf-8-sig`와 `csv.reader`로 선택 열을 읽어 문자열을 유지한다. pandas dtype 추론이나 숫자형 ID 변환은 사용하지 않는다. 후보 키 생성의 `_clean_str`은 문자열 trim만 한다.
+- 이번 읽기에서 필요한 헤더가 확인됐고 엄격한 UTF-8 파싱 오류는 0건이었다. 입력 파일의 UTF-8 BOM은 없었으며, reader가 반환한 POI 값은 문자열이었다.
+- `A_ID − B_ID`에 속하는 누락 positive ID와 `A_pair` 중 그 ID를 포함한 쌍에서 reader 값이 `_clean_str`로 바뀐 항목은 0 ID / 0쌍이고, 과학적 표기법 형태는 0개였다. 따라서 trim, null 변환, dtype 추론, BOM 또는 인코딩이 이 누락을 만들었다는 증거는 없다.
+- 유효 방문 이벤트 중 빈 Visit `POI_ID` 6,710행은 positive를 만들 때 제외됐다. 이는 비어 있지 않은 195개 누락 positive ID의 설명이 아니다.
+
+#### 5. Master 중복 및 runner 필터
+
+- 선택한 Master는 7,442,866행이며 비공백 ID도 7,442,866개다. 빈 Master ID 0개, 중복 ID 0개였고 duplicate policy로 제외된 positive ID/쌍도 0/0이다.
+- Admin feature unavailable, category unavailable, same-region, 기타 runner 필터로 제외된 positive ID/쌍은 각각 0/0이다. runner는 해당 정적 feature 값이 비어 있어도 candidate key를 제거하지 않고, 이 실행의 모든 후보를 수도권으로 묶어 same-region 후보를 만든다.
+
+#### 6. 선택한 로컬 Master에서 확인된 부재
+
+1–5단계에서 `A_ID − B_ID`에 해당하는 195개 고유 positive ID와 `A_pair` 중 그 ID를 포함하는 245개 positive pair를 설명하는 문자열·파싱·중복·필터 원인은 확인되지 않았다. 이 값들은 **이번 smoke가 사용한 로컬 Master 사본에서의 exact-key 부재**로 확정한다. version mismatch는 관측되지 않았지만, 로컬 취득 release provenance도 검증되지 않았으므로 해당 release의 동일성은 미확정이다. 이는 현재 부재 결과를 설명하거나 무효화하지 않으며, 결과를 다른 release에 일반화하지 않는 범위 한정이다.
+
+#### 7. Visit ↔ Master ID 의미
+
+[수도권 schema 요약](../data/aihub-71776-capital-schema.md)에 따르면 Visit `POI_ID`와 Master `POI_ID`는 모두 `varchar(255)`이고 설명은 `POI ID`다. schema의 Visit `필수 여부 N`은 해당 필드가 필수가 아니라는 뜻이며, SQL 열의 NULL 허용 여부 자체를 명시하지 않는다. Master의 `필수 여부 Y`는 해당 schema에서 필수로 표시한다는 뜻이다.
+
+공식 설명은 두 `POI_ID`의 생성 주체, Visit `POI_ID`가 참조하는 테이블, Master가 대표하는 정확한 모집단을 명시하지 않는다. 두 열 사이의 PK/FK 관계나 동일 namespace 보장도 선언하지 않는다. 따라서 문서상 동일성이 보장되지 않는다는 점은 확인되지만, 이는 서로 다른 ID 체계라는 증거가 아니다.
+
+#### 8. release provenance 및 정적 카탈로그 맥락
+
+공식 현재 목록에는 두 역할 입력이 dataset 71776의 filekey로 나타나고 페이지 버전 이력은 1.2를 표시한다. 다만 로컬 취득본을 해당 release와 연결하는 기록은 검증되지 않았다. **현재 version mismatch가 관측된 것은 아니며, 누락 원인으로 채택하지 않는다.** 위 AI Hub 구축 가이드의 수집·갱신 이력은 정적 카탈로그와 방문 관측의 coverage 차이에 대한 가능한 맥락일 뿐, 이번 195개 고유 ID의 원인 증거가 아니다.
+
+### 결과 분류
+
+#### 확인된 사실
+
+- inner-validation 양성은 883개 trip–POI 쌍과 610개 고유 POI ID다.
+- 원본 Master `B_ID`와 runner 후보 `C_ID`는 각각 7,442,866개다. `A_ID − B_ID`는 195개 고유 ID이며, `A_pair`에서 그 ID를 포함하는 쌍은 245개다.
+- 432개 evaluation query 중 370개에는 후보 positive가 있었고 62개에는 없었다. 공식 end-to-end ranking 지표에서는 62개 query를 miss로 유지한다.
+- 문자열 변환 회복, duplicate, parser/dtype 및 후보 필터에 의한 설명은 0건이다.
+- 공식 schema는 ID 열 타입/필수 여부를 정의하지만 Visit ↔ Master 동일 namespace를 보장하지 않는다.
+
+#### 해석
+
+현재 증거는 관측된 positive ID가 선택한 로컬 static Master candidate inventory에 없다는 데까지 뒷받침한다. 2021년 최초 수집 후 갱신된 별도 static catalog라는 공식 설명은 시점·coverage 차이를 가능한 맥락으로 제시하지만, 제품 전체에서 POI Master가 불완전하다거나 Visit과 Master가 다른 namespace라는 주장, 또는 이번 195개 ID의 원인을 입증하지 않는다. 370개 covered-query 결과가 따로 산출되더라도 공식 end-to-end 지표를 대체할 수 없으며, 보조 진단으로만 볼 수 있다.
+
+#### 기각된 가설
+
+- 이 실행의 195개 누락 ID를 trim, Unicode, ASCII case 또는 leading-zero 변환으로 회복할 수 있다는 설명.
+- 빈/중복 Master key, admin/category feature 결측, same-region 또는 다른 runner filter가 누락을 만들었다는 설명.
+- CSV dtype 수치 변환, BOM, UTF-8 오류, 과학적 표기법이 누락을 만들었다는 설명.
+
+#### 남은 가설 및 후속 확인
+
+- 로컬로 취득한 TL과 Master 사본의 정확한 build/release 동일성은 미확인이다. 현재 version mismatch는 관측되지 않았고, 공식 가이드의 catalog history는 가능한 맥락이지 이 누락 원인의 입증이 아니다.
+- 공식 schema는 Visit ID와 Master ID의 동일성을 보장하지 않지만, 서로 다른 namespace라고 선언하지도 않는다. 원인 판별에는 명시적 contract 또는 승인된 crosswalk가 필요하다.
+- Inner-train aggregate는 위의 split-specific candidate coverage를 설명하며 root cause를 결정하지 않는다. AI Hub build/release provenance와 ID contract 또는 승인된 crosswalk가 확보되면 원인에 관한 별도 근거로 검토할 수 있다.
+
+#### 결정
+
+최종 분류는 **D — 선택한 로컬 Master에서 실제 부재 확인, 근본 원인 미확정**이다. 후보 계약은 trimmed exact string으로 유지한다. 외부 NGII 자료를 후보에 union하지 않으며, fuzzy identity resolution, 임의 ID 정규화, Visit 기반 Master feature 보강, positive 평가 제외는 적용하지 않는다. 62개 all-zero evaluation query도 end-to-end ranking 지표에서 miss로 남긴다. Covered-query 지표는 보조 진단에만 사용할 수 있다.
+
+#### 실행 참고
+
+이 집계는 Issue #80의 split/positive helper (`dev` base `ad0f78e5dfe471228b81c4576de575c9c91e9e27`)와 PR #88 runner 후보 규칙(문서 수정 전 head `2a1703484bce519e34ad96016c94d7990fbf43f4`)을 기준으로 다시 계산했다. 집계 처리 시간은 84.33초, peak RSS는 750 MiB였다. VL은 열지 않았다.
+
+
 ## Synthetic validation and use
 
 Run `python3 -m unittest discover -s tests -p 'test_poi_catalog_candidate_contract.py' -v`, plus the TourAPI snapshot adapter and experiment-design audit test modules. Tests cover deterministic exact-signal matching, ambiguity, conflict handling, coordinate exclusion, fail-closed eligibility, normalized code handling, independent request-region coverage, proxy rejection from product coverage, explicit CSV field maps, and domain-review checks. The adapter also includes a credential-safe read-only collector; the collection CLI persists only under ignored `results/`. `derive_proxy_requests_from_observations` returns a distinct `HistoricalRequestProxy` for historical-feasibility analysis only, requires one explicit region per request, and does not infer district selection. Product candidate coverage uses independently supplied `CandidateRequest` contexts. The candidate eligibility function must not receive observed category or post-event feedback.

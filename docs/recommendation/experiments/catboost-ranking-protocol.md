@@ -1,7 +1,7 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
 **관련 Issue:** #79, #82
-**현재 상태:** #80 traveler split·I3/I4 재계산 경계와 #81 I2 계약 반영 완료 / #82 실제 TL inner-validation 실험 대기
+**현재 상태:** #82 runner integration을 완료하고 수도권 TL inner-validation에서 Stage 1 YetiRank prototype smoke를 실행했다. 아래 지표는 파이프라인 실행 가능성과 비용을 확인한 feasibility 결과이며 최종 모델 성능이 아니다.
 
 ## 이 문서가 답하려는 질문
 
@@ -46,12 +46,12 @@ VL 최종 평가 (#83)
 
 - I2 Administrative Location의 feature 계약과 synthetic 검증은 #81에서 완료됐다. `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용하며, 실제 AI Hub coverage/conflict 감사만 후속 입력 확보 후 수행한다.
 - I3 Popularity의 inner-train 재계산 경계와 I4 Historical POI의 `recompute_inner_train_visit_type_codes` helper는 #80에서 구현·검증 완료됐다.
-- I4는 계산 방법이 미완료인 것이 아니라, #82 runner가 TL visit-event input을 helper에 연결하기 전까지 runner feature group만 pending/disabled 상태다.
-- actual CatBoost dependency/version은 #82 실행 환경에서 고정한다.
+- #82 runner는 한 권역의 TL trip-owner, positive interaction, `TN_VISIT_AREA_INFO` 이벤트, AI Hub 후보 feature를 받아 traveler-group split을 만들고 I3/I4를 inner-train에서 다시 계산한다. 기존 outer-TL I3/I4 값은 덮어쓴다.
+- CatBoost runtime dependency는 `pyproject.toml`과 `uv.lock`에서 고정한다. Issue #82 검증 환경은 Python 3.12와 CatBoost 1.2.10을 사용한다.
 
 ## 다음 행동
 
-#80과 #81은 완료됐다. 다음 단계는 #82이며, 아래 순서대로 실제 TL inner-validation 실험을 수행한다.
+#80과 #81은 완료됐고, #82 Stage 1 prototype smoke도 완료됐다. 다음 단계는 전체 검색이 아니라 scoring 비용을 더 줄인 뒤 실제 TL runtime을 다시 측정하는 것이다. 그 측정 결과를 확인한 후 exhaustive/greedy 탐색과 seed 예산을 정한다.
 
 ---
 
@@ -91,6 +91,31 @@ feature = 작은 runnable set
 - candidate가 request region 밖으로 새지 않는다.
 - inner-validation이 train-derived feature나 sampling 통계에 사용되지 않는다.
 - metric이 query 단위로 계산된다.
+
+### 완료된 prototype smoke 결과
+
+이 실행은 Stage 1의 파이프라인 및 runtime feasibility 확인이다. 최종 모델 선택, 전체 탐색, 일반화 성능 주장을 위한 결과가 아니다.
+
+| 항목 | 결과 |
+| --- | ---: |
+| 설정 | YetiRank, uniform negative sampling, 1×, 1,000 iterations |
+| seed | 20261025 |
+| inner-validation query | 432 |
+| 후보 카탈로그 | 7,442,866 POI |
+| 검증 scoring 행 | 3,215,318,112 |
+| training 행 / query | 5,120 / 1,483 |
+| 총 runtime | 6,019초 |
+| CatBoost fit | 8.7초 |
+| validation scoring | 5,764.1초 |
+
+| Metric | @5 | @10 | @20 |
+| --- | ---: | ---: | ---: |
+| NDCG | 0.00207 | 0.00416 | 0.00495 |
+| Recall | 0.00347 | 0.00863 | 0.01113 |
+| MRR | 0.00174 | 0.00345 | 0.00381 |
+| HitRate | 0.00463 | 0.01852 | 0.02546 |
+
+이 smoke에서는 모델 fitting보다 validation scoring이 runtime 병목이었다. scoring 최적화 뒤 실제 TL runtime을 측정하기 전에는 exhaustive와 greedy 중 어느 탐색을 택할지, seed 반복 횟수를 얼마로 둘지 결정하지 않는다. 이 수치는 Stage 1 feasibility 결과이며 최종 모델 성능으로 해석하지 않는다.
 
 ## Stage 2 — Negative sampling search
 
@@ -155,7 +180,7 @@ C1 Region
 
 - runtime이 충분하면 exhaustive search
 - 비용이 크면 forward greedy 후 backward removal check
-- I2는 runnable이다. I4는 #82 runner의 visit-event input 연결이 끝날 때까지 search space에서 제외하고 fail closed한다.
+- I2와 I4는 runnable이다. `fit_catboost`는 I3/I4를 포함한 행마다 helper가 발급한 immutable materialization과의 item key, trip partition, feature 값 일치를 확인한다. `inner-train` 문자열만으로는 fit을 허용하지 않는다.
 
 해석을 위해 best configuration 하나만 남기지 않고 최소 다음 비교도 보존한다.
 
@@ -247,7 +272,7 @@ scripts/recommendation/catboost_ranking_experiment.py가 제공하는 것:
 
 - ExperimentConfig
 - Feature Group v1
-- pending group fail-closed
+- I3/I4 inner-train feature materialization with full-TL aggregate replacement
 - train-derived source scope guard
 - same-region candidate filter
 - 네 sampling strategy
@@ -262,19 +287,46 @@ scripts/recommendation/catboost_ranking_experiment.py가 제공하는 것:
 이 파일이 하지 않는 것:
 
 - raw AI Hub data loading
-- traveler split materialization
 - canonical location reconciliation
+- request-ranking frame assembly
 - large-scale result artifact 생성
 - 실제 CatBoost tuning
 
-실행 책임은 분리되어 있다. #80은 traveler split과 I3/I4 재계산 경계를 완료했고, #81은 I2 정적 위치 계약을 완료했다. #82는 runner integration과 실제 CatBoost 실험을 담당한다.
+실행 책임은 분리되어 있다. #80은 traveler split과 I3/I4 재계산 경계를 완료했고, #81은 I2 정적 위치 계약을 완료했다. #82 runner integration은 inner-train item feature materialization까지 연결했으며 수도권 actual-TL Stage 1 smoke를 완료했다. 별도의 synthetic 평가 경로 벤치마크는 synthetic scoring parity와 자원 사용만 확인하며, 실제 TL에서의 최적화 개선을 입증하지 않는다.
+
+### 준비된 카탈로그와 bounded scoring
+
+동일 권역 후보 목록은 `PreparedItemCatalog.from_materialization(...)`으로 한 번 준비한다. 이 객체는 helper가 만든 I3/I4 및 선택한 정적 item 열을 정규화해 불변 tuple로 보관하며, feature transform 설정과 helper provenance가 일치하지 않으면 평가를 거부한다. I2 열은 category depth와 관계없이 모두 보존하고, query-context 열은 매 query 입력에서만 가져온다. 원래 학습 frame을 `fit_catboost`에 전달할 때는 기존 raw feature 값과 materialization을 사용해야 하며, catalog의 log1p 변환값을 다시 학습 전처리에 넣지 않는다.
+
+Uniform sampling은 준비된 `catalog.inventory`를 사용하면 후보 목록을 매 query마다 복사·정렬하지 않고 같은 `random.sample` 결과를 만든다. `score_inner_validation_queries(...)` 호출자는 각 query의 권위 있는 `region`을 `query_features[trip_id]["region"]`에 반드시 제공해야 하며, 값이 후보 카탈로그 권역과 다르거나 누락되면 예측 전에 실패한다. `score_inner_validation_queries(...)`는 query 하나씩 처리하고 후보 점수를 `max_rows_per_batch` 행 이하의 DataFrame으로 나눠 예측한다. 각 chunk에서 `(-score, item_id)` 순서를 유지해 정확한 global top-K를 합친다. 이 행 제한은 prediction frame 크기만 제한한다. 정규화된 전체 후보 카탈로그는 메모리에 남으므로 전체 프로세스 메모리 상한을 뜻하지 않으며, CatBoost 예측 호출도 query마다 수행한다.
+
+합성 경로 확인 명령은 다음과 같다.
+
+~~~bash
+.venv/bin/python scripts/recommendation/benchmark_catboost_validation_stream.py --catalog-size 20000 --queries 60 --batch-rows 1024
+~~~
+
+벤치마크는 legacy full-frame와 prepared chunked 경로의 metric 일치, 구간별 wall time, 최대 prediction-frame 행 수를 보고한다. 별도 `tracemalloc` 수치는 Python 관리 메모리 할당 peak이며 process RSS가 아니다. workload 크기나 실행 환경이 다른 실제 TL 실행시간·메모리의 대리값으로 해석하지 않는다.
+
+코드 검증 시 20,000개 synthetic 후보와 60개 query, 1,024행 chunk로 한 번 측정한 결과다. 비교 목적은 같은 synthetic 입력에서 전체 frame과 bounded scoring의 자원 차이를 확인하는 것이다.
+
+| 경로 | 경과 시간 | Python 할당 peak | 최대 예측 frame |
+| --- | ---: | ---: | ---: |
+| Legacy full-frame 평가 (60 queries) | 7.36초 | — | 20,000행 |
+| Prepared chunked 평가 (60 queries) | 1.44초 | — | 1,024행 |
+| Legacy uniform sampling (60회) | 0.260초 | — | — |
+| Prepared uniform sampling (60회) | 0.00046초 | — | — |
+| Legacy 1-query allocation probe | — | 10,773,814 bytes | 20,000행 |
+| Prepared 1-query allocation probe | — | 535,876 bytes | 1,024행 |
+
+합성 metric dictionary는 두 scoring 경로에서 정확히 같았다. 이 값은 이 synthetic scorer와 한 번의 로컬 측정 결과일 뿐이며, CatBoost training이나 actual TL 병목·성능을 검증하지 않는다. Prepared catalog는 전체 후보 정규화 열을 메모리에 보관하고 predict는 query마다 호출하므로, frame 행 제한을 process RSS 보장으로 해석하지 않는다.
 
 ## #79 검증 범위
 
 synthetic unit test로 다음을 확인한다.
 
 - Feature Group v1
-- I2 available 계약과 I4 runner-integration pending fail-closed
+- I2 available 계약과 I3/I4 inner-train 재계산 및 누수 방지 경계
 - category depth와 popularity transform
 - region candidate filtering
 - deterministic uniform sampling
@@ -285,4 +337,4 @@ synthetic unit test로 다음을 확인한다.
 - group contiguity와 binary label
 - VL tuning 금지 protocol
 
-실제 AI Hub 성능 수치는 #82 전에는 존재하지 않는다.
+실제 AI Hub Stage 1 prototype smoke 지표는 위에 기록했으며, 이는 feasibility 결과다. 전체 sampling/feature/objective/hyperparameter search, multi-seed 비교와 VL 최종 평가는 아직 수행하지 않았다.
