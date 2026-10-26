@@ -976,7 +976,7 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
                 self.frames.append(frame.copy())
                 return list(with_eval.predict(frame))
 
-        for batch_size in (1, 100):
+        for batch_size in (1, 100, 32_768, 65_536, 131_072):
             recording = RecordingRanker()
             result = score_inner_validation_queries(
                 recording, catalog, iter(validation_truth), query_features=query_features,

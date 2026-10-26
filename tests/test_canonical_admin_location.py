@@ -5,10 +5,12 @@ from inspect import signature
 
 from scripts.recommendation.canonical_admin_location import (
     address_admin_codes,
+    build_admin_address_lookup,
     build_admin_lookup,
     compare_visit_location,
     normalize_aihub_sgg_code,
     resolve_canonical_admin_location,
+    resolve_master_admin_location_indexed,
 )
 
 LOOKUP = build_admin_lookup([
@@ -24,6 +26,64 @@ LOOKUP = build_admin_lookup([
 
 
 class CanonicalAdminLocationTests(unittest.TestCase):
+    def test_indexed_address_matching_preserves_scan_semantics(self):
+        from scripts.recommendation.canonical_admin_location import _indexed_address_admin_codes
+
+        index = build_admin_address_lookup(LOOKUP)
+        for address in (
+            "서울특별시 중구 세종대로 1",
+            "경기도 수원시 장안구 정조로 1",
+            "강원특별자치도 춘천시 중앙로 1",
+            "서울특별시 종로구 세종대로 1",
+            "경기도 없는시 도로명 1",
+            "",
+            "경기도",
+        ):
+            self.assertEqual(
+                _indexed_address_admin_codes(address, LOOKUP, index),
+                address_admin_codes(address, LOOKUP),
+            )
+
+    def test_cached_indexed_resolution_matches_uncached_canonical_result(self):
+        index = build_admin_address_lookup(LOOKUP)
+        cache = {}
+        kwargs = {
+            "lookup": LOOKUP,
+            "master_sgg_codes": ("4111000000",),
+            "master_addresses": ("경기도 수원시 장안구 정조로 1", "서울특별시 중구 세종대로 1"),
+        }
+        expected = resolve_canonical_admin_location(**kwargs)
+        actual = resolve_canonical_admin_location(
+            **kwargs, admin_address_lookup=index, admin_address_result_cache=cache
+        )
+        self.assertEqual(actual, expected)
+        self.assertEqual(len(cache), 2)
+        self.assertEqual(
+            resolve_canonical_admin_location(
+                **kwargs, admin_address_lookup=index, admin_address_result_cache=cache
+            ),
+            expected,
+        )
+
+    def test_master_fast_path_matches_canonical_feature_values(self):
+        index = build_admin_address_lookup(LOOKUP)
+        for code, addresses in (
+            ("4211000000", ("강원특별자치도 춘천시 중앙로 1", "")),
+            ("11110", ("경기도 수원시 장안구 정조로 1", "")),
+            ("", ("서울특별시 중구 세종대로 1", "")),
+            ("9999900000", ("경기도 없는시 도로명 1", "")),
+            ("41110", ("경기도 수원시 장안구 정조로 1", "")),
+        ):
+            reference = resolve_canonical_admin_location(
+                lookup=LOOKUP, master_sgg_codes=(code,), master_addresses=addresses
+            )
+            fast = resolve_master_admin_location_indexed(
+                lookup=LOOKUP, address_lookup=index, sgg_code=code, addresses=addresses
+            )
+            self.assertEqual(fast, (
+                reference.status, reference.sido_code, reference.sgg_code
+            ))
+
     def test_accepts_only_codebook_valid_five_digit_or_padded_code(self) -> None:
         self.assertEqual(normalize_aihub_sgg_code("11110", LOOKUP), "11110")
         self.assertEqual(normalize_aihub_sgg_code("1111000000", LOOKUP), "11110")

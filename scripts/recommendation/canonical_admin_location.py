@@ -96,11 +96,46 @@ def address_admin_codes(address: str | None, lookup: Mapping[str, AdminArea]) ->
     return tuple(sorted(found))
 
 
+def build_admin_address_lookup(lookup: Mapping[str, AdminArea]) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Index exact normalized SIDO/SGG names used by address prefix matching."""
+    found: dict[tuple[str, str], set[str]] = {}
+    for area in lookup.values():
+        sido = _normalize_name(normalize_sido(area.sido_name))
+        name = _normalize_name(area.sgg_name)
+        if sido and name:
+            found.setdefault((sido, name), set()).add(area.code)
+    return {key: tuple(sorted(codes)) for key, codes in found.items()}
+
+
+def _indexed_address_admin_codes(
+    address: str | None,
+    lookup: Mapping[str, AdminArea],
+    address_lookup: Mapping[tuple[str, str], Sequence[str]],
+) -> tuple[str, ...]:
+    """Semantics-equivalent address matcher using the prebuilt name index."""
+    if not address:
+        return ()
+    tokens = normalize_text_clean(address).split()
+    if len(tokens) < 2:
+        return ()
+    sido = _normalize_name(normalize_sido(tokens[0]))
+    if not sido:
+        return ()
+    found: set[str] = set()
+    for width in range(1, min(3, len(tokens) - 1) + 1):
+        name = _normalize_name(" ".join(tokens[1:1 + width]))
+        found.update(address_lookup.get((sido, name), ()))
+    # Keep the same validity guard as normalize_aihub_sgg_code and the source scan.
+    return tuple(sorted(code for code in found if code in lookup))
+
+
 def _evidence_codes(
     source: str,
     code_values: Sequence[object],
     addresses: Sequence[str | None],
     lookup: Mapping[str, AdminArea],
+    address_lookup: Mapping[tuple[str, str], Sequence[str]] | None = None,
+    address_result_cache: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[set[str], list[str], bool]:
     codes: set[str] = set()
     provenance: list[str] = []
@@ -111,7 +146,13 @@ def _evidence_codes(
             codes.add(code)
             provenance.append(f"{source}_sgg_code")
     for address in addresses:
-        mapped = address_admin_codes(address, lookup)
+        mapped = None if address_result_cache is None or address is None else address_result_cache.get(address)
+        if mapped is None:
+            mapped = (address_admin_codes(address, lookup) if address_lookup is None
+                      else _indexed_address_admin_codes(address, lookup, address_lookup))
+            if (address_result_cache is not None and address is not None
+                    and address not in address_result_cache and len(address_result_cache) < 65_536):
+                address_result_cache[address] = mapped
         if len(mapped) == 1:
             codes.add(mapped[0])
             provenance.append(f"{source}_address")
@@ -128,6 +169,8 @@ def resolve_canonical_admin_location(
     master_addresses: Sequence[str | None] = (),
     tourapi_admin_codes: Sequence[object] = (),
     tourapi_addresses: Sequence[str | None] = (),
+    admin_address_lookup: Mapping[tuple[str, str], Sequence[str]] | None = None,
+    admin_address_result_cache: dict[str, tuple[str, ...]] | None = None,
 ) -> CanonicalAdminLocation:
     """Resolve canonical location from static catalogue evidence only.
 
@@ -136,10 +179,12 @@ def resolve_canonical_admin_location(
     interactions cannot change a model-facing item feature.
     """
     master, master_prov, master_ambiguous = _evidence_codes(
-        "master", master_sgg_codes, master_addresses, lookup
+        "master", master_sgg_codes, master_addresses, lookup, admin_address_lookup,
+        admin_address_result_cache,
     )
     tour, tour_prov, tour_ambiguous = _evidence_codes(
-        "tourapi", tourapi_admin_codes, tourapi_addresses, lookup
+        "tourapi", tourapi_admin_codes, tourapi_addresses, lookup, admin_address_lookup,
+        admin_address_result_cache,
     )
     static = master | tour
     provenance = tuple(sorted(set(master_prov + tour_prov)))
@@ -180,6 +225,46 @@ def resolve_canonical_admin_location(
         provenance=provenance,
         conflict_sources=tuple(sorted(conflict_sources)),
     )
+
+
+def resolve_master_admin_location_indexed(
+    *,
+    lookup: Mapping[str, AdminArea],
+    address_lookup: Mapping[tuple[str, str], Sequence[str]],
+    sgg_code: object,
+    addresses: Sequence[str | None],
+    address_result_cache: dict[str, tuple[str, ...]] | None = None,
+) -> tuple[str, str | None, str | None]:
+    """Fast path for the master-only fields needed by the catalog runner.
+
+    It applies the same code normalization, address evidence union, conflict
+    precedence, and ambiguity precedence as ``resolve_canonical_admin_location``.
+    Provenance fields are omitted because the runner stores only status and codes.
+    """
+    codes: set[str] = set()
+    code = normalize_aihub_sgg_code(sgg_code, lookup)
+    if code:
+        codes.add(code)
+    ambiguous = False
+    for address in addresses:
+        mapped = None if address_result_cache is None or address is None else address_result_cache.get(address)
+        if mapped is None:
+            mapped = _indexed_address_admin_codes(address, lookup, address_lookup)
+            if (address_result_cache is not None and address is not None
+                    and address not in address_result_cache and len(address_result_cache) < 65_536):
+                address_result_cache[address] = mapped
+        if len(mapped) == 1:
+            codes.add(mapped[0])
+        elif len(mapped) > 1:
+            ambiguous = True
+    if len(codes) > 1:
+        return "conflict", None, None
+    if ambiguous:
+        return "ambiguous_address", None, None
+    if len(codes) == 1:
+        area = lookup[next(iter(codes))]
+        return "resolved_single_source", area.sido_code, area.sgg_code
+    return "unavailable", None, None
 
 
 def compare_visit_location(
