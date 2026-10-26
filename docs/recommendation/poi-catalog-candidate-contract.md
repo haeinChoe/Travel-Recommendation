@@ -902,8 +902,9 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 #### 1. 입력 출처와 release
 
 - 공식 [AI Hub 수도권 데이터셋 #71776](https://aihub.or.kr/aihubdata/data/view.do?dataSetSn=71776)은 `TN_VISIT_AREA_INFO`를 여행 로그 표로, `TN_POI_MASTER`를 `Other` 역할의 POI Master 1 set으로 설명한다. 페이지 변경 이력의 최신 표시는 1.2 (2024-12-04)다.
+- 공식 [AI Hub 데이터 구축·활용 가이드](https://aihub.or.kr/file/down.do?cnstcPrcuseFileSn=22340&dataSetSn=71776&fileSn=22340)는 `TN_POI_MASTER`가 국토지리정보원(NGII)의 전국 POI 자료를 바탕으로 하며, 2021년에 최초 수집한 뒤 갱신했고, TourAPI를 이용해 보강·중복 제거했다고 설명한다. 이는 시점에 따른 정적 카탈로그 coverage 차이를 설명할 수 있는 맥락이지만, 이번 누락 195개 ID의 원인으로 입증된 것은 아니다.
 - 사용자가 지정한 TL 및 Other 역할 바인딩을 적용했다. 공식 비다운로드 파일 목록에서 두 바인딩에 해당하는 filekey가 모두 같은 dataset 71776 목록에 있는 것을 확인했다. 구체 filekey와 로컬 경로는 기록하지 않는다.
-- **미확인:** 로컬 사본의 build/release를 공식 버전 이력에 연결하는 표식을 확인하지 못했다. 따라서 두 입력은 같은 dataset/region 및 기대 역할로 확인됐지만, 실제 내려받은 사본이 같은 release라고 단정할 수 없다. 현재 공식 페이지의 1.2 표시는 로컬 사본의 취득 버전을 증명하지 않는다.
+- **미확인:** 로컬 사본의 build/release provenance는 공식 버전 이력에 연결되지 않았다. 현재 입력에서 version mismatch가 관측된 것은 아니며, 이 provenance 미확인은 이번 exact-key 비교의 blocker가 아니다. 공식 페이지의 1.2 표시는 로컬 사본의 취득 버전을 증명하지 않는다.
 
 #### 2. 원본 Master와 runner 후보 비교
 
@@ -960,7 +961,7 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 #### 6. 선택한 로컬 Master에서 확인된 부재
 
-1–5단계에서 `A_ID − B_ID`에 해당하는 195개 고유 positive ID와 `A_pair` 중 그 ID를 포함하는 245개 positive pair를 설명하는 문자열·파싱·중복·필터 원인은 확인되지 않았다. 이 값들은 **이번 smoke가 사용한 로컬 Master 사본에서의 exact-key 부재**로 확정한다. 로컬 취득 release가 확인되지 않았으므로 이 결과를 다른 release의 Master 부재로 일반화하지 않는다.
+1–5단계에서 `A_ID − B_ID`에 해당하는 195개 고유 positive ID와 `A_pair` 중 그 ID를 포함하는 245개 positive pair를 설명하는 문자열·파싱·중복·필터 원인은 확인되지 않았다. 이 값들은 **이번 smoke가 사용한 로컬 Master 사본에서의 exact-key 부재**로 확정한다. version mismatch는 관측되지 않았지만, 로컬 취득 release provenance도 검증되지 않았으므로 해당 release의 동일성은 미확정이다. 이는 현재 부재 결과를 설명하거나 무효화하지 않으며, 결과를 다른 release에 일반화하지 않는 범위 한정이다.
 
 #### 7. Visit ↔ Master ID 의미
 
@@ -968,9 +969,9 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 공식 설명은 두 `POI_ID`의 생성 주체, Visit `POI_ID`가 참조하는 테이블, Master가 대표하는 정확한 모집단을 명시하지 않는다. 두 열 사이의 PK/FK 관계나 동일 namespace 보장도 선언하지 않는다. 따라서 문서상 동일성이 보장되지 않는다는 점은 확인되지만, 이는 서로 다른 ID 체계라는 증거가 아니다.
 
-#### 8. release mismatch 가설
+#### 8. release provenance 및 정적 카탈로그 맥락
 
-공식 현재 목록에는 두 역할 입력이 dataset 71776의 filekey로 나타나고 페이지 버전 이력은 1.2를 표시한다. 다만 로컬 취득본과 그 release를 묶는 기록은 검증되지 않았다. 따라서 **version skew는 관측된 사실이 아니며, 누락 원인으로 채택하지 않는다.** 같은 release의 Master 입력이 확인되면 동일한 `A_ID`와 `A_pair`를 새 `B_ID`에 다시 대조해야 인과를 검증할 수 있다.
+공식 현재 목록에는 두 역할 입력이 dataset 71776의 filekey로 나타나고 페이지 버전 이력은 1.2를 표시한다. 다만 로컬 취득본을 해당 release와 연결하는 기록은 검증되지 않았다. **현재 version mismatch가 관측된 것은 아니며, 누락 원인으로 채택하지 않는다.** 위 AI Hub 구축 가이드의 수집·갱신 이력은 정적 카탈로그와 방문 관측의 coverage 차이에 대한 가능한 맥락일 뿐, 이번 195개 고유 ID의 원인 증거가 아니다.
 
 ### 결과 분류
 
@@ -978,12 +979,13 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 - inner-validation 양성은 883개 trip–POI 쌍과 610개 고유 POI ID다.
 - 원본 Master `B_ID`와 runner 후보 `C_ID`는 각각 7,442,866개다. `A_ID − B_ID`는 195개 고유 ID이며, `A_pair`에서 그 ID를 포함하는 쌍은 245개다.
+- 432개 evaluation query 중 370개에는 후보 positive가 있었고 62개에는 없었다. 공식 end-to-end ranking 지표에서는 62개 query를 miss로 유지한다.
 - 문자열 변환 회복, duplicate, parser/dtype 및 후보 필터에 의한 설명은 0건이다.
 - 공식 schema는 ID 열 타입/필수 여부를 정의하지만 Visit ↔ Master 동일 namespace를 보장하지 않는다.
 
 #### 해석
 
-현재 증거는 관측된 positive ID가 선택한 로컬 static Master candidate inventory에 없다는 데까지 뒷받침한다. 제품 전체에서 POI Master가 불완전하다거나 Visit과 Master가 다른 namespace라는 주장은 뒷받침하지 않는다.
+현재 증거는 관측된 positive ID가 선택한 로컬 static Master candidate inventory에 없다는 데까지 뒷받침한다. 2021년 최초 수집 후 갱신된 별도 static catalog라는 공식 설명은 시점·coverage 차이를 가능한 맥락으로 제시하지만, 제품 전체에서 POI Master가 불완전하다거나 Visit과 Master가 다른 namespace라는 주장, 또는 이번 195개 ID의 원인을 입증하지 않는다. 370개 covered-query 결과가 따로 산출되더라도 공식 end-to-end 지표를 대체할 수 없으며, 보조 진단으로만 볼 수 있다.
 
 #### 기각된 가설
 
@@ -991,14 +993,15 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 - 빈/중복 Master key, admin/category feature 결측, same-region 또는 다른 runner filter가 누락을 만들었다는 설명.
 - CSV dtype 수치 변환, BOM, UTF-8 오류, 과학적 표기법이 누락을 만들었다는 설명.
 
-#### 남은 가설
+#### 남은 가설 및 후속 확인
 
-- 로컬로 취득한 TL과 Master 사본의 정확한 build/release 동일성은 미확인이다. 버전 불일치는 가능한 가설일 뿐, 관측되거나 입증된 원인이 아니다.
+- 로컬로 취득한 TL과 Master 사본의 정확한 build/release 동일성은 미확인이다. 현재 version mismatch는 관측되지 않았고, 공식 가이드의 catalog history는 가능한 맥락이지 이 누락 원인의 입증이 아니다.
 - 공식 schema는 Visit ID와 Master ID의 동일성을 보장하지 않지만, 서로 다른 namespace라고 선언하지도 않는다. 원인 판별에는 명시적 contract 또는 승인된 crosswalk가 필요하다.
+- 별도의 inner-train positive coverage aggregate는 이번 활성 세션에서 승인된 전담 raw-data 경로를 사용할 수 없어 실행하지 않았다. 이는 현재 후보·모델 계약 결정의 blocker가 아니며, 승인된 경로가 확보되면 개인정보 안전 aggregate로 후속 확인할 수 있다.
 
 #### 결정
 
-최종 분류는 **D — 선택한 로컬 Master에서 실제 부재 확인, 근본 원인 미확정**이다. 후보 계약은 trimmed exact string으로 유지한다. 이름/좌표 fuzzy matching, 선행 0 제거, 숫자 변환, Visit 기반 Master feature 보강, positive 평가 제외는 적용하지 않는다. 로컬 취득 release가 확인될 때만 같은 `A_ID` / `A_pair`를 해당 입력의 `B_ID`와 다시 비교한다.
+최종 분류는 **D — 선택한 로컬 Master에서 실제 부재 확인, 근본 원인 미확정**이다. 후보 계약은 trimmed exact string으로 유지한다. 외부 NGII 자료를 후보에 union하지 않으며, fuzzy identity resolution, 임의 ID 정규화, Visit 기반 Master feature 보강, positive 평가 제외는 적용하지 않는다. 62개 all-zero evaluation query도 end-to-end ranking 지표에서 miss로 남긴다. Covered-query 지표는 보조 진단에만 사용할 수 있다.
 
 #### 실행 참고
 

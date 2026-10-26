@@ -1,7 +1,7 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
 **관련 Issue:** #79, #82
-**현재 상태:** #82 runner가 #80 traveler split과 inner-train I3/I4 재계산을 연결함 / 실제 TL smoke는 메모리 증가로 중단되어 완료 지표 없음; 사용자가 actual-data 실행을 멈췄고 현재 최적화 검증은 synthetic only
+**현재 상태:** #82 runner integration을 완료하고 수도권 TL inner-validation에서 Stage 1 YetiRank prototype smoke를 실행했다. 아래 지표는 파이프라인 실행 가능성과 비용을 확인한 feasibility 결과이며 최종 모델 성능이 아니다.
 
 ## 이 문서가 답하려는 질문
 
@@ -51,7 +51,7 @@ VL 최종 평가 (#83)
 
 ## 다음 행동
 
-#80과 #81은 완료됐다. 다음 단계는 #82이며, 아래 순서대로 실제 TL inner-validation 실험을 수행한다.
+#80과 #81은 완료됐고, #82 Stage 1 prototype smoke도 완료됐다. 다음 단계는 전체 검색이 아니라 scoring 비용을 더 줄인 뒤 실제 TL runtime을 다시 측정하는 것이다. 그 측정 결과를 확인한 후 exhaustive/greedy 탐색과 seed 예산을 정한다.
 
 ---
 
@@ -91,6 +91,31 @@ feature = 작은 runnable set
 - candidate가 request region 밖으로 새지 않는다.
 - inner-validation이 train-derived feature나 sampling 통계에 사용되지 않는다.
 - metric이 query 단위로 계산된다.
+
+### 완료된 prototype smoke 결과
+
+이 실행은 Stage 1의 파이프라인 및 runtime feasibility 확인이다. 최종 모델 선택, 전체 탐색, 일반화 성능 주장을 위한 결과가 아니다.
+
+| 항목 | 결과 |
+| --- | ---: |
+| 설정 | YetiRank, uniform negative sampling, 1×, 1,000 iterations |
+| seed | 20261025 |
+| inner-validation query | 432 |
+| 후보 카탈로그 | 7,442,866 POI |
+| 검증 scoring 행 | 3,215,318,112 |
+| training 행 / query | 5,120 / 1,483 |
+| 총 runtime | 6,019초 |
+| CatBoost fit | 8.7초 |
+| validation scoring | 5,764.1초 |
+
+| Metric | @5 | @10 | @20 |
+| --- | ---: | ---: | ---: |
+| NDCG | 0.00207 | 0.00416 | 0.00495 |
+| Recall | 0.00347 | 0.00863 | 0.01113 |
+| MRR | 0.00174 | 0.00345 | 0.00381 |
+| HitRate | 0.00463 | 0.01852 | 0.02546 |
+
+이 smoke에서는 모델 fitting보다 validation scoring이 runtime 병목이었다. scoring 최적화 뒤 실제 TL runtime을 측정하기 전에는 exhaustive와 greedy 중 어느 탐색을 택할지, seed 반복 횟수를 얼마로 둘지 결정하지 않는다. 이 수치는 Stage 1 feasibility 결과이며 최종 모델 성능으로 해석하지 않는다.
 
 ## Stage 2 — Negative sampling search
 
@@ -267,7 +292,7 @@ scripts/recommendation/catboost_ranking_experiment.py가 제공하는 것:
 - large-scale result artifact 생성
 - 실제 CatBoost tuning
 
-실행 책임은 분리되어 있다. #80은 traveler split과 I3/I4 재계산 경계를 완료했고, #81은 I2 정적 위치 계약을 완료했다. #82 runner integration은 inner-train item feature materialization까지 연결했다. 첫 실제 TL smoke는 메모리 증가로 중단되어 완료 지표가 없다. 사용자가 actual-data 실행을 멈춘 뒤 수행한 평가 경로 최적화와 벤치마크는 synthetic 자료만 사용했으며 실제 데이터 성능 개선을 입증하지 않는다.
+실행 책임은 분리되어 있다. #80은 traveler split과 I3/I4 재계산 경계를 완료했고, #81은 I2 정적 위치 계약을 완료했다. #82 runner integration은 inner-train item feature materialization까지 연결했으며 수도권 actual-TL Stage 1 smoke를 완료했다. 별도의 synthetic 평가 경로 벤치마크는 synthetic scoring parity와 자원 사용만 확인하며, 실제 TL에서의 최적화 개선을 입증하지 않는다.
 
 ### 준비된 카탈로그와 bounded scoring
 
@@ -312,4 +337,4 @@ synthetic unit test로 다음을 확인한다.
 - group contiguity와 binary label
 - VL tuning 금지 protocol
 
-실제 AI Hub 성능 수치는 smoke run을 마치기 전에는 존재하지 않는다.
+실제 AI Hub Stage 1 prototype smoke 지표는 위에 기록했으며, 이는 feasibility 결과다. 전체 sampling/feature/objective/hyperparameter search, multi-seed 비교와 VL 최종 평가는 아직 수행하지 않았다.
