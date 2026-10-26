@@ -145,7 +145,7 @@ feature = 작은 runnable set
 | 후보 catalog | 7,442,866 POI | 7,442,866 POI |
 | scored row | 3,215,318,112 | 3,215,318,112 |
 
-총 runtime은 1.293× 빨라졌고(약 22.7분 감소), scoring은 1.312× 빨라졌다(약 22.8분 감소). Fit 시간은 두 run에서 비슷하며 optimized run이 0.629초 길었다. #88의 process peak RSS는 기록되지 않아 메모리 절감률은 계산하지 않는다. #88에 공개된 NDCG, Recall, MRR, HitRate는 @5/@10/@20 모두 다섯째 소수점까지 저장되어 있다. Optimized 결과는 이 공개 정밀도에서 일치한다. #88 full-precision result artifact를 확보하지 않았으므로 full-precision parity는 주장하지 않는다.
+총 runtime은 1.293× 빨라졌고(약 22.7분 감소), scoring은 1.312× 빨라졌다(약 22.8분 감소). Fit 시간은 두 run에서 비슷하며 optimized run은 #88에 보고된 8.7초보다 약 0.6초 길었다. #88의 process peak RSS는 기록되지 않아 메모리 절감률은 계산하지 않는다. #88에 공개된 NDCG, Recall, MRR, HitRate는 @5/@10/@20 모두 다섯째 소수점까지 저장되어 있다. Optimized 결과는 이 공개 정밀도에서 일치한다. #88 full-precision result artifact를 확보하지 않았으므로 full-precision parity는 주장하지 않는다.
 
 | Metric | K | #88 baseline | Optimized | Parity |
 | --- | ---: | ---: | ---: | --- |

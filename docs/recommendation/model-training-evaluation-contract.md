@@ -1,7 +1,7 @@
 # Cold-user POI ranking 학습·평가 계약
 
 **관련 Issue:** #41, #79, #80, #81, #82, #83
-**현재 상태:** #80 traveler split·I3/I4 경계와 #81 I2 계약이 반영됐고, PR #88에서 #82 runner와 Stage 1 수도권 TL smoke를 완료했다. #82 scoring 최적화와 full 수도권 TL inner-validation 재측정에서 #88과 metric parity를 확인했다. 실측 비용에 따라 feature search는 forward + backward greedy, broad search는 후보당 1 seed, 최종 configuration은 총 3 seeds로 결정했다. 다음은 negative sampling search다.
+**현재 상태:** #80 traveler split·I3/I4 경계와 #81 I2 계약이 반영됐고, PR #88에서 #82 runner와 Stage 1 수도권 TL smoke를 완료했다. #82 scoring 최적화와 full 수도권 TL inner-validation 재측정에서 #88에 공개된 다섯째 소수점 정밀도 기준으로 metric parity를 확인했다. Full-precision parity는 주장하지 않는다. 실측 비용에 따라 feature search는 forward + backward greedy, broad search는 후보당 1 seed, 최종 configuration은 총 3 seeds로 결정했다. 다음은 negative sampling search다.
 
 ## 이 문서가 답하려는 질문
 
