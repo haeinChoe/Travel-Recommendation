@@ -1,7 +1,7 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
 **관련 Issue:** #79, #82
-**현재 상태:** #82 runner integration을 완료하고 수도권 TL inner-validation에서 Stage 1 YetiRank prototype smoke를 실행했다. 아래 지표는 파이프라인 실행 가능성과 비용을 확인한 feasibility 결과이며 최종 모델 성능이 아니다.
+**현재 상태:** PR #88에서 runner integration과 수도권 TL Stage 1 smoke를 완료했다. 이번 checkpoint는 bounded scoring 최적화와 합성 parity를 추가했지만, 최적화된 코드의 전체 actual-TL 재실행은 실행 프로세스에 승인된 role binding이 연결되지 않아 아직 완료하지 못했다. 따라서 optimized runtime, process peak RSS, actual metric parity, 최종 search/seed budget은 미결정이다.
 
 ## 이 문서가 답하려는 질문
 
@@ -39,7 +39,8 @@ VL 최종 평가 (#83)
 - feature: #41의 Feature Group v1
 - metrics: **NDCG@K / Recall@K / MRR@K / HitRate@K**
 - 기본 K: **5 / 10 / 20**
-- seed 반복 횟수는 실제 runtime 확인 뒤 결정
+- full-catalog scoring은 query별 제한 행 단위로 유지하고, 동률에서 item ID 오름차순을 포함한 global top-K 결과를 보존한다.
+- exhaustive/greedy 선택과 seed 반복 횟수는 optimized actual-TL runtime 확인 뒤 잠근다.
 - 공식 VL은 모든 tuning이 끝난 뒤 사용
 
 ## 선행 작업 상태
@@ -51,7 +52,7 @@ VL 최종 평가 (#83)
 
 ## 다음 행동
 
-#80과 #81은 완료됐고, #82 Stage 1 prototype smoke도 완료됐다. 다음 단계는 전체 검색이 아니라 scoring 비용을 더 줄인 뒤 실제 TL runtime을 다시 측정하는 것이다. 그 측정 결과를 확인한 후 exhaustive/greedy 탐색과 seed 예산을 정한다.
+#80/#81과 #82 Stage 1은 완료됐고, 이번 branch에 scoring 최적화를 반영했다. 다음 행동은 같은 YetiRank·uniform·1×·1,000 iteration·seed 20261025 설정으로 전체 수도권 TL inner-validation을 재실행하는 것이다. 승인된 role binding이 writer 실행 프로세스에 연결되면 그 결과로 exhaustive/greedy와 seed budget을 잠근다. 그 전에는 sampling이나 다른 search 축을 시작하지 않는다.
 
 ---
 
@@ -117,6 +118,21 @@ feature = 작은 runnable set
 
 이 smoke에서는 모델 fitting보다 validation scoring이 runtime 병목이었다. scoring 최적화 뒤 실제 TL runtime을 측정하기 전에는 exhaustive와 greedy 중 어느 탐색을 택할지, seed 반복 횟수를 얼마로 둘지 결정하지 않는다. 이 수치는 Stage 1 feasibility 결과이며 최종 모델 성능으로 해석하지 않는다.
 
+### Scoring 최적화 checkpoint
+
+기존 scorer는 카탈로그 행 순서와 inventory의 정렬 순서 사이에 별도 전체 item-index map을 만들고, validation query마다 32,768행 chunk를 생성했다. 각 chunk에서 전체 score tuple을 정렬해 top-K를 골랐다. 새 경로는 immutable item feature tuple을 candidate ID 순으로 한 번 정렬해 정렬된 chunk를 직접 자르고, NumPy partition으로 경계 score와 동률 ID만 처리한다. prediction frame의 최대 행 수는 262,144로 올렸으며, 후보 전체를 한 번에 materialize하지 않는다. candidate universe, feature 값, metric, positive 처리와 동률 정렬 규칙은 그대로다.
+
+아래 synthetic 결과는 scorer 구현 parity와 bounded frame 크기만 검증한다. actual 수도권 TL을 다시 실행한 결과로 해석하지 않는다.
+
+| 합성 workload | Legacy 경과 시간 | Bounded 경과 시간 | Legacy Python 할당 peak | Bounded Python 할당 peak | 최대 prediction frame | metric parity |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 20,000 candidates × 60 queries, cap 1,024 | 8.87초 | 2.09초 (4.25× 빠름) | 9,972,785 bytes | 210,958 bytes | 1,024행 | 정확히 같음 |
+| 300,000 candidates × 4 queries, cap 262,144 | 8.17초 | 1.38초 (5.91× 빠름) | 149,154,351 bytes | 34,091,965 bytes | 262,144행 | 정확히 같음 |
+
+두 번째 workload의 전체 Python 프로세스 peak RSS는 772.3 MiB였다. 이 값은 300,000개 합성 catalog에서만 측정했으며 7.44M actual candidate의 RSS 보증값이 아니다. 별도 unit parity는 점수가 동률인 13개 item을 여러 chunk 크기로 나누어 legacy `(-score, item_id)` 순위와 top-K metric이 일치하는지 확인한다.
+
+**미결정:** 이번 실행 프로세스에서 `RAW_ROOT`, `CAPITAL_TL`, `CAPITAL_OTHER` role binding을 사용할 수 없었고, 문서가 지정한 저장소 `data/raw` 위치도 없었다. raw row는 열지 않았다. 따라서 optimized actual-TL full benchmark, actual peak RSS와 #88 metric parity는 아직 측정하지 않았으며 search/seed budget은 잠그지 않는다. VL은 확인하거나 읽지 않았다.
+
 ## Stage 2 — Negative sampling search
 
 ### 질문
@@ -178,9 +194,13 @@ C1 Region
 
 탐색 원칙:
 
-- runtime이 충분하면 exhaustive search
-- 비용이 크면 forward greedy 후 backward removal check
+- 기존 #88 full actual-TL run의 6,019초/config을 그대로 적용하면 1 seed exhaustive는 6,157,437초(약 71.3일)다. 이 historical cost에서는 exhaustive를 시작하지 않는다.
+- 예상 평가 수가 가장 커도 forward greedy 55개 후보와 backward removal 10개, 기준점 1개를 포함한 약 66 config다. #88 cost를 적용한 상한은 약 397,254초(4.6일)/seed이며, 여러 sampling/objective 축을 곱한 값은 아니다.
+- bounded scorer 변경 뒤 실제 full TL 시간이 아직 측정되지 않아 **최종 탐색 방식과 budget은 잠그지 않았다**. Actual benchmark 후에도 비용이 크면 forward greedy 후 backward removal check를 우선 사용한다.
+- seed budget도 최적화된 full-config runtime을 보고 확정한다. 한 seed로 후보를 줄이고 최종 후보에 여러 seed를 적용하는 방식을 검토하되, 현재 seed 수와 후보 수는 미결정이다.
 - I2와 I4는 runnable이다. `fit_catboost`는 I3/I4를 포함한 행마다 helper가 발급한 immutable materialization과의 item key, trip partition, feature 값 일치를 확인한다. `inner-train` 문자열만으로는 fit을 허용하지 않는다.
+
+첫 실제 search 축은 negative sampling이다. 다른 feature/objective 조건을 고정하고 먼저 1×에서 uniform, popularity-weighted, mixed, hard 네 전략을 비교하는 좁은 screening을 제안한다. 2×/4×/8×/16× 확장은 measured runtime과 1× 결과를 확인한 뒤 정한다. 이 제안은 아직 실행되지 않았으며, actual cost를 확인하기 전에는 sampling 탐색도 시작하지 않는다.
 
 해석을 위해 best configuration 하나만 남기지 않고 최소 다음 비교도 보존한다.
 
@@ -298,7 +318,7 @@ scripts/recommendation/catboost_ranking_experiment.py가 제공하는 것:
 
 동일 권역 후보 목록은 `PreparedItemCatalog.from_materialization(...)`으로 한 번 준비한다. 이 객체는 helper가 만든 I3/I4 및 선택한 정적 item 열을 정규화해 불변 tuple로 보관하며, feature transform 설정과 helper provenance가 일치하지 않으면 평가를 거부한다. I2 열은 category depth와 관계없이 모두 보존하고, query-context 열은 매 query 입력에서만 가져온다. 원래 학습 frame을 `fit_catboost`에 전달할 때는 기존 raw feature 값과 materialization을 사용해야 하며, catalog의 log1p 변환값을 다시 학습 전처리에 넣지 않는다.
 
-Uniform sampling은 준비된 `catalog.inventory`를 사용하면 후보 목록을 매 query마다 복사·정렬하지 않고 같은 `random.sample` 결과를 만든다. `score_inner_validation_queries(...)` 호출자는 각 query의 권위 있는 `region`을 `query_features[trip_id]["region"]`에 반드시 제공해야 하며, 값이 후보 카탈로그 권역과 다르거나 누락되면 예측 전에 실패한다. `score_inner_validation_queries(...)`는 query 하나씩 처리하고 후보 점수를 `max_rows_per_batch` 행 이하의 DataFrame으로 나눠 예측한다. 각 chunk에서 `(-score, item_id)` 순서를 유지해 정확한 global top-K를 합친다. 이 행 제한은 prediction frame 크기만 제한한다. 정규화된 전체 후보 카탈로그는 메모리에 남으므로 전체 프로세스 메모리 상한을 뜻하지 않으며, CatBoost 예측 호출도 query마다 수행한다.
+Uniform sampling은 준비된 `catalog.inventory`를 사용하면 후보 목록을 매 query마다 복사·정렬하지 않고 같은 `random.sample` 결과를 만든다. `score_inner_validation_queries(...)` 호출자는 각 query의 권위 있는 `region`을 `query_features[trip_id]["region"]`에 반드시 제공해야 하며, 값이 후보 카탈로그 권역과 다르거나 누락되면 예측 전에 실패한다. `PreparedItemCatalog`의 정적 item columns는 candidate ID 오름차순으로 정렬해 immutable tuple로 보관한다. Scorer는 각 query마다 최대 262,144행 DataFrame만 만들고 정렬된 tuple slice를 재사용한다. 각 chunk는 NumPy partition으로 local top-K를 찾고, 동점에서는 item ID 오름차순을 지켜 global top-K를 합친다. 전체 candidate catalog는 메모리에 남으므로 frame 행 상한만으로 process RSS 상한을 보장하지 않는다.
 
 합성 경로 확인 명령은 다음과 같다.
 
@@ -308,18 +328,7 @@ Uniform sampling은 준비된 `catalog.inventory`를 사용하면 후보 목록�
 
 벤치마크는 legacy full-frame와 prepared chunked 경로의 metric 일치, 구간별 wall time, 최대 prediction-frame 행 수를 보고한다. 별도 `tracemalloc` 수치는 Python 관리 메모리 할당 peak이며 process RSS가 아니다. workload 크기나 실행 환경이 다른 실제 TL 실행시간·메모리의 대리값으로 해석하지 않는다.
 
-코드 검증 시 20,000개 synthetic 후보와 60개 query, 1,024행 chunk로 한 번 측정한 결과다. 비교 목적은 같은 synthetic 입력에서 전체 frame과 bounded scoring의 자원 차이를 확인하는 것이다.
-
-| 경로 | 경과 시간 | Python 할당 peak | 최대 예측 frame |
-| --- | ---: | ---: | ---: |
-| Legacy full-frame 평가 (60 queries) | 7.36초 | — | 20,000행 |
-| Prepared chunked 평가 (60 queries) | 1.44초 | — | 1,024행 |
-| Legacy uniform sampling (60회) | 0.260초 | — | — |
-| Prepared uniform sampling (60회) | 0.00046초 | — | — |
-| Legacy 1-query allocation probe | — | 10,773,814 bytes | 20,000행 |
-| Prepared 1-query allocation probe | — | 535,876 bytes | 1,024행 |
-
-합성 metric dictionary는 두 scoring 경로에서 정확히 같았다. 이 값은 이 synthetic scorer와 한 번의 로컬 측정 결과일 뿐이며, CatBoost training이나 actual TL 병목·성능을 검증하지 않는다. Prepared catalog는 전체 후보 정규화 열을 메모리에 보관하고 predict는 query마다 호출하므로, frame 행 제한을 process RSS 보장으로 해석하지 않는다.
+최근 합성 측정값은 위의 **Scoring 최적화 checkpoint** 표에 기록했다. 두 workload 모두 같은 legacy full-frame scorer와 optimized chunk scorer의 metric dictionary가 정확히 같았다. 이 측정은 scorer parity와 frame cap만 검증하며, CatBoost training이나 actual TL 병목·성능을 대신하지 않는다. `tracemalloc` 값은 Python 관리 할당량이고 RSS와 다르다. 300,000개 합성 catalog run의 process peak RSS도 해당 workload 한정 결과이며 actual catalog 규모에 대한 보장이 아니다.
 
 ## #79 검증 범위
 

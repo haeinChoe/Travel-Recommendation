@@ -94,7 +94,7 @@ ITERATIONS = 1000
 PROBE_ITERATIONS = 20
 PROBE_TRAIN_TRIPS = 32
 PROBE_VALIDATION_QUERIES = 8
-PREDICTION_BATCH_ROWS = 32_768
+PREDICTION_BATCH_ROWS = 262_144
 VALIDATION_PROGRESS_QUERIES = 10
 SOFT_RSS_LIMIT_BYTES = 16 * 1024**3
 MIN_AVAILABLE_BYTES = 8 * 1024**3
@@ -542,6 +542,7 @@ def run(region: str, mode: str) -> dict[str, object]:
     _emit("evaluation", total_start, stage_seconds=time.monotonic()-phase,
           query_count=result.query_count, candidate_count=result.candidate_count,
           scored_rows=result.scored_rows, max_prediction_rows=result.max_batch_rows)
+    telemetry_by_stage = {str(record["stage"]): record for record in TELEMETRY}
     return {
         "region": region,
         "mode": mode,
@@ -556,6 +557,10 @@ def run(region: str, mode: str) -> dict[str, object]:
         "validation_queries": result.query_count,
         "candidate_items": result.candidate_count,
         "scored_rows": result.scored_rows,
+        "prediction_frame_row_cap": PREDICTION_BATCH_ROWS,
+        "fit_seconds": telemetry_by_stage["catboost_fit"]["stage_seconds"],
+        "scoring_seconds": telemetry_by_stage["evaluation"]["stage_seconds"],
+        "peak_rss_mib": max(int(record["peak_rss_mib"]) for record in TELEMETRY),
         "metrics": dict(result.metrics),
         "total_seconds": round(time.monotonic()-total_start, 3),
         "positive_diagnostics": {

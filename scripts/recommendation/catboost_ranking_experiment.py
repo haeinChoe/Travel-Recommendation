@@ -19,7 +19,7 @@ import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from itertools import combinations
+from itertools import combinations, pairwise
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -211,7 +211,6 @@ class PreparedItemCatalog:
     item_ids: tuple[str, ...]
     feature_columns: tuple[str, ...]
     item_columns: Mapping[str, tuple[Any, ...]] = field(repr=False, compare=False)
-    _row_index: Mapping[str, int] = field(repr=False, compare=False)
     inventory: CandidateInventory
     _normalization_key: tuple[Any, ...] = field(repr=False, compare=False)
     _provenance_token: object = field(default=None, repr=False, compare=False)
@@ -234,8 +233,12 @@ class PreparedItemCatalog:
         item_regions = {str(row.get("region", "")).strip() for row in rows}
         if item_regions != {region}:
             raise ValueError("Prepared candidate catalog must contain one matching region")
+        # Keep the immutable feature tuples in the inventory's lexical order.
+        # Scoring can then slice each cached column directly instead of building
+        # and retaining a second item-id -> row-index map for the full catalog.
+        rows = sorted(rows, key=lambda row: str(row.get("item_id", "")).strip())
         ids = tuple(str(row.get("item_id", "")).strip() for row in rows)
-        if any(not item for item in ids) or len(set(ids)) != len(ids):
+        if any(not item for item in ids) or any(left == right for left, right in pairwise(ids)):
             raise ValueError("Materialized item inventory must have unique non-empty ids")
 
         # Feature ownership comes from the experiment contract. Missing item
@@ -256,17 +259,14 @@ class PreparedItemCatalog:
                 normalize_feature_value(column, row[column], config) for row in rows
             )
         inventory = CandidateInventory.from_items(ids, region=region)
+        if inventory.items != ids:
+            raise ValueError("Prepared feature columns must align with the candidate inventory")
         instance = object.__new__(cls)
         object.__setattr__(instance, "materialization", materialization)
         object.__setattr__(instance, "region", region)
         object.__setattr__(instance, "item_ids", ids)
         object.__setattr__(instance, "feature_columns", selected)
         object.__setattr__(instance, "item_columns", MappingProxyType(normalized))
-        object.__setattr__(
-            instance,
-            "_row_index",
-            MappingProxyType({item: index for index, item in enumerate(ids)}),
-        )
         object.__setattr__(instance, "inventory", inventory)
         object.__setattr__(instance, "_normalization_key", _normalization_key(config))
         object.__setattr__(instance, "_provenance_token", _INNER_TRAIN_MATERIALIZATION_TOKEN)
@@ -821,6 +821,42 @@ class StreamingEvaluationResult:
     max_batch_rows: int
 
 
+def _top_scored_items(
+    item_ids: Sequence[str], raw_scores: Any, limit: int
+) -> list[tuple[str, float]]:
+    """Return exact lexical-tiebroken top-K from one lexically ordered batch."""
+    if limit <= 0:
+        raise ValueError("Top-K limit must be positive")
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("numpy is required for bounded CatBoost scoring") from exc
+
+    scores = np.asarray(raw_scores, dtype=np.float64)
+    if scores.ndim != 1 or len(scores) != len(item_ids):
+        raise ValueError("Model returned a score count that does not match the batch")
+    if not np.isfinite(scores).all():
+        raise ValueError("Model returned a non-finite ranking score")
+
+    if len(item_ids) <= limit:
+        positions = range(len(item_ids))
+    else:
+        threshold_index = len(item_ids) - limit
+        threshold = np.partition(scores, threshold_index)[threshold_index]
+        above = np.flatnonzero(scores > threshold)
+        tied = np.flatnonzero(scores == threshold)
+        # Candidate IDs are lexically ordered, so the first boundary ties are
+        # exactly the legacy (-score, item_id) order without sorting the batch.
+        boundary_count = limit - len(above)
+        positions = [int(index) for index in above]
+        positions.extend(int(index) for index in tied[:boundary_count])
+
+    return sorted(
+        ((item_ids[index], float(scores[index])) for index in positions),
+        key=lambda row: (-row[1], row[0]),
+    )
+
+
 def score_inner_validation_queries(
     model: Any,
     catalog: PreparedItemCatalog,
@@ -861,7 +897,8 @@ def score_inner_validation_queries(
     query_columns = _query_feature_columns(config)
     if set(catalog.item_columns) != item_columns:
         raise ValueError("Prepared catalog item columns do not match experiment contract")
-    inventory_indices = tuple(catalog._row_index[item] for item in catalog.inventory.items)
+    if catalog.item_ids != catalog.inventory.items:
+        raise ValueError("Prepared feature columns do not align with the candidate inventory")
     max_k = max(config.k_values)
     scored_rows = 0
     max_batch = 0
@@ -895,24 +932,16 @@ def score_inner_validation_queries(
             for start in range(0, len(items), max_rows_per_batch):
                 stop = min(start + max_rows_per_batch, len(items))
                 batch_ids = items[start:stop]
-                batch_positions = inventory_indices[start:stop]
-                frame_columns: dict[str, list[Any]] = {}
+                frame_columns: dict[str, Sequence[Any]] = {}
                 for column in catalog.feature_columns:
                     if column in item_columns:
                         values = catalog.item_columns[column]
-                        frame_columns[column] = [values[position] for position in batch_positions]
+                        frame_columns[column] = values[start:stop]
                     else:
                         frame_columns[column] = [normalized_query[column]] * len(batch_ids)
                 frame = pd.DataFrame(frame_columns, columns=catalog.feature_columns)
                 scores = model.predict(frame)
-                if len(scores) != len(batch_ids):
-                    raise ValueError("Model returned a score count that does not match the batch")
-                batch_scored: list[tuple[str, float]] = []
-                for item, raw_score in zip(batch_ids, scores, strict=True):
-                    score = float(raw_score)
-                    if not math.isfinite(score):
-                        raise ValueError("Model returned a non-finite ranking score")
-                    batch_scored.append((item, score))
+                batch_scored = _top_scored_items(batch_ids, scores, max_k)
                 scored_rows += len(batch_ids)
                 max_batch = max(max_batch, len(batch_ids))
                 best = sorted((*best, *batch_scored), key=lambda row: (-row[1], row[0]))[:max_k]

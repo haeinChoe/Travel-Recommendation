@@ -1,7 +1,7 @@
 # Cold-user POI ranking 학습·평가 계약
 
 **관련 Issue:** #41, #79, #80, #81, #82, #83
-**현재 상태:** #80 traveler split·I3/I4 재계산 경계와 #81 I2 계약 반영 완료 / #82 실제 TL inner-validation 실험 대기
+**현재 상태:** #80 traveler split·I3/I4 경계와 #81 I2 계약이 반영됐고, PR #88에서 #82 runner와 Stage 1 수도권 TL smoke를 완료했다. 현재 checkpoint에서 bounded scoring 최적화와 synthetic parity를 검증했다. 최적화된 코드의 full actual-TL 재실행, search 방식과 seed budget은 아직 미결정이다.
 
 ## 이 문서가 답하려는 질문
 
@@ -42,7 +42,7 @@ POI score → Top-K ranking
 
 - #80 실제 감사 완료: 네 권역 모두 traveler:trip = 1:1, multi-trip traveler = 0%, seed `issue80-v1`·validation fraction 0.2에서 권역별 inner-train 2,048 / inner-validation 512 traveler와 trip, traveler overlap 0이다.
 - #81 I2 Administrative Location 계약 완료: `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용한다. 실제 AI Hub coverage/conflict/provenance 감사만 후속 입력 확보 후 수행한다.
-- #80 I4 Historical POI의 inner-train-safe 재계산 helper 구현·테스트 완료. 남은 것은 #82 CatBoost runner의 TL visit-event input 연결이다.
+- #80 I4 Historical POI의 inner-train-safe 재계산 helper 구현·테스트 완료. PR #88에서 #82 runner의 TL visit-event input 연결을 완료했다.
 - sampling / feature group / objective의 실제 최종 선택: #82
 - seed 반복 횟수: #82에서 runtime 확인 후 결정
 - bootstrap: 현재 데이터 기준 trip/request 단위를 기본으로 하고, #83에서 입력 데이터와 traveler identity 전제가 유지되는지 확인한 뒤 신뢰구간 설정을 확정한다.
@@ -54,7 +54,7 @@ POI score → Top-K ranking
 1. #79 완료: 계약과 synthetic experiment harness를 구현했다.
 2. #80 완료: traveler-trip 분포 감사, traveler group split, inner-train I3/I4 재계산 경계를 구현·검증했다.
 3. #81 완료: canonical administrative location(I2) 계약과 synthetic reconciliation을 구현·검증했다.
-4. **다음 단계 #82:** TL inner-validation으로 runner integration → sampling → feature → objective → hyperparameter 순서로 비교한다.
+4. **#82 진행:** PR #88 runner smoke 이후 scoring runtime을 최적화하고 같은 TL inner-validation에서 재측정한다. 그 비용을 확인한 뒤 sampling → feature → objective → hyperparameter 순서로 비교한다. 최적화된 full actual-TL benchmark와 search/seed budget은 아직 미결정이다.
 5. configuration을 잠근 뒤 #83에서 처음 VL을 평가하고 bootstrap 신뢰구간을 계산한다.
 
 ---
@@ -183,7 +183,7 @@ synthetic fixture 테스트는 감사 함수와 4개 권역 CSV CLI를 실행하
 
 popularity-weighted / mixed sampling의 popularity와 hard sampling의 score도 inner-train 정보만 사용한다.
 
-canonical `trip_item_interaction.parquet`에는 visit type이 없어 그 파일만으로 I4를 재계산할 수 없다. #80의 `recompute_inner_train_visit_type_codes` 함수는 같은 TL의 `TN_VISIT_AREA_INFO` 이벤트를 inner-train 여행에 한정해 읽고, 관광 핵심 방문이 있는 trip-item의 유효 `VISIT_AREA_TYPE_CD`를 집계하도록 구현·테스트 완료했다. 방문 이벤트 입력이 없거나 필수 trip/item/visit-type/TL split 필드가 빠지면 `I4SourceUnavailableError`로 fail-closed한다. 후속 ranking runner는 이 helper의 결과를 사용해야 하며 canonical full-TL I4 값을 inner-validation에 제공하면 안 된다. 현재 CatBoost runner에는 visit-event input이 연결되지 않았으므로 #82에서 runner를 helper에 연결해야 한다. 따라서 pending/disabled는 runner integration 상태만 가리키며 I4 계산 방법은 구현 완료다.
+canonical `trip_item_interaction.parquet`에는 visit type이 없어 그 파일만으로 I4를 재계산할 수 없다. #80의 `recompute_inner_train_visit_type_codes` 함수는 같은 TL의 `TN_VISIT_AREA_INFO` 이벤트를 inner-train 여행에 한정해 읽고, 관광 핵심 방문이 있는 trip-item의 유효 `VISIT_AREA_TYPE_CD`를 집계하도록 구현·테스트 완료했다. 방문 이벤트 입력이 없거나 필수 trip/item/visit-type/TL split 필드가 빠지면 `I4SourceUnavailableError`로 fail-closed한다. PR #88에서 CatBoost runner는 이 helper에 visit-event input을 연결해 inner-train I4를 사용한다. canonical full-TL I4 값을 inner-validation에 제공하면 안 된다.
 
 ## 4. Feature Group v1
 
@@ -204,7 +204,7 @@ canonical `trip_item_interaction.parquet`에는 visit type이 없어 그 파일�
 | I1 | Category | source_category_l1_code, l2, l3 |
 | I2 | Administrative Location | `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status` |
 | I3 | Popularity | train_positive_interaction_count, inner-train 재계산 필수 |
-| I4 | Historical POI | `recompute_inner_train_visit_type_codes` 구현·테스트 완료; #82 runner visit-event input integration pending |
+| I4 | Historical POI | `recompute_inner_train_visit_type_codes` 구현·테스트 완료; PR #88에서 #82 runner가 TL visit-event input과 inner-train materialization을 연결 |
 
 ### Control
 
@@ -276,7 +276,7 @@ Objective 비교에서는 세 모델에 같은 `iterations=1000` prototype budge
 
 CatBoost는 범주형 feature를 일반 수치형 결측 규칙으로 처리하지 않는다. 입력에 `None`, `NaN`, pandas의 nullable 값이 있으면 예약 문자열 `__MISSING__`으로 정규화하고, 나머지 범주값도 문자열로 통일한다. 이 값은 데이터의 실제 범주 코드로 사용하지 않는 sentinel이다. ([CatBoost missing values](https://catboost.ai/docs/en/concepts/algorithm-missing-values-processing), [categorical features FAQ](https://catboost.ai/docs/en/concepts/faq))
 
-#79는 CatBoost dependency를 실제 실행 환경에 고정하지 않고 thin adapter만 둔다. #82에서 실행 환경과 버전을 확인한 뒤 dependency와 runtime 설정을 고정한다.
+PR #88은 `pyproject.toml`과 `uv.lock`에 CatBoost runtime dependency를 고정했다. Issue #82의 실제 실행 환경은 Python 3.12와 CatBoost 1.2.10을 사용했다.
 
 ## 8. 평가 지표
 
@@ -325,7 +325,7 @@ bootstrap은 negative sampling이 아니라 최종 metric의 변동성과 신뢰
 scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아니라 다음 계약 primitive를 제공한다.
 
 - Feature Group v1
-- pending group fail-closed
+- unknown or unavailable feature group fail-closed
 - train-derived inner-train scope guard
 - same-region candidate filter
 - 네 negative sampling strategy
@@ -335,7 +335,7 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 - CatBoost thin adapter
 - machine-readable default protocol 출력
 
-#80의 traveler 감사와 #81의 synthetic I2 검증은 완료됐다. 실제 ranking model 실행은 #82의 TL inner-validation과 #83의 untouched VL final evaluation 범위다.
+#80의 traveler 감사와 #81의 synthetic I2 검증은 완료됐다. PR #88에서 #82 YetiRank prototype을 수도권 TL inner-validation 전체에 실행했다. 이번 scoring 최적화 branch의 full actual-TL 재실행은 아직 수행하지 않았으며, #83의 untouched VL 평가도 configuration lock 전에는 금지한다.
 
 ## 확인된 사실 / 결정 / 한계
 
@@ -349,15 +349,15 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 ### 결정
 
 - TL tuning의 train-derived feature와 sampling 통계는 inner-train에서만 계산한다.
-- I2 canonical administrative location은 #81 코드 계약과 synthetic 검증 기준으로 available이다. I4 재계산 helper는 구현 완료이며, #82 runner가 visit-event input을 연결할 때까지 I4 runner feature group만 pending/disabled로 둔다.
+- I2 canonical administrative location은 #81 코드 계약과 synthetic 검증 기준으로 available이다. PR #88은 I4 재계산 helper를 TL visit-event input과 연결하고 inner-train materialization을 fit/scoring 경계까지 전달한다.
 - VL은 최종 configuration을 잠글 때까지 tuning에 사용하지 않는다.
 
 ### 한계
 
 - #79는 actual AI Hub row를 읽지 않는다.
-- 실제 CatBoost 학습 성능은 아직 없다.
+- PR #88은 YetiRank prototype을 실제 수도권 TL inner-validation에 실행했지만, 이는 feasibility smoke이며 최종 모델 선택이나 일반화 성능 근거가 아니다. 이번 scoring 최적화의 full actual-TL 재실행은 아직 없다.
 - #81 I2 코드 계약과 synthetic 구현은 준비됐으며, 승인된 입력으로 실제 coverage/conflict 감사는 아직 수행되지 않았다.
-- #80 traveler-trip aggregate 및 split leakage 검증은 완료했다. #82 runner의 inner-train I4 visit-event input 연결은 후속 작업이다.
+- #80 traveler-trip aggregate 및 split leakage 검증은 완료했다. #82의 최적화된 full TL runtime, process peak RSS 및 #88 metric parity는 후속 actual-data run에서 확인해야 한다.
 
 ## 재현 참고
 

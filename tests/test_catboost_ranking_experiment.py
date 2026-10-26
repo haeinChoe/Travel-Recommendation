@@ -511,6 +511,33 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
         self.assertEqual(result.scored_rows, 2)
         self.assertEqual(result.max_batch_rows, 1)
 
+    def test_batched_top_k_matches_legacy_order_with_boundary_ties(self) -> None:
+        from scripts.recommendation.catboost_ranking_experiment import _top_scored_items
+
+        item_ids = tuple(f"item-{index:02d}" for index in range(13))
+        scores = (4.0, 2.0, 4.0, 4.0, 1.0, 3.0, 2.0, 4.0, 0.0, 3.0, 2.0, 4.0, 1.0)
+        limit = 5
+        legacy = sorted(
+            zip(item_ids, scores, strict=True),
+            key=lambda row: (-row[1], row[0]),
+        )[:limit]
+        expected_ids = tuple(item for item, _ in legacy)
+
+        for batch_size in (1, 3, 6, len(item_ids)):
+            with self.subTest(batch_size=batch_size):
+                best: list[tuple[str, float]] = []
+                for start in range(0, len(item_ids), batch_size):
+                    stop = min(start + batch_size, len(item_ids))
+                    local = _top_scored_items(item_ids[start:stop], scores[start:stop], limit)
+                    best = sorted((*best, *local), key=lambda row: (-row[1], row[0]))[:limit]
+                actual_ids = tuple(item for item, _ in best)
+                self.assertEqual(actual_ids, expected_ids)
+                relevant = {"item-04", "outside-catalog"}
+                self.assertEqual(
+                    aggregate_ranking_metrics(((actual_ids, relevant),), k_values=(1, 5)),
+                    aggregate_ranking_metrics(((expected_ids, relevant),), k_values=(1, 5)),
+                )
+
     def test_streaming_scorer_preserves_i2_at_category_depth_one_and_two(self) -> None:
         from scripts.recommendation.catboost_ranking_experiment import _item_feature_columns
 
