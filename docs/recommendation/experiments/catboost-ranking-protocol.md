@@ -194,8 +194,8 @@ C1 Region
 
 탐색 원칙:
 
-- 기존 #88 full actual-TL run의 6,019초/config을 그대로 적용하면 1 seed exhaustive는 6,157,437초(약 71.3일)다. 이 historical cost에서는 exhaustive를 시작하지 않는다.
-- 예상 평가 수가 가장 커도 forward greedy 55개 후보와 backward removal 10개, 기준점 1개를 포함한 약 66 config다. #88 cost를 적용한 상한은 약 397,254초(4.6일)/seed이며, 여러 sampling/objective 축을 곱한 값은 아니다.
+- 비용 감각을 위한 historical reference: #88은 네 feature group을 사용한 Stage 1 actual-TL run으로, 당시 설정은 6,019초/config이었다. 이 과거 단가가 그대로라고 가정한 단순 projection은 1 seed, 1,023개 조합에서 6,157,437초(약 71.3일)다. 이는 현재의 최대 10개 group 탐색 비용 측정이나 확정된 exhaustive 결정이 아니다.
+- greedy 후보 수의 historical-cost projection: forward 55개 후보, backward removal 10개, 기준점 1개를 더해 약 66 config으로 잡으면, 과거 #88 단가를 사용한 계산은 397,254초(약 4.6일)/seed다. 이는 상한이 아니며, 10개까지의 feature group을 쓰는 실제 후보별 비용은 최적화된 full-TL benchmark 전까지 측정되지 않았다. 여러 sampling/objective 축을 곱한 값도 아니다.
 - bounded scorer 변경 뒤 실제 full TL 시간이 아직 측정되지 않아 **최종 탐색 방식과 budget은 잠그지 않았다**. Actual benchmark 후에도 비용이 크면 forward greedy 후 backward removal check를 우선 사용한다.
 - seed budget도 최적화된 full-config runtime을 보고 확정한다. 한 seed로 후보를 줄이고 최종 후보에 여러 seed를 적용하는 방식을 검토하되, 현재 seed 수와 후보 수는 미결정이다.
 - I2와 I4는 runnable이다. `fit_catboost`는 I3/I4를 포함한 행마다 helper가 발급한 immutable materialization과의 item key, trip partition, feature 값 일치를 확인한다. `inner-train` 문자열만으로는 fit을 허용하지 않는다.
