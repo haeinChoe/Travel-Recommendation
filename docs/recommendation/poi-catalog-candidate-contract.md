@@ -907,20 +907,29 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 #### 2. 원본 Master와 runner 후보 비교
 
-`A`는 deterministic traveler-group split (seed `20261025`) 후 관광 핵심 방문으로 만든 inner-validation 양성 집합이다. `B`는 선택한 원본 Master의 비공백 `POI_ID`를 trim한 exact key 집합이다. `C`는 PR #88 runner가 실제 사용한 같은 권역 후보 ID 집합이다. ID 집합 크기와 `(TRAVEL_ID, POI_ID)` 쌍 수를 분리했다.
+`A_ID`는 inner-validation positive의 고유 POI ID 집합, `B_ID`는 선택한 원본 Master의 비공백 `POI_ID`를 trim한 exact key 집합, `C_ID`는 PR #88 runner의 같은 권역 후보 ID 집합이다. 별도로 `A_pair`는 고유한 양성 `(TRAVEL_ID, POI_ID)` 쌍 집합이다. 아래 표는 ID 집합 연산과 pair-level membership을 분리한다.
 
-- `|B| = 7,442,866`, `|C| = 7,442,866`.
+- `|B_ID| = 7,442,866`, `|C_ID| = 7,442,866`.
 
-| 집합 또는 연산 | 고유 `POI_ID` 수 | 양성 `(TRAVEL_ID, POI_ID)` 쌍 수 |
-| --- | ---: | ---: |
-| `A` | 610 | 883 |
-| `A ∩ B` | 415 | 638 |
-| `A − B` | 195 | 245 |
-| `A ∩ C` | 415 | 638 |
-| `A − C` | 195 | 245 |
-| `(A ∩ B) − C` | 0 | 0 |
+| ID 집합 연산 | 고유 POI ID 수 |
+| --- | ---: |
+| `A_ID` | 610 |
+| `A_ID ∩ B_ID` | 415 |
+| `A_ID − B_ID` | 195 |
+| `A_ID ∩ C_ID` | 415 |
+| `A_ID − C_ID` | 195 |
+| `(A_ID ∩ B_ID) − C_ID` | 0 |
 
-따라서 이전에 보고한 누락 245는 서로 다른 POI 수가 아니라 양성 trip–POI 쌍 수다. 선택한 로컬 Master에 없는 고유 positive ID는 195개이며, 이 ID들이 245개 양성 쌍에 나타난다. 원본 Master에 exact key가 있던 양성은 runner 후보에서도 모두 유지됐다.
+| Pair-level membership | 양성 쌍 수 |
+| --- | ---: |
+| `A_pair` | 883 |
+| `A_pair` 중 `POI_ID ∈ B_ID` | 638 |
+| `A_pair` 중 `POI_ID ∉ B_ID` | 245 |
+| `A_pair` 중 `POI_ID ∈ C_ID` | 638 |
+| `A_pair` 중 `POI_ID ∉ C_ID` | 245 |
+| `A_pair` 중 `POI_ID ∈ B_ID` 이고 `POI_ID ∉ C_ID` | 0 |
+
+따라서 이전에 보고한 누락 245는 서로 다른 POI 수가 아니라 양성 trip–POI 쌍 수다. `A_ID − B_ID`에 속하는 195개 고유 positive ID는 245개 `A_pair`에 나타난다. 원본 Master에 exact key가 있던 양성은 runner 후보에서도 모두 유지됐다.
 
 #### 3. 단순 문자열 표현 차이
 
@@ -955,7 +964,9 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 #### 7. Visit ↔ Master ID 의미
 
-[수도권 schema 요약](../data/aihub-71776-capital-schema.md)에 따르면 Visit `POI_ID`와 Master `POI_ID`는 모두 `varchar(255)`이고 설명은 `POI ID`다. Visit은 optional (`N`), Master는 required (`Y`)다. 문서에서 두 컬럼 사이의 PK/FK나 동일 namespace 보장은 확인되지 않았다. 동일성이 보장되지 않는다는 사실은 서로 다른 ID 체계라는 증거가 아니다.
+[수도권 schema 요약](../data/aihub-71776-capital-schema.md)에 따르면 Visit `POI_ID`와 Master `POI_ID`는 모두 `varchar(255)`이고 설명은 `POI ID`다. schema의 Visit `필수 여부 N`은 해당 필드가 필수가 아니라는 뜻이며, SQL 열의 NULL 허용 여부 자체를 명시하지 않는다. Master의 `필수 여부 Y`는 해당 schema에서 필수로 표시한다는 뜻이다.
+
+공식 설명은 두 `POI_ID`의 생성 주체, Visit `POI_ID`가 참조하는 테이블, Master가 대표하는 정확한 모집단을 명시하지 않는다. 두 열 사이의 PK/FK 관계나 동일 namespace 보장도 선언하지 않는다. 따라서 문서상 동일성이 보장되지 않는다는 점은 확인되지만, 이는 서로 다른 ID 체계라는 증거가 아니다.
 
 #### 8. release mismatch 가설
 
