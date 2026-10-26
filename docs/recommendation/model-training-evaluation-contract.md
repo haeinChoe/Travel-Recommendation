@@ -1,7 +1,7 @@
 # Cold-user POI ranking 학습·평가 계약
 
 **관련 Issue:** #41, #79, #80, #81, #82, #83
-**현재 상태:** #80 traveler split·I3/I4 경계와 #81 I2 계약이 반영됐고, PR #88에서 #82 runner와 Stage 1 수도권 TL smoke를 완료했다. #82 scoring 최적화와 full 수도권 TL inner-validation 재측정에서 #88에 공개된 다섯째 소수점 정밀도 기준으로 metric parity를 확인했다. Full-precision parity는 주장하지 않는다. 실측 비용에 따라 feature search는 forward + backward greedy, broad search는 후보당 1 seed, 최종 configuration은 총 3 seeds로 결정했다. 다음은 negative sampling search다.
+**현재 상태:** #80 traveler split·I3/I4 경계와 #81 I2 계약이 반영됐다. PR #88/#89의 실제 run은 source-package region을 POI geography로 잘못 사용해 corrected baseline이 아니다. #82 runner는 이제 resolved canonical SIDO와 versioned candidate policy로 ProductRegion을 판정한다. Corrected 수도권 TL full benchmark는 1,532.677초 total, 1,322.860초 scoring, 3,788 MiB peak RSS였고 validation metric을 새 candidate scope로 기록했다. 과거 run과 직접적인 actual-data metric parity나 speedup은 주장하지 않으며, scorer의 synthetic legacy parity는 exact다. 비용에 따라 feature search는 단일 backward cleanup을 포함한 forward/backward greedy, broad search는 configuration당 1 seed, 최종 configuration은 총 3 seeds로 결정했다. 다음은 negative sampling search다.
 
 ## 이 문서가 답하려는 질문
 
@@ -54,7 +54,7 @@ POI score → Top-K ranking
 1. #79 완료: 계약과 synthetic experiment harness를 구현했다.
 2. #80 완료: traveler-trip 분포 감사, traveler group split, inner-train I3/I4 재계산 경계를 구현·검증했다.
 3. #81 완료: canonical administrative location(I2) 계약과 synthetic reconciliation을 구현·검증했다.
-4. **#82 진행:** PR #88 runner smoke 이후 scoring runtime을 최적화하고 같은 TL inner-validation에서 재측정했다. #88에 공개된 다섯째 소수점 정밀도 기준으로 metric parity를 확인했으며, full-precision parity는 주장하지 않는다. Measured full-configuration cost를 근거로 sampling → forward/backward greedy feature → objective → hyperparameter 순서와 1-seed screening / 3-seed final budget을 정했다. 다음 checkpoint에서 negative sampling부터 시작한다.
+4. **#82 진행:** PR #88/#89의 실제 metrics는 source-region-tagged 후보 scope 결과라 corrected geography scope와 직접 비교하지 않는다. Corrected 수도권 TL inner-validation benchmark는 versioned ProductRegion candidate filter 아래 수행했다. Legacy-vs-optimized scorer의 exact score/rank/metric parity는 synthetic bounded test에서 확인했다. Measured full-configuration cost를 근거로 sampling → forward/backward greedy feature → objective → hyperparameter 순서와 1-seed screening / 3-seed final budget을 정했다. 다음 checkpoint에서 negative sampling부터 시작한다.
 5. configuration을 잠근 뒤 #83에서 처음 VL을 평가하고 bootstrap 신뢰구간을 계산한다.
 
 ---
@@ -145,6 +145,8 @@ region은 다음 두 역할을 구분한다.
 2. **C1 Region feature:** 여러 region을 하나의 global model에서 학습할 때 region 자체의 추가 가치 확인
 
 따라서 hard filter를 했다는 이유로 C1 ablation을 자동 생략하지 않는다.
+
+Issue #82의 corrected 수도권 TL baseline에서 source-package region은 입력 provenance만 나타내며 POI geography가 아니다. Candidate hard filter는 #81의 resolved `canonical_admin_sido_code`와 `poi-catalog-candidate-v1`의 `product_region_to_ldong_regn_cd` mapping을 사용한다. 이 mapping은 candidate eligibility에만 적용하고 I2 feature 값이나 validation positive ground truth를 바꾸지 않는다.
 
 ## 3. Split과 데이터 누수 방지
 
@@ -301,7 +303,7 @@ PR #88은 `pyproject.toml`과 `uv.lock`에 CatBoost runtime dependency를 고정
 8. untouched VL final evaluation
 9. bootstrap confidence interval
 
-optimized full-TL benchmark가 4,655.510초/config이므로 feature search는 forward + backward greedy로 진행하고 exhaustive search는 하지 않는다. 열 개 group의 최대 66-config greedy 경로는 약 85.35시간/seed이며 1,023-config exhaustive는 약 55.1일/seed로 projection된다. Broad search는 후보당 1 seed, 최종 finalist 하나는 총 3 seeds로 확인한다. 세 seed는 stability heuristic이며 formal confidence interval이 아니다.
+Corrected full-TL benchmark는 1,532.677초/config이다. 열 개 group의 최대 66-config greedy 경로는 약 28.10시간/seed이며 1,023-config exhaustive는 약 18.15일/seed로 projection된다. 따라서 forward + backward single cleanup greedy를 선택하고 exhaustive search는 하지 않는다. Broad search는 후보당 1 seed, 최종 configuration 하나는 총 3 seeds로 확인한다. Sampling screen, greedy feature search, seed repeats를 합한 계획량은 현재 완료한 uniform baseline을 포함해 최대 71 configuration-equivalents, 약 30.23시간이다. 세 seed는 stability heuristic이며 formal confidence interval이 아니다. 산출 근거와 세부 범위는 ranking protocol을 따른다.
 
 ## 10. Bootstrap 리마인더
 
@@ -335,7 +337,7 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 - CatBoost thin adapter
 - machine-readable default protocol 출력
 
-#80의 traveler 감사와 #81의 synthetic I2 검증은 완료됐다. PR #88의 YetiRank prototype을 기준으로 scoring을 최적화하고 같은 수도권 TL inner-validation 전체를 재실행했다. Runtime은 4,655.510초, scoring은 4,394.086초, process peak RSS는 6,779 MiB였다. #88과 metric은 공개된 다섯째 소수점 정밀도에서 일치하며, #88 peak RSS는 기록되지 않아 비교할 수 없다. Search/seed budget은 protocol에 따라 결정 완료됐지만 실제 탐색과 final three-seed 확인은 아직 시작하지 않았다. #83의 untouched VL 평가는 configuration lock 전에는 금지한다.
+#80의 traveler 감사와 #81의 synthetic I2 검증은 완료됐다. PR #88/#89의 source-tagged candidate scope는 geographic ProductRegion과 달라 그 runtime 및 metric은 corrected baseline과 직접 비교하지 않는다. Corrected 수도권 TL full run은 1,532.677초 total, 6.296초 fit, 1,322.860초 scoring, 3,788 MiB process peak RSS였으며 432 query, 3,052,797 candidate, 1,318,808,304 scored rows를 기록했다. 새 scope의 metric은 ranking protocol에 기록했다. Search/seed budget도 measured corrected cost에 따라 결정했으며, 실제 sampling/feature/objective/hyperparameter 탐색과 final three-seed 확인은 아직 시작하지 않았다. #83의 untouched VL 평가는 configuration lock 전에는 금지한다.
 
 ## 확인된 사실 / 결정 / 한계
 
@@ -355,9 +357,9 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 ### 한계
 
 - #79는 actual AI Hub row를 읽지 않는다.
-- PR #88은 YetiRank prototype을 실제 수도권 TL inner-validation에 실행했지만, 이는 feasibility smoke이며 최종 모델 선택이나 일반화 성능 근거가 아니다. 이번 optimized scoring 재실행은 runtime 및 공개 정밀도 metric parity의 benchmark로 사용하고, 모델 선택 근거는 다음 search 축에서 마련한다.
-- #81 I2 코드 계약과 synthetic 구현은 준비됐으며, 승인된 입력으로 실제 coverage/conflict 감사는 아직 수행되지 않았다.
-- #80 traveler-trip aggregate 및 split leakage 검증은 완료했다. #82의 최적화된 full TL runtime, process peak RSS, 공개 precision metric parity, greedy/exhaustive 결정과 seed budget은 후속 actual-data run에서 확인해 문서화했다. Sampling/feature/objective/hyperparameter 결과는 아직 없다.
+- PR #88은 YetiRank prototype feasibility smoke였지만, 후보 geography를 적용하지 않은 역사적 run이다. Corrected run은 geographic candidate policy를 적용한 actual-TL runtime·resource·ranking baseline이며 최종 모델 선택이나 일반화 성능 근거가 아니다. 모델 선택 근거는 다음 search 축에서 마련한다.
+- #81 I2 코드 계약과 synthetic 구현은 준비됐다. #82 actual TL run은 candidate geography를 위한 resolved/unresolved 및 validation coverage aggregate를 기록했으나, 전 권역의 source별 coverage/conflict 감사는 수행하지 않았다.
+- #80 traveler-trip aggregate 및 split leakage 검증은 완료했다. #82 corrected full-TL runtime, process peak RSS, metrics, greedy/exhaustive 결정과 seed budget을 actual-data run으로 확인해 문서화했다. Sampling/feature/objective/hyperparameter 결과는 아직 없다.
 
 ## 재현 참고
 

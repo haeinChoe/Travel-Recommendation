@@ -20,6 +20,74 @@ from scripts.recommendation.run_catboost_tl_smoke import (
 
 
 class ProjectedCsvTests(unittest.TestCase):
+    def test_product_region_filter_separates_source_provenance_and_geography(self):
+        policy = runner.load_poi_catalog_policy()
+        master = {
+            "capital-11": {
+                "source_package_region": "capital", "canonical_admin_sido_code": "11",
+                "canonical_admin_location_status": "resolved_single_source",
+            },
+            "capital-28": {
+                "source_package_region": "capital", "canonical_admin_sido_code": "28",
+                "canonical_admin_location_status": "resolved_multi_source",
+            },
+            "capital-41": {
+                "source_package_region": "capital", "canonical_admin_sido_code": "41",
+                "canonical_admin_location_status": "resolved_single_source",
+            },
+            "other-region": {
+                "source_package_region": "capital", "canonical_admin_sido_code": "50",
+                "canonical_admin_location_status": "resolved_single_source",
+            },
+            "unresolved": {
+                "source_package_region": "capital", "canonical_admin_sido_code": "",
+                "canonical_admin_location_status": "unavailable",
+            },
+        }
+        duplicate_ids = {"duplicate-positive"}
+        validation_truth = {
+            "validation-a": {
+                "capital-11", "other-region", "unresolved", "missing-positive",
+                "duplicate-positive",
+            },
+            "validation-b": {"capital-28", "capital-41"},
+        }
+
+        aggregates = runner._pre_filter_candidate_aggregates(
+            master, duplicate_ids, validation_truth,
+            source_package_region="capital", policy=policy,
+            source_rows=6, blank_id_rows=0,
+        )
+        self.assertEqual(
+            aggregates["canonical_candidate_ids_by_admin_sido_code"],
+            {"11": 1, "28": 1, "41": 1},
+        )
+        self.assertEqual(aggregates["master_total_unique_ids"], 6)
+        self.assertEqual(aggregates["master_geography_unresolved_ids"], 1)
+        self.assertEqual(aggregates["master_geography_unresolved_rate"], 0.2)
+        self.assertEqual(aggregates["validation_positive_pairs"], 7)
+        self.assertEqual(aggregates["validation_candidate_covered_pairs"], 3)
+        self.assertEqual(aggregates["validation_candidate_covered_queries"], 2)
+        self.assertEqual(aggregates["validation_master_missing_positive_pairs"], 1)
+        self.assertEqual(
+            aggregates["validation_master_duplicate_key_positive_pairs"], 1,
+        )
+        self.assertEqual(
+            aggregates["validation_master_present_geography_unresolved_positive_pairs"], 1,
+        )
+        self.assertEqual(
+            aggregates["validation_master_present_other_region_positive_pairs"], 1,
+        )
+
+        candidates = runner._filter_master_to_product_region(
+            {item_id: dict(row) for item_id, row in master.items()},
+            source_package_region="capital", policy=policy,
+        )
+        self.assertEqual(set(candidates), {"capital-11", "capital-28", "capital-41"})
+        self.assertTrue(all(row["source_package_region"] == "capital" for row in candidates.values()))
+        self.assertTrue(all(row["product_region"] == "capital" for row in candidates.values()))
+        self.assertTrue(all(row["region"] == "capital" for row in candidates.values()))
+
     def test_codebook_normalizes_only_padded_district_rows(self):
         base = {"SGG_CD1": "41", "SGG_CD2": "110", "SIDO_NM": "경기", "SGG_NM": "수원시"}
         rows = [{**base, "SGG_CD": code} for code in ("41110", "4111000000", "4111012345", "4211000000")]
@@ -68,7 +136,7 @@ class ProjectedCsvTests(unittest.TestCase):
                 for item in ("core", "noncore", "unseen", "duplicate", "duplicate")
             ])
             with patch.object(runner, "_bound_inputs", return_value=(root, tl, other)), patch.object(runner, "fit_catboost", side_effect=fit), patch.object(runner, "_available_bytes", return_value=32 * 1024**3), redirect_stdout(StringIO()):
-                result = runner.run("west", "probe")
+                result = runner.run("capital", "probe")
         train = captured["train"]
         self.assertEqual(set(train.loc[train.label == 1, "item_id"]), {"core"})
         items = {row["item_id"]: row for row in captured["materialization"].item_features}
@@ -77,6 +145,8 @@ class ProjectedCsvTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["recall@5"], 1.0)
         self.assertLessEqual(result["train_queries"], runner.PROBE_TRAIN_TRIPS)
         self.assertEqual(result["iterations"], runner.PROBE_ITERATIONS)
+        self.assertTrue(all(row["source_package_region"] == "capital" for row in items.values()))
+        self.assertTrue(all(row["product_region"] == "capital" for row in items.values()))
 
     def test_reads_only_selected_columns_and_preserves_row_values(self):
         with tempfile.TemporaryDirectory() as directory:

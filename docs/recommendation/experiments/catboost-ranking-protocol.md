@@ -1,7 +1,7 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
 **관련 Issue:** #79, #82
-**현재 상태:** PR #88의 runner와 수도권 TL Stage 1 smoke를 기준으로 bounded scoring 경로를 최적화하고, 같은 수도권 TL inner-validation에서 full benchmark를 완료했다. #88 공개 정밀도에서 metric parity를 확인했다. 실측 비용을 근거로 feature 탐색은 forward + backward greedy, broad search는 후보당 1 seed, 최종 configuration은 3 seeds로 결정했다. 이 checkpoint에서는 sampling/feature/objective search를 시작하지 않았으며 다음 축은 negative sampling이다. VL은 읽지 않았다.
+**현재 상태:** PR #88/#89의 과거 full-run은 TN_POI_MASTER 모든 고유 ID에 source-package region을 부여한 잘못된 geography scope였다. Runner는 #81 canonical administrative location과 versioned `poi-catalog-candidate-v1` 정책으로 후보 geography를 분리했고, corrected 수도권 TL full rerun을 완료했다. 3,052,797개 후보·432 validation query·1,318,808,304 scored rows에서 total 1,532.677초, scoring 1,322.860초, peak RSS 3,788 MiB였다. 이 측정에 근거해 feature search는 한 번의 backward cleanup을 포함한 forward/backward greedy로 하고 broad screen은 1 seed, 최종 configuration은 총 3 seeds로 정했다. 다음 checkpoint는 negative sampling이며 아직 시작하지 않았다. VL은 읽지 않았다.
 
 ## 이 문서가 답하려는 질문
 
@@ -40,19 +40,19 @@ VL 최종 평가 (#83)
 - metrics: **NDCG@K / Recall@K / MRR@K / HitRate@K**
 - 기본 K: **5 / 10 / 20**
 - full-catalog scoring은 query별 제한 행 단위로 유지하고, 동률에서 item ID 오름차순을 포함한 global top-K 결과를 보존한다.
-- feature 탐색은 최대 66개 configuration의 forward + backward greedy로 제한한다. 후보 비교는 1 seed씩 수행하고, 잠글 최종 configuration만 총 3 seeds로 확인한다.
+- corrected full-TL cost 1,532.677초/config을 기준으로 10-group exhaustive는 18.15일/seed, forward 55 + 단일 backward cleanup 최대 10 + baseline 1의 greedy는 28.10시간/seed로 projection했다. **Forward + backward single cleanup greedy**를 선택하고, broad screen은 configuration당 1 seed, 최종 configuration은 총 3 seeds로 확인한다. Sampling+feature+seed repeats의 예상량은 현재 baseline 포함 최대 71 configuration-equivalents(약 30.23시간)이며, 세부 산술은 아래에 기록한다.
 - 공식 VL은 모든 tuning이 끝난 뒤 사용
 
 ## 선행 작업 상태
 
-- I2 Administrative Location의 feature 계약과 synthetic 검증은 #81에서 완료됐다. `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용하며, 실제 AI Hub coverage/conflict 감사만 후속 입력 확보 후 수행한다.
+- I2 Administrative Location의 feature 계약과 synthetic 검증은 #81에서 완료됐다. `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용한다. #82 actual TL run은 한 권역의 canonical eligibility, unresolved geography, validation candidate coverage aggregate를 기록했다. 전 권역 source별 provenance·conflict와 전체 coverage audit은 별도 후속 작업으로 남아 있다.
 - I3 Popularity의 inner-train 재계산 경계와 I4 Historical POI의 `recompute_inner_train_visit_type_codes` helper는 #80에서 구현·검증 완료됐다.
 - #82 runner는 한 권역의 TL trip-owner, positive interaction, `TN_VISIT_AREA_INFO` 이벤트, AI Hub 후보 feature를 받아 traveler-group split을 만들고 I3/I4를 inner-train에서 다시 계산한다. 기존 outer-TL I3/I4 값은 덮어쓴다.
 - CatBoost runtime dependency는 `pyproject.toml`과 `uv.lock`에서 고정한다. Issue #82 검증 환경은 Python 3.12와 CatBoost 1.2.10을 사용한다.
 
 ## 다음 행동
 
-#80/#81과 #82 Stage 1, scoring 최적화 및 full 수도권 TL inner-validation benchmark가 완료됐다. 다음 checkpoint는 negative sampling이다. 같은 candidate, split, feature, YetiRank 설정에서 uniform baseline과 popularity-weighted, mixed, hard를 1×·1 seed로 비교한다. sampling 결과를 고정한 뒤 feature greedy, objective, hyperparameter 순으로 진행한다. 이번 checkpoint에서는 이 탐색을 실행하지 않았다.
+#80/#81과 #82 scorer 최적화, synthetic parity, corrected actual-TL benchmark 및 budget 결정을 완료했다. PR #88/#89의 과거 full-run은 candidate geography 오류 때문에 corrected baseline을 대체하지 않는다. 다음 checkpoint에서 동일 candidate, split, feature, YetiRank 설정으로 uniform baseline과 popularity-weighted, mixed, hard를 1×·1 seed로 비교한다. 현재 sampling search는 실행하지 않았다.
 
 ---
 
@@ -62,7 +62,7 @@ VL 최종 평가 (#83)
 
 - 같은 TL inner split
 - 같은 request grain
-- 같은 region hard filter
+- 같은 ProductRegion hard filter. Issue #82 runner에서는 `canonical_admin_sido_code`를 #81 resolver로 만들고, `poi-catalog-candidate-v1`의 `product_region_to_ldong_regn_cd`를 사용한다. 수도권 후보에는 resolved code가 policy의 수도권 mapping에 포함된 row만 둔다.
 - 같은 candidate universe
 - 같은 positive label 의미
 - 같은 metric implementation과 K
@@ -95,7 +95,7 @@ feature = 작은 runnable set
 
 ### 완료된 prototype smoke 결과
 
-이 실행은 Stage 1의 파이프라인 및 runtime feasibility 확인이다. 최종 모델 선택, 전체 탐색, 일반화 성능 주장을 위한 결과가 아니다.
+이 PR #88 실행은 Stage 1의 파이프라인 및 runtime feasibility 확인이다. 모든 Master ID를 수도권 source-package region으로 분류했고 canonical geographic ProductRegion filter를 적용하지 않았다. 이 결과는 historical runner scope만 설명하며 corrected geography baseline, 최종 모델 선택, 전체 탐색, 일반화 성능 주장을 위한 근거가 아니다.
 
 | 항목 | 결과 |
 | --- | ---: |
@@ -129,48 +129,87 @@ feature = 작은 runnable set
 | 20,000 candidates × 60 queries, cap 1,024 | 8.87초 | 2.09초 (4.25× 빠름) | 9,972,785 bytes | 210,958 bytes | 1,024행 | 정확히 같음 |
 | 300,000 candidates × 4 queries, cap 262,144 | 8.17초 | 1.38초 (5.91× 빠름) | 149,154,351 bytes | 34,091,965 bytes | 262,144행 | 정확히 같음 |
 
-두 번째 workload의 전체 Python 프로세스 peak RSS는 772.3 MiB였다. 이 값은 300,000개 합성 catalog에서만 측정했으며 7.44M actual candidate의 RSS 보증값이 아니다. 별도 unit parity는 점수가 동률인 13개 item을 여러 chunk 크기로 나누어 legacy `(-score, item_id)` 순위와 top-K metric이 일치하는지 확인한다.
+두 번째 workload의 전체 Python 프로세스 peak RSS는 772.3 MiB였다. 이 값은 300,000개 합성 catalog에서만 측정했으며 PR #88의 7,442,866 source-tagged Master ID에 대한 RSS 보증값이 아니다. 별도 unit parity는 점수가 동률인 13개 item을 여러 chunk 크기로 나누어 legacy `(-score, item_id)` 순위와 top-K metric이 일치하는지 확인한다.
 
 #### 실제 수도권 TL inner-validation benchmark
 
-동일한 YetiRank, uniform 1×, 1,000 iterations, seed 20261025 설정과 candidate/split/metric 계약으로 optimized scorer를 전체 432개 validation query에서 실행했다. 입력 경로와 raw row는 문서화하지 않았고, 결과는 privacy-safe aggregate로만 남겼다.
+PR #88 reported 6,019초 total, 5,764.1초 scoring, 7,442,866 candidates, and 432 validation queries. PR #89 previously reported an optimized run at 4,655.510초 total, 4,394.086초 scoring, and 6,779 MiB peak RSS. Both runs assigned the source-package region to every unique master ID and therefore did not enforce geographic ProductRegion membership. Keep those values as historical measurements only: their candidate counts, metrics, speedup, and search-cost projections are not valid for the corrected geography-scoped baseline.
 
-| 항목 | #88 baseline | Optimized full run |
-| --- | ---: | ---: |
-| 총 runtime | 6,019초 | 4,655.510초 |
-| CatBoost fit | 8.7초 | 9.329초 |
-| validation scoring | 5,764.1초 | 4,394.086초 |
-| process peak RSS | 기록 없음 | 6,779 MiB |
-| validation query | 432 | 432 |
-| 후보 catalog | 7,442,866 POI | 7,442,866 POI |
-| scored row | 3,215,318,112 | 3,215,318,112 |
+Corrected 수도권 TL rerun은 YetiRank, uniform 1×, 1,000 iterations, seed 20261025, 기존 traveler split, metric implementation을 사용한다. 아래는 candidate filter 직전 full Master와 전체 inner-validation positives를 대상으로 한 privacy-safe aggregate다. Validation positive는 master-missing, geography-unresolved, other-region 여부와 무관하게 ground truth에 보존하며, candidate 밖 positive는 miss로 남는다.
 
-총 runtime은 1.293× 빨라졌고(약 22.7분 감소), scoring은 1.312× 빨라졌다(약 22.8분 감소). Fit 시간은 두 run에서 비슷하며 optimized run은 #88에 보고된 8.7초보다 약 0.6초 길었다. #88의 process peak RSS는 기록되지 않아 메모리 절감률은 계산하지 않는다. #88에 공개된 NDCG, Recall, MRR, HitRate는 @5/@10/@20 모두 다섯째 소수점까지 저장되어 있다. Optimized 결과는 이 공개 정밀도에서 일치한다. #88 full-precision result artifact를 확보하지 않았으므로 full-precision parity는 주장하지 않는다.
+| Filter 전 aggregate | 결과 |
+| --- | ---: |
+| Master source rows / distinct nonblank IDs | 7,442,866 / 7,442,866 |
+| Blank ID rows / duplicate ID groups | 0 / 0 |
+| Canonical capital candidate IDs, SIDO 11 | 1,158,806 |
+| Canonical capital candidate IDs, SIDO 28 | 338,281 |
+| Canonical capital candidate IDs, SIDO 41 | 1,555,710 |
+| Total resolved candidates in capital mapping | 3,052,797 |
+| Resolved IDs outside capital mapping | 4,329,195 |
+| Geography-unresolved unique IDs / rate | 60,874 / 0.8179% |
+| Validation positive queries / pairs | 432 / 883 |
+| Candidate-covered positive queries / pairs | 345 / 568 |
+| Candidate-covered pair rate | 64.3262% |
+| Master-missing positive pairs | 245 |
+| Master-present geography-unresolved positive pairs | 66 |
+| Master-present resolved other-region positive pairs | 4 |
 
-| Metric | K | #88 baseline | Optimized | Parity |
+이 합계에서 후보 3,052,797개는 수도권 정책 코드별 resolved candidate count의 합이며 실제 post-filter inventory count와 일치했다. Validation positive 전체를 ground truth에 유지했다.
+
+Corrected full-run은 YetiRank, uniform negative sampling 1×, 1,000 iterations, seed 20261025, 기존 traveler split 및 동일한 feature groups로 수행했다. 아래 runtime은 전체 입력 구성부터 scoring 완료까지의 실제 측정이다.
+
+| 항목 | Corrected 수도권 TL |
+| --- | ---: |
+| Total runtime | 1,532.677초 |
+| CatBoost fit | 6.296초 |
+| Validation scoring | 1,322.860초 |
+| Peak process RSS | 3,788 MiB |
+| Validation queries | 432 |
+| Candidate items | 3,052,797 |
+| Scored rows | 1,318,808,304 |
+| Maximum prediction frame | 262,144 rows |
+
+| 비교 항목 | PR #88 historical | PR #89 historical optimized | Corrected geography |
+| --- | ---: | ---: | ---: |
+| Candidate scope | all source-tagged Master IDs | all source-tagged Master IDs | resolved canonical SIDO in versioned ProductRegion policy |
+| Candidate items | 7,442,866 | 7,442,866 | 3,052,797 |
+| Validation queries | 432 | 432 | 432 |
+| Scored rows | 3,215,318,112 | 3,215,318,112 | 1,318,808,304 |
+| Total runtime | 6,019초 | 4,655.510초 | 1,532.677초 |
+| Fit runtime | 8.7초 | 9.329초 | 6.296초 |
+| Scoring runtime | 5,764.1초 | 4,394.086초 | 1,322.860초 |
+| Peak process RSS | 미기록 | 6,779 MiB | 3,788 MiB |
+
+Runtime·RSS 행은 당시의 실제 기록이다. PR #88/#89와 corrected run의 candidate scope가 달라 실제 speedup, memory reduction, metric parity를 주장하지 않는다. Legacy와 optimized scorer의 exact score/rank/metric parity는 bounded synthetic test에서 검증했다.
+
+| Metric | K | PR #88 historical scope | Corrected geography scope | 비교 |
 | --- | ---: | ---: | ---: | --- |
-| NDCG | 5 | 0.00207 | 0.00207 | 5-decimal public precision |
-| NDCG | 10 | 0.00416 | 0.00416 | 5-decimal public precision |
-| NDCG | 20 | 0.00495 | 0.00495 | 5-decimal public precision |
-| Recall | 5 | 0.00347 | 0.00347 | 5-decimal public precision |
-| Recall | 10 | 0.00863 | 0.00863 | 5-decimal public precision |
-| Recall | 20 | 0.01113 | 0.01113 | 5-decimal public precision |
-| MRR | 5 | 0.00174 | 0.00174 | 5-decimal public precision |
-| MRR | 10 | 0.00345 | 0.00345 | 5-decimal public precision |
-| MRR | 20 | 0.00381 | 0.00381 | 5-decimal public precision |
-| HitRate | 5 | 0.00463 | 0.00463 | 5-decimal public precision |
-| HitRate | 10 | 0.01852 | 0.01852 | 5-decimal public precision |
-| HitRate | 20 | 0.02546 | 0.02546 | 5-decimal public precision |
+| NDCG | 5 | 0.00207 | 0.000994975 | candidate scope differs |
+| NDCG | 10 | 0.00416 | 0.001819529 | candidate scope differs |
+| NDCG | 20 | 0.00495 | 0.004422569 | candidate scope differs |
+| Recall | 5 | 0.00347 | 0.001350309 | candidate scope differs |
+| Recall | 10 | 0.00863 | 0.003665123 | candidate scope differs |
+| Recall | 20 | 0.01113 | 0.013001543 | candidate scope differs |
+| MRR | 5 | 0.00174 | 0.001543210 | candidate scope differs |
+| MRR | 10 | 0.00345 | 0.001929012 | candidate scope differs |
+| MRR | 20 | 0.00381 | 0.002944442 | candidate scope differs |
+| HitRate | 5 | 0.00463 | 0.004629630 | candidate scope differs |
+| HitRate | 10 | 0.01852 | 0.006944444 | candidate scope differs |
+| HitRate | 20 | 0.02546 | 0.020833333 | candidate scope differs |
 
 #### Search strategy와 seed budget 결정
 
-한 full configuration의 실측 가격은 4,655.510초이며 validation마다 7,442,866개 후보, 총 3,215,318,112 scored row를 처리한다. 열 개 feature group의 non-empty exhaustive 조합 1,023개는 이 단가로 **4,762,586.7초(약 55.1일)/seed**가 예상된다. 따라서 exhaustive feature search는 채택하지 않는다. Protocol의 최대 후보 수로 계산한 forward 55개 + backward removal 10개 + baseline 1개, 총 66 configuration의 greedy search는 **307,263.7초(약 3.56일)/seed**로 예상되어 forward + backward greedy를 채택한다. 각 값은 실측 full-run 단가를 사용한 projection이며 실제 전체 search 결과나 runtime 보증값이 아니다.
+이전 4,655.510초 단가에 근거한 1,023 exhaustive 조합 55.1일, 최대 66-config greedy 3.56일, 73 config-equivalents 94.40시간 계산은 철회했다. Corrected full configuration은 1,532.677초(25.54분) 걸렸으며, 아래 projection은 이 한 번의 측정값을 각 configuration에 적용한 planning estimate다. Configurations 사이의 feature materialization 차이, 재시도, 환경 변동은 반영하지 않았다.
 
-Broad search는 각 후보를 1 seed로 비교한다. 하나의 선택 configuration에만 최종 seed-stability heuristic을 적용해 총 3 seeds를 쓴다. 이미 screening에서 사용한 seed 1개를 포함하면 추가 반복 2회이며, 현재 실측 단가로 **9,311.0초(약 2.59시간)**가 추가된다. 이는 small-sample stability check이지 formal confidence interval이나 일반화 불확실성의 추정이 아니다.
+- **Exhaustive:** 1,023개 non-empty feature-group 조합 × 1,532.677초 = 1,567,928.6초(18.15일)/seed. 실행하지 않는다.
+- **Feature greedy:** forward 55회 + single backward cleanup pass에서 최대 10회 제거 평가 + baseline 1회 = 최대 66 configuration-equivalents, 101,156.7초(28.10시간)/seed. Forward는 매 단계 남은 그룹을 하나씩 추가해 평가한다. Backward는 forward 결과에서 각 선택 그룹 제거를 한 번씩 평가하고 종료하며, iterative re-entry는 하지 않는다.
+- **Negative-sampling screen:** uniform baseline을 포함한 4개 전략을 1×·1 seed로 비교한다. Uniform corrected baseline은 이미 측정됐으므로 추가 3개 전략은 약 1.28시간이다. 총 screen은 4 configuration-equivalents, 약 1.70시간이다.
+- **Seed budget:** broad sampling/feature screening은 configuration당 1 seed. 선택한 최종 configuration만 총 3 seeds로 확인하며, 기존 screen run을 포함해 2회 추가(약 51.1분)한다. 세 seed는 stability heuristic이며 formal confidence interval이 아니다.
+- **예상 run 수:** 4개 sampling screen configuration과, 그 baseline을 재사용한 feature greedy의 최대 65개 추가 평가, 최종 configuration의 2회 seed 반복을 합쳐 71 configuration-equivalents. 현재 측정값 기준 약 30.23시간이며, 이미 완료된 corrected uniform baseline 1회(25.54분)를 빼면 이후 약 29.80시간이다. Ratio 확장, objective search, hyperparameter grid 및 구현/실패 재시도는 제외한다.
 
-계획된 축의 예상량은 다음과 같다. Sampling은 네 전략을 1×로 각각 비교해 총 4 configuration, **18,622.0초(5.17시간)**다. 현재 uniform baseline을 재사용하므로 다음 sampling checkpoint의 신규 작업은 popularity-weighted/mixed/hard 세 configuration, 약 **13,966.5초(3.88시간)**다. Feature greedy는 최대 66 configuration, **307,263.7초(85.35시간, 3.56일)**이며, 앞선 sampling에서 선택된 기준점과 겹치는 한 configuration을 재사용하면 신규 비용은 최대 65 configuration 상당이다. Objective는 YetiRank/PairLogit/LambdaMart 총 세 configuration이며, YetiRank screening 결과를 재사용하면 두 challenger configuration, 약 **9,311.0초(2.59시간)**다. 하나의 finalist를 3 total seeds로 평가하고 screening run을 재사용하면 두 추가 configuration, 약 **9,311.0초(2.59시간)**다. 겹치는 baseline run을 재사용한 알려진 계획은 총 73 configuration-equivalents, 약 **339,852초(94.40시간)**이며, 이미 완료된 현재 uniform baseline 1개를 제외하면 최대 72 additional configuration-equivalents, 약 **335,197초(93.11시간)**다. 모두 현재 full-configuration 단가를 적용한 projection이다. Negative sampling ratio expansion과 hyperparameter search는 포함하지 않으며, hyperparameter 후보 수/비용은 탐색 공간을 정한 뒤 산정한다. Search는 아직 시작하지 않았다.
+따라서 exhaustive보다 forward + backward greedy를 선택한다. 한 축씩 잠그며 먼저 negative sampling을 비교하고, feature greedy는 선택된 sampling을 고정한 뒤 시작한다. 10개 feature group 전체 1,023개 조합은 실행하지 않는다.
 
-다음 checkpoint는 다른 조건을 고정하고 negative sampling의 네 전략을 1×·1 seed로 비교하는 것이다. 기존 baseline과 세 신규 configuration의 수치 parity를 먼저 확인한다. 이 결정은 195-ID/245-pair coverage limitation을 다시 조사하지 않으며, VL 평가를 포함하지 않는다.
+Coverage 진단은 필요한 privacy-safe aggregate만 기록하며, 기존 195-ID/245-pair missing-key 결과의 원인을 다시 조사하지 않는다. VL 평가는 포함하지 않는다.
 
 ## Stage 2 — Negative sampling search
 
@@ -233,8 +272,8 @@ C1 Region
 
 탐색 원칙:
 
-- 실측 4,655.510초/config을 적용하면 exhaustive 1,023개 조합은 4,762,586.7초(약 55.1일)/seed, forward 55 + backward 10 + baseline 1의 greedy 최대 66 config은 307,263.7초(85.35시간, 3.56일)/seed로 예상된다. 두 값은 projection이다.
-- 이에 **forward + backward greedy**를 선택하고 exhaustive 조합은 실행하지 않는다. Broad search는 후보당 1 seed를 사용하고 최종 finalist 한 개만 총 3 seeds로 확인한다. 세 seed 결과는 stability heuristic으로 사용하며 formal confidence interval로 해석하지 않는다.
+- Corrected full-configuration 측정에 근거한 exhaustive 및 greedy projection과 seed budget은 위의 **Search strategy와 seed budget 결정**에 기록했다. Feature search는 backward cleanup을 한 번만 수행한다.
+- 이에 **forward + backward greedy**를 선택하고 exhaustive 조합은 실행하지 않는다. Broad search는 후보당 1 seed를 사용하고 최종 configuration만 총 3 seeds로 확인한다. 세 seed 결과는 stability heuristic으로 사용하며 formal confidence interval로 해석하지 않는다.
 - I2와 I4는 runnable이다. `fit_catboost`는 I3/I4를 포함한 행마다 helper가 발급한 immutable materialization과의 item key, trip partition, feature 값 일치를 확인한다. `inner-train` 문자열만으로는 fit을 허용하지 않는다.
 
 첫 실제 search 축은 negative sampling이다. 다른 조건을 고정하고 1×에서 uniform, popularity-weighted, mixed, hard 네 전략을 비교한다. Uniform baseline은 현재 run을 재사용하고 나머지 세 configuration을 실행한다. 2×/4×/8×/16× ratio 확장 예산은 이 screen의 runtime과 결과를 본 뒤 별도 결정한다. 이 search는 아직 시작하지 않았다.
@@ -285,7 +324,7 @@ sampling, feature, objective를 먼저 잠근 뒤 CatBoost 세부 설정을 조�
 - learning_rate
 - regularization 계열
 
-구체적인 search space는 objective search 결과와 과적합 패턴을 확인한 뒤 정한다. 후보 수가 정해지면 configuration당 4,655.510초를 초기 projection 단가로 사용하되, 실제 비용은 별도 측정한다.
+구체적인 search space는 objective search 결과와 과적합 패턴을 확인한 뒤 정한다. 초기 planning은 corrected full-TL configuration당 1,532.677초를 기준으로 하며, objective나 hyperparameter 조건이 달라지면 실제 비용을 다시 측정한다.
 
 ## Stage 6 — Seed 반복
 

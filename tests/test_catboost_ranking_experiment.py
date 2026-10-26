@@ -531,6 +531,7 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
                     local = _top_scored_items(item_ids[start:stop], scores[start:stop], limit)
                     best = sorted((*best, *local), key=lambda row: (-row[1], row[0]))[:limit]
                 actual_ids = tuple(item for item, _ in best)
+                self.assertEqual(tuple(best), tuple(legacy))
                 self.assertEqual(actual_ids, expected_ids)
                 relevant = {"item-04", "outside-catalog"}
                 self.assertEqual(

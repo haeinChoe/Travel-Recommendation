@@ -67,7 +67,9 @@ from scripts.recommendation.training_dataset import (  # noqa: E402
 from scripts.recommendation.evaluate_popularity import (  # noqa: E402
     approved_capital_filekey_root,
 )
+from scripts.recommendation.poi_catalog_policy import load_poi_catalog_policy  # noqa: E402
 from scripts.recommendation.tl_traveler_split import (  # noqa: E402
+    deterministic_traveler_group_split,
     valid_unique_trip_owner_rows,
 )
 
@@ -100,6 +102,9 @@ SOFT_RSS_LIMIT_BYTES = 16 * 1024**3
 MIN_AVAILABLE_BYTES = 8 * 1024**3
 MASTER_PROGRESS_ROWS = 25_000
 TELEMETRY: list[dict[str, object]] = []
+RESOLVED_ADMIN_LOCATION_STATUSES = frozenset({
+    "resolved_single_source", "resolved_multi_source",
+})
 
 
 class SafeFailure(RuntimeError):
@@ -302,19 +307,28 @@ def read_projected_csv(path: Path, required: Iterable[str], selected: Iterable[s
     return list(iter_projected_csv(path, required, selected))
 
 
-def _load_master(path: Path, admin_lookup: Mapping[str, object], total_start: float) -> dict[str, dict[str, object]]:
+def _load_master(
+    path: Path,
+    admin_lookup: Mapping[str, object],
+    total_start: float,
+    *,
+    source_package_region: str,
+) -> tuple[dict[str, dict[str, object]], set[str], int, int]:
     required = ("POI_ID", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC", "ROAD_NM_ADDR", "LOTNO_ADDR")
     duplicate_ids: set[str] = set()
     unique: dict[str, dict[str, object]] = {}
     master_start = time.monotonic()
     last_emit = master_start
     seen_rows = 0
+    blank_id_rows = 0
     address_lookup = build_admin_address_lookup(admin_lookup)
     address_result_cache: dict[str, tuple[str, ...]] = {}
     for values in iter_projected_values(path, required, required):
         seen_rows += 1
         item = _clean_str(values[0])
-        if item:
+        if not item:
+            blank_id_rows += 1
+        else:
             if item in duplicate_ids:
                 pass
             elif item in unique:
@@ -335,7 +349,7 @@ def _load_master(path: Path, admin_lookup: Mapping[str, object], total_start: fl
                 )
                 unique[item] = {
                     "item_id": item,
-                    "region": "",
+                    "source_package_region": source_package_region,
                     "source_category_l1_code": _clean_str(values[2]),
                     "source_category_l2_code": _clean_str(values[3]),
                     "source_category_l3_code": _clean_str(values[4]),
@@ -345,11 +359,133 @@ def _load_master(path: Path, admin_lookup: Mapping[str, object], total_start: fl
                 }
         if seen_rows % MASTER_PROGRESS_ROWS == 0 or time.monotonic()-last_emit >= 10:
             _emit("master_csv_read", total_start, stage_seconds=time.monotonic()-master_start,
-                  source_rows=seen_rows, unique_ids=len(unique) + len(duplicate_ids))
+                  source_rows=seen_rows, unique_ids=len(unique) + len(duplicate_ids),
+                  blank_id_rows=blank_id_rows)
             _emit("master_location", total_start, stage_seconds=time.monotonic()-master_start,
-                  unique_candidates_resolved=len(unique), total_unique_ids=len(unique) + len(duplicate_ids))
+                  nonduplicate_unique_ids=len(unique), total_unique_ids=len(unique) + len(duplicate_ids),
+                  duplicate_id_groups=len(duplicate_ids))
             last_emit = time.monotonic()
-    return unique
+    return unique, duplicate_ids, seen_rows, blank_id_rows
+
+
+def _resolved_canonical_sido_code(row: Mapping[str, object]) -> str:
+    status = _clean_str(row.get("canonical_admin_location_status"))
+    code = _clean_str(row.get("canonical_admin_sido_code"))
+    if status not in RESOLVED_ADMIN_LOCATION_STATUSES:
+        return ""
+    return code
+
+
+def _pre_filter_candidate_aggregates(
+    master: Mapping[str, Mapping[str, object]],
+    duplicate_ids: set[str],
+    validation_truth: Mapping[str, set[str]],
+    *,
+    source_package_region: str,
+    policy,
+    source_rows: int,
+    blank_id_rows: int,
+) -> dict[str, object]:
+    """Summarize geography and validation coverage before candidate filtering."""
+    codes = policy.product_region_to_ldong_regn_cd.get(source_package_region)
+    if not codes:
+        raise SafeFailure("product_region_policy")
+    counts_by_code = {code: 0 for code in sorted(codes)}
+    unresolved_ids = 0
+    resolved_outside_region_ids = 0
+    for row in master.values():
+        code = _resolved_canonical_sido_code(row)
+        if not code:
+            unresolved_ids += 1
+        elif code in counts_by_code:
+            counts_by_code[code] += 1
+        else:
+            resolved_outside_region_ids += 1
+
+    positive_pairs = 0
+    candidate_pairs = 0
+    missing_pairs = 0
+    unresolved_positive_pairs = 0
+    other_region_positive_pairs = 0
+    duplicate_positive_pairs = 0
+    covered_queries = 0
+    for trip_id, positive_ids in validation_truth.items():
+        query_covered = False
+        for item_id in positive_ids:
+            positive_pairs += 1
+            row = master.get(item_id)
+            if row is None:
+                if item_id in duplicate_ids:
+                    duplicate_positive_pairs += 1
+                else:
+                    missing_pairs += 1
+                continue
+            code = _resolved_canonical_sido_code(row)
+            if not code:
+                unresolved_positive_pairs += 1
+            elif code in counts_by_code:
+                candidate_pairs += 1
+                query_covered = True
+            else:
+                other_region_positive_pairs += 1
+        covered_queries += int(query_covered)
+
+    geography_denominator = len(master)
+    return {
+        "source_package_region": source_package_region,
+        "candidate_region_policy_version": policy.version,
+        "master_source_rows": source_rows,
+        "master_blank_id_rows": blank_id_rows,
+        "master_total_unique_ids": len(master) + len(duplicate_ids),
+        "master_duplicate_id_groups": len(duplicate_ids),
+        "master_unique_ids_after_duplicate_policy": geography_denominator,
+        "canonical_candidate_ids_by_admin_sido_code": counts_by_code,
+        "master_resolved_outside_requested_region_ids": resolved_outside_region_ids,
+        "master_geography_unresolved_ids": unresolved_ids,
+        "master_geography_resolution_denominator_ids": geography_denominator,
+        "master_geography_unresolved_rate": round(
+            unresolved_ids / geography_denominator, 6
+        ) if geography_denominator else 0.0,
+        "validation_positive_queries": len(validation_truth),
+        "validation_positive_pairs": positive_pairs,
+        "validation_candidate_covered_queries": covered_queries,
+        "validation_candidate_covered_pairs": candidate_pairs,
+        "validation_candidate_pair_coverage_rate": round(
+            candidate_pairs / positive_pairs, 6
+        ) if positive_pairs else 0.0,
+        "validation_master_missing_positive_pairs": missing_pairs,
+        "validation_master_duplicate_key_positive_pairs": duplicate_positive_pairs,
+        "validation_master_present_geography_unresolved_positive_pairs": unresolved_positive_pairs,
+        "validation_master_present_other_region_positive_pairs": other_region_positive_pairs,
+    }
+
+
+def _filter_master_to_product_region(
+    master: dict[str, dict[str, object]],
+    *,
+    source_package_region: str,
+    policy,
+) -> dict[str, dict[str, object]]:
+    """Drain full master rows into the resolved, policy-mapped candidate scope."""
+    codes = policy.product_region_to_ldong_regn_cd.get(source_package_region)
+    if not codes:
+        raise SafeFailure("product_region_policy")
+    candidates: dict[str, dict[str, object]] = {}
+    # Move references rather than copying the full 7M-row map into a second map.
+    while master:
+        item_id, row = master.popitem()
+        if row.get("source_package_region") != source_package_region:
+            raise SafeFailure("source_region_provenance")
+        code = _resolved_canonical_sido_code(row)
+        if code in codes:
+            row["product_region"] = source_package_region
+            # `region` is the prepared candidate/request scope enforced by the
+            # ranking contract; source provenance remains separately recorded.
+            row["region"] = source_package_region
+            candidates[item_id] = row
+    if not candidates:
+        raise SafeFailure("empty_geographic_inventory")
+    return candidates
 
 
 def _context_rows(travel_rows: list[dict[str, str]], traveler_rows: list[dict[str, str]], region: str, run_id: str):
@@ -439,13 +575,16 @@ def run(region: str, mode: str) -> dict[str, object]:
     admin_lookup = build_admin_lookup(_normalize_admin_codebook_rows(sgg_rows))
     if not admin_lookup:
         raise SafeFailure("admin_codebook")
-    master = _load_master(master_path, admin_lookup, total_start)
+    policy = load_poi_catalog_policy()
+    master, duplicate_master_ids, master_source_rows, master_blank_id_rows = _load_master(
+        master_path, admin_lookup, total_start, source_package_region=region,
+    )
     if not master:
         raise SafeFailure("empty_master")
-    for row in master.values():
-        row["region"] = region
     _emit("static_catalog", total_start, stage_seconds=time.monotonic()-phase,
-          candidate_items=len(master), admin_codes=len(admin_lookup))
+          master_unique_ids=len(master) + len(duplicate_master_ids),
+          nonduplicate_master_ids=len(master), duplicate_id_groups=len(duplicate_master_ids),
+          admin_codes=len(admin_lookup), policy_version=policy.version)
 
     phase = time.monotonic()
     traveler_rows = read_projected_csv(traveler_path, TRAVELER_COLUMNS, TRAVELER_COLUMNS)
@@ -471,12 +610,35 @@ def run(region: str, mode: str) -> dict[str, object]:
           trip_count=len(owners), traveler_rows=len(traveler_rows),
           valid_visit_events=len(valid_events), positive_pairs=len(positives))
 
+    validation_partition = deterministic_traveler_group_split(
+        owners, seed=SPLIT_SEED, validation_fraction=0.2,
+    )
+    validation_truth: dict[str, set[str]] = defaultdict(set)
+    for positive in eligible_positives:
+        if validation_partition.get(positive.travel_id) == "inner-validation":
+            validation_truth[positive.travel_id].add(positive.poi_id)
+    pre_filter_aggregates = _pre_filter_candidate_aggregates(
+        master, duplicate_master_ids, validation_truth,
+        source_package_region=region, policy=policy,
+        source_rows=master_source_rows, blank_id_rows=master_blank_id_rows,
+    )
+    _emit("candidate_scope_pre_filter", total_start, **pre_filter_aggregates)
+    phase = time.monotonic()
+    master = _filter_master_to_product_region(
+        master, source_package_region=region, policy=policy,
+    )
+    _emit("geographic_candidate_inventory", total_start,
+          stage_seconds=time.monotonic()-phase, product_region=region,
+          candidate_items=len(master), policy_version=policy.version)
+
     phase = time.monotonic()
     materialization = materialize_inner_train_item_features(
         trip_owner=owners, item_features=master.values(),
         positive_interactions=positive_rows, visit_events=valid_events,
         split_seed=SPLIT_SEED,
     )
+    if dict(materialization.partition_by_trip) != validation_partition:
+        raise SafeFailure("inner_split_mismatch")
     catalog_config = ExperimentConfig(
         feature_groups=FEATURE_GROUPS,
         sampling_strategy=SamplingStrategy.UNIFORM,
@@ -503,12 +665,8 @@ def run(region: str, mode: str) -> dict[str, object]:
     _emit("uniform_sampling", total_start, stage_seconds=time.monotonic()-phase,
           train_rows=len(train_frame), train_queries=train_groups, negative_ratio=1)
 
-    # Validation ground truth remains all distinct TL positives, including any
-    # positives absent from the configured same-source-region candidate set.
-    validation_truth: dict[str, set[str]] = defaultdict(set)
-    for positive in eligible_positives:
-        if materialization.partition_by_trip.get(positive.travel_id)=="inner-validation":
-            validation_truth[positive.travel_id].add(positive.poi_id)
+    # Validation ground truth remains all positives, including positives
+    # missing from master, geographically unresolved, or outside ProductRegion.
     ordered_validation = sorted(validation_truth)
     if mode in {"probe", "profile"}:
         ordered_validation = ordered_validation[:PROBE_VALIDATION_QUERIES]
@@ -567,7 +725,11 @@ def run(region: str, mode: str) -> dict[str, object]:
             "distinct_trip_poi_positives": positive_diagnostics["distinct_trip_poi_positives"],
             "tourism_core_trip_poi_positives": positive_diagnostics["tourism_core_trip_poi_positives"],
         },
-        "scope_note": "source-region-scoped static TN_POI_MASTER; not an admin-geographic filter",
+        "candidate_scope_aggregates": pre_filter_aggregates,
+        "scope_note": (
+            "source-package provenance is distinct from ProductRegion; candidate inventory "
+            "contains only resolved canonical SIDO codes in the versioned ProductRegion policy"
+        ),
         "telemetry": list(TELEMETRY),
     }
 

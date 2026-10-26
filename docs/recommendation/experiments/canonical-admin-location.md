@@ -1,7 +1,7 @@
 # POI canonical administrative location
 
 **관련 Issue:** #41, #79, #81
-**현재 상태:** I2 schema와 synthetic reconciliation 완료 / actual AI Hub coverage 감사 미실행
+**현재 상태:** I2 schema와 synthetic reconciliation 완료 / #82 candidate run에서 제한된 Master unresolved 및 candidate geography aggregate 기록 / 전체 source conflict·coverage 감사는 미실행
 
 ## 이 문서가 답하려는 질문
 
@@ -14,7 +14,7 @@ AI Hub의 여러 위치 단서를 어떻게 하나의 검증 가능한 행정구
 - `region`은 `capital`/`west`/`east`/`jeju-islands` 제품 권역이다. 시도·시군구와 request target geography는 각각 다른 의미를 갖는다.
 - Master의 정적 SGG와 정적 주소를 코드북에 대조한다. 유일한 근거만 있으면 해결하고, 서로 다른 코드면 null + `conflict`, 모호한 주소는 null + `ambiguous_address`로 보존한다.
 - visit SGG/address는 train 입력 범위 안에서 감사만 하며 I2를 채우거나 덮어쓰지 않는다. held-out positive가 자기 feature를 만들 수 없다.
-- TN_POI_MASTER 고유 행 전체가 `item_features`의 static inventory에 포함된다. `observed_in_splits=[]`인 train-unseen item도 분류 또는 위치 등 선택한 정적 특성을 제공하면 후보가 될 수 있다.
+- TN_POI_MASTER 고유 행은 static location evidence의 입력이 될 수 있지만, 이 사실만으로 모두 ranking candidate가 되지는 않는다. Candidate 자격은 모델/실험의 별도 geography 계약을 적용한다. `observed_in_splits=[]`인 train-unseen item은 해당 계약을 통과하고 선택한 정적 특성을 제공하면 후보가 될 수 있다.
 - 과거 Issue #69 identity 감사는 AI Hub와 TourAPI 좌표가 WGS84 범위에 든다는 사실과 4,279 regional / 4,686 global anchor 사이의 거리 분포를 독립적으로 확인했다(각각 200m 이내 93.11% / 93.45%). 이는 매칭된 anchor subset에 대한 경험적 결과이며, 공식 CRS·X/Y source contract나 전체 Master inventory 좌표의 의미/coverage를 확립하지 않는다. 이번 I2는 기존 raw coordinate/H3/distance 제외 결정을 따르고, 위치 정제나 ranking에 좌표를 사용하지 않는다. `coordinate_validation_status=subset_validation_only_not_used`로 범위를 표시한다.
 
 ## 결정된 필드와 의미
@@ -43,7 +43,7 @@ TourAPI snapshot의 주소·행정 필드는 generic resolver의 보조 입력�
 
 ## 누수와 inventory 경계
 
-정적 item feature는 모든 고유 `TN_POI_MASTER` 행을 기준으로 만든다. 전체 Master inventory와 interaction에만 있는 item metadata-only 행을 구분한다. Master가 없는 관측 item은 정적 feature evidence를 만들 수 없으므로 configured-feature candidate로 간주하지 않는다. Master inventory의 행 중 canonical location이나 category가 비어도 다른 선택된 정적 feature가 있으면 그 feature group의 candidate inventory에 포함할 수 있다. Feature requirement에 따라 후보 가능 여부를 결정하며 train-observed 여부로 필터링하지 않는다.
+정적 item feature는 고유 `TN_POI_MASTER` 행의 static evidence를 기준으로 만든다. 전체 Master evidence와 interaction에만 있는 item metadata-only 행을 구분한다. Master가 없는 관측 item은 정적 feature evidence를 만들 수 없으므로 configured-feature candidate로 간주하지 않는다. Master inventory의 행 중 canonical location이나 category가 비어도 다른 선택된 정적 feature를 만들 수는 있으나, 실제 candidate eligibility는 별도 request/ProductRegion 계약을 따른다. Issue #82의 corrected 수도권 runner는 unresolved 또는 수도권 mapping 밖 item을 제외하고, `load_poi_catalog_policy()`의 versioned `product_region_to_ldong_regn_cd`와 resolved `canonical_admin_sido_code`로 geography를 판정한다. Train-observed 여부로 후보를 필터링하지 않는다.
 
 방문 행 SGG/address는 TL에 한정한 비식별 비교 집계에만 사용한다. `canonical_admin_*` 결과와 provenance를 변경하지 않으며 validation row를 검사해 feature를 보완하지 않는다. TL inner-split에서 inner-validation 방문 위치를 집계하면 누수가 생기므로, I2 feature는 static evidence만 사용한다. 따라서 방문 출처의 코드 보강은 하지 않고 그 근거는 현재 감사 범위에 한정한다.
 
@@ -55,7 +55,7 @@ TourAPI snapshot의 주소·행정 필드는 generic resolver의 보조 입력�
 - TL visit corroboration 분모와 `agrees`, `conflicts_with_static`, `visit_internal_conflict`, `visit_only_unconfirmed` 등 수
 - canonical feature에서 visit 값이 사용되지 않았음을 나타내는 boolean
 
-이번 작업에서는 actual raw 행을 열지 않았다. 전담 데이터 감사 preflight 시 현재 처리의 TL/VL 경로 바인딩을 확인하지 못하고 문서가 정한 지정 입력의 provenance/role도 확인하지 못해 중단했다. 데이터가 존재하지 않는다고 단정하지 않는다. 따라서 실제 coverage, conflict rate, provenance 분포는 미보고이며 후속으로 승인된 입력을 특정할 때 생성한다. synthetic test는 conflict, address ambiguity, visit-only fail-closed, valid-coordinate non-use, train-unseen static inventory를 확인한다.
+#82의 corrected 수도권 TL candidate run은 승인된 입력 역할을 확인한 뒤 Master에 대해 canonical SIDO 기준 candidate count, unresolved ID 수/rate, 그리고 validation positive coverage를 제한된 privacy-safe aggregate로 기록했다. 이는 한 권역의 candidate geography 범위 확인이며 I2 전체 source별 provenance·conflict rate 또는 전 권역 coverage 감사가 아니다. 해당 상세 감사는 별도 승인된 scope에서 수행한다. synthetic test는 conflict, address ambiguity, visit-only fail-closed, valid-coordinate non-use, train-unseen static inventory를 확인한다.
 
 ## 좌표와 privacy
 
