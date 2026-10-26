@@ -14,6 +14,7 @@ from scripts.recommendation.catboost_ranking_experiment import (
     CATBOOST_MISSING_CATEGORY,
     CandidateInventory,
     PreparedItemCatalog,
+    ScoringProfiler,
     DEFAULT_EVAL_METRIC,
     DEFAULT_ITERATIONS,
     DEFAULT_MIXED_UNIFORM_FRACTION,
@@ -495,11 +496,13 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
             k_values=config.k_values,
         )
         streamed_model = TiedModel()
+        profiler = ScoringProfiler(capture_rankings=True)
         result = score_inner_validation_queries(
             streamed_model, catalog,
             ((query_id, relevant),),
             query_features=query_features, config=config,
             max_rows_per_batch=1,
+            profiler=profiler,
         )
         self.assertEqual(dict(result.metrics), expected)
         pd.testing.assert_frame_equal(
@@ -510,6 +513,60 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
         self.assertEqual(result.candidate_count, 2)
         self.assertEqual(result.scored_rows, 2)
         self.assertEqual(result.max_batch_rows, 1)
+        item_columns_before_cache = {
+            column: tuple(values) for column, values in catalog.item_columns.items()
+        }
+        cached_model = TiedModel()
+        cached_profiler = ScoringProfiler(capture_rankings=True)
+        cached_result = score_inner_validation_queries(
+            cached_model, catalog, ((query_id, ("item-b", "not-in-catalog")),),
+            query_features=query_features, config=config, max_rows_per_batch=1,
+            inference_mode="dataframe_cached_items", profiler=cached_profiler,
+        )
+        self.assertEqual(dict(cached_result.metrics), expected)
+        pd.testing.assert_frame_equal(
+            pd.concat(cached_model.frames, ignore_index=True), full_frame,
+            check_dtype=False,
+        )
+        self.assertEqual(
+            {column: tuple(values) for column, values in catalog.item_columns.items()},
+            item_columns_before_cache,
+        )
+        self.assertEqual(cached_profiler.top_rankings, profiler.top_rankings)
+        self.assertGreater(cached_profiler.static_item_cache_seconds, 0)
+        profile = profiler.summary(scored_rows=result.scored_rows, candidate_count=result.candidate_count)
+        self.assertEqual(profile["profile_version"], ScoringProfiler.PROFILE_VERSION)
+        self.assertEqual(profile["frame_build"]["rows"], 2)
+        self.assertEqual(profile["predict"]["rows"], 2)
+        self.assertGreater(profile["frame_build"]["candidate_item_slice_seconds"], 0)
+        self.assertGreater(profile["frame_build"]["query_context_broadcast_seconds"], 0)
+        self.assertGreater(profile["frame_build"]["container_construction_seconds"], 0)
+        self.assertEqual(profile["query_elapsed_seconds"]["count"], 1)
+        self.assertGreater(profile["scoring_wall_seconds"], 0)
+        self.assertEqual(profile["scoring_rss_sampling_interval_ms"], 500)
+        self.assertIn("scoring_sampled_peak_rss_mib", profile)
+        self.assertGreaterEqual(profile["unaccounted_seconds"], -0.01)
+        self.assertLess(profile["unaccounted_seconds"], profile["scoring_wall_seconds"])
+        self.assertEqual(
+            profiler.top_rankings,
+            [(('item-a', 1.0), ('item-b', 1.0))],
+        )
+
+        class FailingModel:
+            def predict(self, frame: pd.DataFrame) -> list[float]:
+                raise RuntimeError("synthetic predict failure")
+
+        failing_profiler = ScoringProfiler()
+        with self.assertRaisesRegex(RuntimeError, "synthetic predict failure"):
+            score_inner_validation_queries(
+                FailingModel(), catalog, ((query_id, ("item-b", "not-in-catalog")),),
+                query_features=query_features, config=config, max_rows_per_batch=1,
+                profiler=failing_profiler,
+            )
+        self.assertIsNotNone(failing_profiler._rss_thread)
+        self.assertFalse(failing_profiler._rss_thread.is_alive())
+        self.assertGreater(failing_profiler.scoring_wall_seconds, 0)
+        self.assertGreater(failing_profiler.scoring_after_rss_bytes, 0)
 
     def test_batched_top_k_matches_legacy_order_with_boundary_ties(self) -> None:
         from scripts.recommendation.catboost_ranking_experiment import _top_scored_items
@@ -996,6 +1053,28 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
             ))
         expected_metrics = aggregate_ranking_metrics(full_rankings, k_values=config.k_values)
 
+        from catboost import Pool
+
+        comparison_frame = full_query_rows[0]
+        categorical = list(categorical_feature_columns(config))
+        baseline_scores = list(with_eval.predict(comparison_frame))
+        self.assertEqual(
+            list(with_eval.predict(comparison_frame.to_numpy(dtype=object))),
+            baseline_scores,
+        )
+        dataframe_pool = Pool(comparison_frame, cat_features=categorical)
+        self.assertEqual(list(with_eval.predict(dataframe_pool)), baseline_scores)
+        numpy_pool = Pool(
+            comparison_frame.to_numpy(dtype=object),
+            cat_features=[comparison_frame.columns.get_loc(column) for column in categorical],
+            feature_names=list(comparison_frame.columns),
+        )
+        self.assertEqual(list(with_eval.predict(numpy_pool)), baseline_scores)
+        for thread_count in (1, 2, 4):
+            self.assertEqual(
+                list(with_eval.predict(comparison_frame, thread_count=thread_count)),
+                baseline_scores,
+            )
         class RecordingRanker:
             def __init__(self) -> None:
                 self.frames: list[pd.DataFrame] = []
@@ -1018,6 +1097,31 @@ class CatBoostRankingExperimentTests(unittest.TestCase):
                 pd.concat(full_query_rows, ignore_index=True),
                 check_dtype=False,
             )
+
+        dataframe_profile = ScoringProfiler(capture_rankings=True)
+        dataframe_result = score_inner_validation_queries(
+            with_eval, catalog, iter(validation_truth), query_features=query_features,
+            config=config, max_rows_per_batch=2, profiler=dataframe_profile,
+        )
+        for inference_mode in (
+            "dataframe_cached_items", "dataframe_pool", "numpy_pool", "numpy_array",
+        ):
+            alternate_profile = ScoringProfiler(capture_rankings=True)
+            alternate_result = score_inner_validation_queries(
+                with_eval, catalog, iter(validation_truth), query_features=query_features,
+                config=config, max_rows_per_batch=2, profiler=alternate_profile,
+                inference_mode=inference_mode, predict_thread_count=1,
+            )
+            self.assertEqual(dict(alternate_result.metrics), dict(dataframe_result.metrics))
+            self.assertEqual(alternate_profile.top_rankings, dataframe_profile.top_rankings)
+            self.assertEqual(alternate_result.scored_rows, dataframe_result.scored_rows)
+            if inference_mode == "dataframe_cached_items":
+                cached_profile = alternate_profile.summary(
+                    scored_rows=alternate_result.scored_rows,
+                    candidate_count=alternate_result.candidate_count,
+                )
+                self.assertGreater(cached_profile["frame_build"]["static_item_cache_seconds"], 0)
+                self.assertGreater(cached_profile["frame_build"]["static_item_cache_bytes_estimate"], 0)
 
     def test_protocol_keeps_vl_out_of_tuning(self) -> None:
         protocol = default_protocol()
