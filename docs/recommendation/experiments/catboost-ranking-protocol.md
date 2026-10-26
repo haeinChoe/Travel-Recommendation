@@ -1,7 +1,7 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
 **관련 Issue:** #79, #82
-**현재 상태:** PR #88에서 runner integration과 수도권 TL Stage 1 smoke를 완료했다. 이번 checkpoint는 bounded scoring 최적화와 합성 parity를 추가했지만, 최적화된 코드의 전체 actual-TL 재실행은 실행 프로세스에 승인된 role binding이 연결되지 않아 아직 완료하지 못했다. 따라서 optimized runtime, process peak RSS, actual metric parity, 최종 search/seed budget은 미결정이다.
+**현재 상태:** PR #88의 runner와 수도권 TL Stage 1 smoke를 기준으로 bounded scoring 경로를 최적화하고, 같은 수도권 TL inner-validation에서 full benchmark를 완료했다. #88 공개 정밀도에서 metric parity를 확인했다. 실측 비용을 근거로 feature 탐색은 forward + backward greedy, broad search는 후보당 1 seed, 최종 configuration은 3 seeds로 결정했다. 이 checkpoint에서는 sampling/feature/objective search를 시작하지 않았으며 다음 축은 negative sampling이다. VL은 읽지 않았다.
 
 ## 이 문서가 답하려는 질문
 
@@ -40,7 +40,7 @@ VL 최종 평가 (#83)
 - metrics: **NDCG@K / Recall@K / MRR@K / HitRate@K**
 - 기본 K: **5 / 10 / 20**
 - full-catalog scoring은 query별 제한 행 단위로 유지하고, 동률에서 item ID 오름차순을 포함한 global top-K 결과를 보존한다.
-- exhaustive/greedy 선택과 seed 반복 횟수는 optimized actual-TL runtime 확인 뒤 잠근다.
+- feature 탐색은 최대 66개 configuration의 forward + backward greedy로 제한한다. 후보 비교는 1 seed씩 수행하고, 잠글 최종 configuration만 총 3 seeds로 확인한다.
 - 공식 VL은 모든 tuning이 끝난 뒤 사용
 
 ## 선행 작업 상태
@@ -52,7 +52,7 @@ VL 최종 평가 (#83)
 
 ## 다음 행동
 
-#80/#81과 #82 Stage 1은 완료됐고, 이번 branch에 scoring 최적화를 반영했다. 다음 행동은 같은 YetiRank·uniform·1×·1,000 iteration·seed 20261025 설정으로 전체 수도권 TL inner-validation을 재실행하는 것이다. 승인된 role binding이 writer 실행 프로세스에 연결되면 그 결과로 exhaustive/greedy와 seed budget을 잠근다. 그 전에는 sampling이나 다른 search 축을 시작하지 않는다.
+#80/#81과 #82 Stage 1, scoring 최적화 및 full 수도권 TL inner-validation benchmark가 완료됐다. 다음 checkpoint는 negative sampling이다. 같은 candidate, split, feature, YetiRank 설정에서 uniform baseline과 popularity-weighted, mixed, hard를 1×·1 seed로 비교한다. sampling 결과를 고정한 뒤 feature greedy, objective, hyperparameter 순으로 진행한다. 이번 checkpoint에서는 이 탐색을 실행하지 않았다.
 
 ---
 
@@ -116,7 +116,7 @@ feature = 작은 runnable set
 | MRR | 0.00174 | 0.00345 | 0.00381 |
 | HitRate | 0.00463 | 0.01852 | 0.02546 |
 
-이 smoke에서는 모델 fitting보다 validation scoring이 runtime 병목이었다. scoring 최적화 뒤 실제 TL runtime을 측정하기 전에는 exhaustive와 greedy 중 어느 탐색을 택할지, seed 반복 횟수를 얼마로 둘지 결정하지 않는다. 이 수치는 Stage 1 feasibility 결과이며 최종 모델 성능으로 해석하지 않는다.
+이 smoke에서는 모델 fitting보다 validation scoring이 runtime 병목이었다. 이 표는 최적화 전 #88 결과를 보존한 historical baseline이며 최종 모델 성능으로 해석하지 않는다.
 
 ### Scoring 최적화 checkpoint
 
@@ -131,7 +131,46 @@ feature = 작은 runnable set
 
 두 번째 workload의 전체 Python 프로세스 peak RSS는 772.3 MiB였다. 이 값은 300,000개 합성 catalog에서만 측정했으며 7.44M actual candidate의 RSS 보증값이 아니다. 별도 unit parity는 점수가 동률인 13개 item을 여러 chunk 크기로 나누어 legacy `(-score, item_id)` 순위와 top-K metric이 일치하는지 확인한다.
 
-**미결정:** 이번 실행 프로세스에서 `RAW_ROOT`, `CAPITAL_TL`, `CAPITAL_OTHER` role binding을 사용할 수 없었고, 문서가 지정한 저장소 `data/raw` 위치도 없었다. raw row는 열지 않았다. 따라서 optimized actual-TL full benchmark, actual peak RSS와 #88 metric parity는 아직 측정하지 않았으며 search/seed budget은 잠그지 않는다. VL은 확인하거나 읽지 않았다.
+#### 실제 수도권 TL inner-validation benchmark
+
+동일한 YetiRank, uniform 1×, 1,000 iterations, seed 20261025 설정과 candidate/split/metric 계약으로 optimized scorer를 전체 432개 validation query에서 실행했다. 입력 경로와 raw row는 문서화하지 않았고, 결과는 privacy-safe aggregate로만 남겼다.
+
+| 항목 | #88 baseline | Optimized full run |
+| --- | ---: | ---: |
+| 총 runtime | 6,019초 | 4,655.510초 |
+| CatBoost fit | 8.7초 | 9.329초 |
+| validation scoring | 5,764.1초 | 4,394.086초 |
+| process peak RSS | 기록 없음 | 6,779 MiB |
+| validation query | 432 | 432 |
+| 후보 catalog | 7,442,866 POI | 7,442,866 POI |
+| scored row | 3,215,318,112 | 3,215,318,112 |
+
+총 runtime은 1.293× 빨라졌고(약 22.7분 감소), scoring은 1.312× 빨라졌다(약 22.8분 감소). Fit 시간은 두 run에서 비슷하며 optimized run이 0.629초 길었다. #88의 process peak RSS는 기록되지 않아 메모리 절감률은 계산하지 않는다. #88에 공개된 NDCG, Recall, MRR, HitRate는 @5/@10/@20 모두 다섯째 소수점까지 저장되어 있다. Optimized 결과는 이 공개 정밀도에서 일치한다. #88 full-precision result artifact를 확보하지 않았으므로 full-precision parity는 주장하지 않는다.
+
+| Metric | K | #88 baseline | Optimized | Parity |
+| --- | ---: | ---: | ---: | --- |
+| NDCG | 5 | 0.00207 | 0.00207 | 5-decimal public precision |
+| NDCG | 10 | 0.00416 | 0.00416 | 5-decimal public precision |
+| NDCG | 20 | 0.00495 | 0.00495 | 5-decimal public precision |
+| Recall | 5 | 0.00347 | 0.00347 | 5-decimal public precision |
+| Recall | 10 | 0.00863 | 0.00863 | 5-decimal public precision |
+| Recall | 20 | 0.01113 | 0.01113 | 5-decimal public precision |
+| MRR | 5 | 0.00174 | 0.00174 | 5-decimal public precision |
+| MRR | 10 | 0.00345 | 0.00345 | 5-decimal public precision |
+| MRR | 20 | 0.00381 | 0.00381 | 5-decimal public precision |
+| HitRate | 5 | 0.00463 | 0.00463 | 5-decimal public precision |
+| HitRate | 10 | 0.01852 | 0.01852 | 5-decimal public precision |
+| HitRate | 20 | 0.02546 | 0.02546 | 5-decimal public precision |
+
+#### Search strategy와 seed budget 결정
+
+한 full configuration의 실측 가격은 4,655.510초이며 validation마다 7,442,866개 후보, 총 3,215,318,112 scored row를 처리한다. 열 개 feature group의 non-empty exhaustive 조합 1,023개는 이 단가로 **4,762,586.7초(약 55.1일)/seed**가 예상된다. 따라서 exhaustive feature search는 채택하지 않는다. Protocol의 최대 후보 수로 계산한 forward 55개 + backward removal 10개 + baseline 1개, 총 66 configuration의 greedy search는 **307,263.7초(약 3.56일)/seed**로 예상되어 forward + backward greedy를 채택한다. 각 값은 실측 full-run 단가를 사용한 projection이며 실제 전체 search 결과나 runtime 보증값이 아니다.
+
+Broad search는 각 후보를 1 seed로 비교한다. 하나의 선택 configuration에만 최종 seed-stability heuristic을 적용해 총 3 seeds를 쓴다. 이미 screening에서 사용한 seed 1개를 포함하면 추가 반복 2회이며, 현재 실측 단가로 **9,311.0초(약 2.59시간)**가 추가된다. 이는 small-sample stability check이지 formal confidence interval이나 일반화 불확실성의 추정이 아니다.
+
+계획된 축의 예상량은 다음과 같다. Sampling은 네 전략을 1×로 각각 비교해 총 4 configuration, **18,622.0초(5.17시간)**다. 현재 uniform baseline을 재사용하므로 다음 sampling checkpoint의 신규 작업은 popularity-weighted/mixed/hard 세 configuration, 약 **13,966.5초(3.88시간)**다. Feature greedy는 최대 66 configuration, **307,263.7초(85.35시간, 3.56일)**이며, 앞선 sampling에서 선택된 기준점과 겹치는 한 configuration을 재사용하면 신규 비용은 최대 65 configuration 상당이다. Objective는 YetiRank/PairLogit/LambdaMart 총 세 configuration이며, YetiRank screening 결과를 재사용하면 두 challenger configuration, 약 **9,311.0초(2.59시간)**다. 하나의 finalist를 3 total seeds로 평가하고 screening run을 재사용하면 두 추가 configuration, 약 **9,311.0초(2.59시간)**다. 겹치는 baseline run을 재사용한 알려진 계획은 총 73 configuration-equivalents, 약 **339,852초(94.40시간)**이며, 이미 완료된 현재 uniform baseline 1개를 제외하면 최대 72 additional configuration-equivalents, 약 **335,197초(93.11시간)**다. 모두 현재 full-configuration 단가를 적용한 projection이다. Negative sampling ratio expansion과 hyperparameter search는 포함하지 않으며, hyperparameter 후보 수/비용은 탐색 공간을 정한 뒤 산정한다. Search는 아직 시작하지 않았다.
+
+다음 checkpoint는 다른 조건을 고정하고 negative sampling의 네 전략을 1×·1 seed로 비교하는 것이다. 기존 baseline과 세 신규 configuration의 수치 parity를 먼저 확인한다. 이 결정은 195-ID/245-pair coverage limitation을 다시 조사하지 않으며, VL 평가를 포함하지 않는다.
 
 ## Stage 2 — Negative sampling search
 
@@ -148,17 +187,17 @@ feature = 작은 runnable set
 ### 초기 grid
 
 ~~~text
-strategy ∈ {
+screen strategy ∈ {
   uniform,
   popularity-weighted,
   mixed,
   hard
 }
 
-ratio ∈ {1, 2, 4, 8, 16}
+screen ratio = 1
 ~~~
 
-초기 grid는 20개 configuration이다.
+첫 sampling screen은 4개 configuration이다. Ratio 2/4/8/16 확장은 이 screen의 runtime과 지표를 본 뒤 별도 예산으로 결정한다.
 
 ### 누수 규칙
 
@@ -194,13 +233,11 @@ C1 Region
 
 탐색 원칙:
 
-- 비용 감각을 위한 historical reference: #88은 네 feature group을 사용한 Stage 1 actual-TL run으로, 당시 설정은 6,019초/config이었다. 이 과거 단가가 그대로라고 가정한 단순 projection은 1 seed, 1,023개 조합에서 6,157,437초(약 71.3일)다. 이는 현재의 최대 10개 group 탐색 비용 측정이나 확정된 exhaustive 결정이 아니다.
-- greedy 후보 수의 historical-cost projection: forward 55개 후보, backward removal 10개, 기준점 1개를 더해 약 66 config으로 잡으면, 과거 #88 단가를 사용한 계산은 397,254초(약 4.6일)/seed다. 이는 상한이 아니며, 10개까지의 feature group을 쓰는 실제 후보별 비용은 최적화된 full-TL benchmark 전까지 측정되지 않았다. 여러 sampling/objective 축을 곱한 값도 아니다.
-- bounded scorer 변경 뒤 실제 full TL 시간이 아직 측정되지 않아 **최종 탐색 방식과 budget은 잠그지 않았다**. Actual benchmark 후에도 비용이 크면 forward greedy 후 backward removal check를 우선 사용한다.
-- seed budget도 최적화된 full-config runtime을 보고 확정한다. 한 seed로 후보를 줄이고 최종 후보에 여러 seed를 적용하는 방식을 검토하되, 현재 seed 수와 후보 수는 미결정이다.
+- 실측 4,655.510초/config을 적용하면 exhaustive 1,023개 조합은 4,762,586.7초(약 55.1일)/seed, forward 55 + backward 10 + baseline 1의 greedy 최대 66 config은 307,263.7초(85.35시간, 3.56일)/seed로 예상된다. 두 값은 projection이다.
+- 이에 **forward + backward greedy**를 선택하고 exhaustive 조합은 실행하지 않는다. Broad search는 후보당 1 seed를 사용하고 최종 finalist 한 개만 총 3 seeds로 확인한다. 세 seed 결과는 stability heuristic으로 사용하며 formal confidence interval로 해석하지 않는다.
 - I2와 I4는 runnable이다. `fit_catboost`는 I3/I4를 포함한 행마다 helper가 발급한 immutable materialization과의 item key, trip partition, feature 값 일치를 확인한다. `inner-train` 문자열만으로는 fit을 허용하지 않는다.
 
-첫 실제 search 축은 negative sampling이다. 다른 feature/objective 조건을 고정하고 먼저 1×에서 uniform, popularity-weighted, mixed, hard 네 전략을 비교하는 좁은 screening을 제안한다. 2×/4×/8×/16× 확장은 measured runtime과 1× 결과를 확인한 뒤 정한다. 이 제안은 아직 실행되지 않았으며, actual cost를 확인하기 전에는 sampling 탐색도 시작하지 않는다.
+첫 실제 search 축은 negative sampling이다. 다른 조건을 고정하고 1×에서 uniform, popularity-weighted, mixed, hard 네 전략을 비교한다. Uniform baseline은 현재 run을 재사용하고 나머지 세 configuration을 실행한다. 2×/4×/8×/16× ratio 확장 예산은 이 screen의 runtime과 결과를 본 뒤 별도 결정한다. 이 search는 아직 시작하지 않았다.
 
 해석을 위해 best configuration 하나만 남기지 않고 최소 다음 비교도 보존한다.
 
@@ -248,14 +285,13 @@ sampling, feature, objective를 먼저 잠근 뒤 CatBoost 세부 설정을 조�
 - learning_rate
 - regularization 계열
 
-구체적인 search space는 #82에서 prototype runtime과 과적합 패턴을 확인한 뒤 정한다. 성능 근거 없이 임의 숫자를 지금 확정하지 않는다.
+구체적인 search space는 objective search 결과와 과적합 패턴을 확인한 뒤 정한다. 후보 수가 정해지면 configuration당 4,655.510초를 초기 projection 단가로 사용하되, 실제 비용은 별도 측정한다.
 
 ## Stage 6 — Seed 반복
 
-seed 수는 실행시간을 보고 정한다.
+Broad search 후보마다 seed 1개를 사용한다. 선택된 최종 configuration 한 개만 총 3 seeds로 확인한다.
 
-- 넓은 탐색: 적은 seed로 후보를 줄인다.
-- 최종 후보: 여러 seed로 다시 실행해 평균과 변동을 확인한다.
+이미 screening에서 실행한 seed를 재사용하면 finalist에는 2회 추가 run이 필요하다. 이 세 seed는 stability heuristic이며 formal CI가 아니다.
 
 sampling seed와 CatBoost random_seed는 run metadata에서 재현 가능해야 한다.
 
@@ -346,4 +382,4 @@ synthetic unit test로 다음을 확인한다.
 - group contiguity와 binary label
 - VL tuning 금지 protocol
 
-실제 AI Hub Stage 1 prototype smoke 지표는 위에 기록했으며, 이는 feasibility 결과다. 전체 sampling/feature/objective/hyperparameter search, multi-seed 비교와 VL 최종 평가는 아직 수행하지 않았다.
+실제 AI Hub Stage 1 prototype smoke와 optimized full-TL scoring benchmark는 위에 기록했으며, feasibility와 search-budget 결정 근거다. Sampling/feature/objective/hyperparameter search와 final three-seed 확인은 아직 수행하지 않았다. VL은 이번 checkpoint에서 확인하거나 읽지 않았다.

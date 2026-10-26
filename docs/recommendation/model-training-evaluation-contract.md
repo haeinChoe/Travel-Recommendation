@@ -1,7 +1,7 @@
 # Cold-user POI ranking 학습·평가 계약
 
 **관련 Issue:** #41, #79, #80, #81, #82, #83
-**현재 상태:** #80 traveler split·I3/I4 경계와 #81 I2 계약이 반영됐고, PR #88에서 #82 runner와 Stage 1 수도권 TL smoke를 완료했다. 현재 checkpoint에서 bounded scoring 최적화와 synthetic parity를 검증했다. 최적화된 코드의 full actual-TL 재실행, search 방식과 seed budget은 아직 미결정이다.
+**현재 상태:** #80 traveler split·I3/I4 경계와 #81 I2 계약이 반영됐고, PR #88에서 #82 runner와 Stage 1 수도권 TL smoke를 완료했다. #82 scoring 최적화와 full 수도권 TL inner-validation 재측정에서 #88과 metric parity를 확인했다. 실측 비용에 따라 feature search는 forward + backward greedy, broad search는 후보당 1 seed, 최종 configuration은 총 3 seeds로 결정했다. 다음은 negative sampling search다.
 
 ## 이 문서가 답하려는 질문
 
@@ -44,7 +44,7 @@ POI score → Top-K ranking
 - #81 I2 Administrative Location 계약 완료: `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용한다. 실제 AI Hub coverage/conflict/provenance 감사만 후속 입력 확보 후 수행한다.
 - #80 I4 Historical POI의 inner-train-safe 재계산 helper 구현·테스트 완료. PR #88에서 #82 runner의 TL visit-event input 연결을 완료했다.
 - sampling / feature group / objective의 실제 최종 선택: #82
-- seed 반복 횟수: #82에서 runtime 확인 후 결정
+- seed budget: broad search 후보당 1 seed, 잠글 최종 configuration 총 3 seeds (#82 runtime benchmark 근거)
 - bootstrap: 현재 데이터 기준 trip/request 단위를 기본으로 하고, #83에서 입력 데이터와 traveler identity 전제가 유지되는지 확인한 뒤 신뢰구간 설정을 확정한다.
 
 남은 항목은 설계 누락이 아니라 #82/#83의 실제 실험 결과로 결정하도록 분리한 항목이다.
@@ -54,7 +54,7 @@ POI score → Top-K ranking
 1. #79 완료: 계약과 synthetic experiment harness를 구현했다.
 2. #80 완료: traveler-trip 분포 감사, traveler group split, inner-train I3/I4 재계산 경계를 구현·검증했다.
 3. #81 완료: canonical administrative location(I2) 계약과 synthetic reconciliation을 구현·검증했다.
-4. **#82 진행:** PR #88 runner smoke 이후 scoring runtime을 최적화하고 같은 TL inner-validation에서 재측정한다. 그 비용을 확인한 뒤 sampling → feature → objective → hyperparameter 순서로 비교한다. 최적화된 full actual-TL benchmark와 search/seed budget은 아직 미결정이다.
+4. **#82 진행:** PR #88 runner smoke 이후 scoring runtime을 최적화하고 같은 TL inner-validation에서 재측정했다. Metric parity를 확인했으며 measured full-configuration cost를 근거로 sampling → forward/backward greedy feature → objective → hyperparameter 순서와 1-seed screening / 3-seed final budget을 정했다. 다음 checkpoint에서 negative sampling부터 시작한다.
 5. configuration을 잠근 뒤 #83에서 처음 VL을 평가하고 bootstrap 신뢰구간을 계산한다.
 
 ---
@@ -301,7 +301,7 @@ PR #88은 `pyproject.toml`과 `uv.lock`에 CatBoost runtime dependency를 고정
 8. untouched VL final evaluation
 9. bootstrap confidence interval
 
-feature search는 runtime이 충분하면 exhaustive search를 사용한다. 비용이 크면 forward + backward greedy search로 축소한다.
+optimized full-TL benchmark가 4,655.510초/config이므로 feature search는 forward + backward greedy로 진행하고 exhaustive search는 하지 않는다. 열 개 group의 최대 66-config greedy 경로는 약 85.35시간/seed이며 1,023-config exhaustive는 약 55.1일/seed로 projection된다. Broad search는 후보당 1 seed, 최종 finalist 하나는 총 3 seeds로 확인한다. 세 seed는 stability heuristic이며 formal confidence interval이 아니다.
 
 ## 10. Bootstrap 리마인더
 
@@ -335,7 +335,7 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 - CatBoost thin adapter
 - machine-readable default protocol 출력
 
-#80의 traveler 감사와 #81의 synthetic I2 검증은 완료됐다. PR #88에서 #82 YetiRank prototype을 수도권 TL inner-validation 전체에 실행했다. 이번 scoring 최적화 branch의 full actual-TL 재실행은 아직 수행하지 않았으며, #83의 untouched VL 평가도 configuration lock 전에는 금지한다.
+#80의 traveler 감사와 #81의 synthetic I2 검증은 완료됐다. PR #88의 YetiRank prototype을 기준으로 scoring을 최적화하고 같은 수도권 TL inner-validation 전체를 재실행했다. Runtime은 4,655.510초, scoring은 4,394.086초, process peak RSS는 6,779 MiB였다. #88과 metric은 공개된 다섯째 소수점 정밀도에서 일치하며, #88 peak RSS는 기록되지 않아 비교할 수 없다. Search/seed budget은 protocol에 따라 결정 완료됐지만 실제 탐색과 final three-seed 확인은 아직 시작하지 않았다. #83의 untouched VL 평가는 configuration lock 전에는 금지한다.
 
 ## 확인된 사실 / 결정 / 한계
 
@@ -355,9 +355,9 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 ### 한계
 
 - #79는 actual AI Hub row를 읽지 않는다.
-- PR #88은 YetiRank prototype을 실제 수도권 TL inner-validation에 실행했지만, 이는 feasibility smoke이며 최종 모델 선택이나 일반화 성능 근거가 아니다. 이번 scoring 최적화의 full actual-TL 재실행은 아직 없다.
+- PR #88은 YetiRank prototype을 실제 수도권 TL inner-validation에 실행했지만, 이는 feasibility smoke이며 최종 모델 선택이나 일반화 성능 근거가 아니다. 이번 optimized scoring 재실행은 runtime 및 공개 정밀도 metric parity의 benchmark로 사용하고, 모델 선택 근거는 다음 search 축에서 마련한다.
 - #81 I2 코드 계약과 synthetic 구현은 준비됐으며, 승인된 입력으로 실제 coverage/conflict 감사는 아직 수행되지 않았다.
-- #80 traveler-trip aggregate 및 split leakage 검증은 완료했다. #82의 최적화된 full TL runtime, process peak RSS 및 #88 metric parity는 후속 actual-data run에서 확인해야 한다.
+- #80 traveler-trip aggregate 및 split leakage 검증은 완료했다. #82의 최적화된 full TL runtime, process peak RSS, 공개 precision metric parity, greedy/exhaustive 결정과 seed budget은 후속 actual-data run에서 확인해 문서화했다. Sampling/feature/objective/hyperparameter 결과는 아직 없다.
 
 ## 재현 참고
 
