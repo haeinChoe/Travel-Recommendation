@@ -1,193 +1,343 @@
 # JEV와 대화형 LLM 추천 서빙 비교
 
 **관련 Issue:** #90  
-**현재 상태:** 구현 완료, 실제 endpoint benchmark 전
+**현재 상태:** 공개 benchmark fixture 구현 완료, 실제 endpoint benchmark 전
 
 ## 한눈에 보기
 
 ### 이 문서가 답하려는 질문
 
-동일한 추천 요청과 후보 집합을 처리할 때 **JEV 기반 판단 모델**과 **대화형 LLM 기반 생성 모델**의 서빙 특성이 얼마나 다른지 비교한다.
+동일한 실제 sequential-recommendation 후보 집합을 처리할 때 **JEV 기반 판단 모델**과 **대화형 LLM 기반 생성 모델**의 서빙 특성과 ranking 결과가 얼마나 다른지 비교한다.
 
 ### 결론
 
-이 실험은 기존 CatBoost/AI Hub 추천 실험과 분리된 synthetic benchmark다. 실제 여행로그나 TourAPI 데이터를 읽지 않는다.
+초기 theme-overlap synthetic fixture는 adapter smoke test로만 유지한다. 실제 비교의 기본 fixture는 Hugging Face의 `sungjin-code/amazon-reviews-for-llm`이다.
 
-JEV는 대화문을 생성하는 모델이 아니라, 하나의 상태(state)에 대해 정해진 선택지 중 하나를 고르고 후보별 확률을 반환하는 **판단 전용 모델(decision language model)**로 사용한다. 이 harness에서는 Choice 확률 분포 전체를 후보 ranking으로 변환한다.
+이 데이터는 Amazon Reviews 2023에서 파생된 MIT licensed sequential recommendation dataset이며, 사용자의 과거 positive interaction을 바탕으로 같은 도메인의 후보 10개 중 실제 다음 positive item 1개를 찾는 문제를 제공한다.
 
-대화형 LLM은 같은 후보 정보를 보고 모든 후보 ID를 순서대로 반환하도록 요청한다. 생성 결과는 strict JSON으로 검증하고, 누락·중복·추가 후보가 있으면 실패로 집계한다.
+기본 실행은 test 381건 전체가 아니라 seed로 고정한 **24건만** 사용한다. 사용자의 최근 history도 최대 8개로 제한하고 candidate description 길이도 제한해 endpoint 비용을 작게 유지한다.
+
+JEV는 `Choice` probability distribution을 ranking으로 변환하고, conversational LLM은 같은 candidate text를 보고 strict JSON ranking을 생성한다.
 
 ### 현재 결정된 것
 
-- 두 backend는 같은 synthetic request와 candidate descriptions를 사용한다.
-- synthetic relevance는 사용자 선호 theme와 후보 theme의 겹치는 개수(0~2)다.
-- 품질 비교 지표는 NDCG@K와 HitRate@K다.
-- 서빙 비교 지표는 success rate, throughput, latency p50/p95/mean이다.
-- token usage는 endpoint가 usage metadata를 제공할 때만 집계한다.
-- 실제 API key 값은 CLI 인자가 아니라 환경변수 이름으로만 전달한다.
+- 기본 fixture: `sungjin-code/amazon-reviews-for-llm`
+- source license: MIT
+- 평가 split: source dataset의 test split
+- 기본 sample: 24 requests
+- candidate count: source가 제공하는 고정 10개
+- user context: target position 이전의 최근 positive history 최대 8개
+- ground truth: 실제 다음 4~5점 interaction 1개
+- candidate negatives: source dataset이 같은 domain에서 미상호작용 item으로 고정 생성
+- metric: NDCG@K, HitRate@K, MRR
+- serving metric: success rate, throughput, latency p50/p95/mean
+- token usage: endpoint가 usage metadata를 반환할 때만 기록
+- 다운로드 파일은 `results/` 아래 Git-ignored cache에 저장
+- 실제 다운로드 파일 SHA-256을 결과 metadata에 기록
 
 ### 아직 결정되지 않은 것
 
-- 어떤 JEV checkpoint/runtime을 최종 비교 대상으로 사용할지
-- 어떤 conversational LLM과 serving runtime을 사용할지
-- GPU, batch size, quantization, concurrency를 어떤 조건으로 고정할지
-- 실제 서비스 후보 수를 반영한 candidate-count sweep 범위
+- 실제 JEV checkpoint/runtime
+- 실제 conversational LLM/runtime
+- 동일 GPU에서 순차 비교할지, 동등한 별도 장비를 사용할지
+- warm-up 횟수와 반복 횟수
+- 실제 endpoint 기준 최종 concurrency sweep
 
 ### 다음 행동
 
-동일 장비 또는 비교 가능한 격리 환경에서 후보 수와 concurrency를 단계적으로 올리며 실제 endpoint benchmark를 실행한다.
+JEV와 conversational LLM endpoint가 준비되면 동일 24-request fixture로 smoke run을 수행한 뒤, 필요할 경우 같은 sample을 유지한 채 concurrency만 단계적으로 올린다.
 
-## 필요한 용어
+## 1. 왜 synthetic theme 문제를 기본값에서 내렸는가
 
-- **판단 언어 모델(decision language model)**: 자유로운 문장을 생성하기보다 미리 정의된 선택/점수/예·아니오 같은 구조화된 결정을 반환하는 모델.
-- **JEV System One**: `POST /v1/systemone` 형식으로 `state`와 typed `questions`를 받아 구조화된 `answers`를 반환하는 인터페이스.
-- **대화형 LLM(conversational LLM)**: chat completion 형식으로 자연어 출력을 생성하는 일반 목적 언어 모델. 이 benchmark에서는 JSON ranking을 생성하도록 제한한다.
-- **후보 집합(candidate set)**: 한 추천 요청에서 순위를 매길 대상 아이템 목록.
-- **NDCG@K**: 관련도가 높은 아이템을 상위에 둘수록 높은 값을 주는 ranking metric.
+초기 fixture는 사용자와 candidate가 각각 theme 두 개를 가지고 overlap 개수를 relevance로 사용하는 deterministic toy problem이었다.
 
-## 1. 비교 구조
+이 방식은 다음을 확인하기에는 좋다.
+
+- adapter request/response shape
+- JEV probability parsing
+- LLM JSON parser
+- metric 계산
+- latency reporter
+
+하지만 실제 추천 문제의 핵심인 **사용자의 과거 sequence에서 다음 선택을 추론하는 문제**가 없다. 따라서 model quality 비교의 기본 fixture로 쓰지 않는다.
+
+`--fixture-source synthetic`으로 계속 사용할 수 있지만 smoke test 용도다.
+
+## 2. 공개 benchmark
+
+Source:
 
 ```text
-Synthetic request generator
+Hugging Face
+sungjin-code/amazon-reviews-for-llm
+derived from Amazon Reviews 2023
+license: MIT
+```
+
+이 dataset은 Books, CDs_and_Vinyl, Movies_and_TV, Video_Games 네 domain을 포함한다. rating 4 이상 interaction만 유지하므로 history와 target은 source build에서 positive interaction으로 취급한다.
+
+사용자별 interaction은 시간순으로 정렬된 뒤 train/valid/test가 8:1:1 비율로 나뉜다. test row마다 candidate 10개가 이미 제공된다.
+
+```text
+past positive history
         |
-        +------------------------------+
-        |                              |
-        v                              v
-JEV adapter                    Conversational LLM adapter
-POST /v1/systemone             POST /v1/chat/completions
-Choice criteria                JSON ranking generation
-        |                              |
-candidate probabilities                |
-        |                              |
-        +----------> canonical ranking <+
-                       |
-                       v
-        latency / throughput / validity
-               NDCG@K / HitRate@K
+        v
+test interaction
+        |
+        +--> correct next item (1)
+        |
+        +--> same-domain sampled alternatives (9)
 ```
 
-JEV 경로에서는 후보 ID를 Choice의 `criteria` key로 사용하고, 후보 설명을 criteria description으로 전달한다. 응답의 `probabilities`가 모든 후보를 정확히 포함할 때만 성공으로 본다.
+source dataset은 negative candidate에서 해당 사용자가 전체 sequence에서 interaction한 item을 제외한다. ground truth 위치도 candidate list 안에서 섞여 있어 특정 index를 고르는 방식으로 점수를 얻을 수 없다.
 
-LLM 경로에서는 `{"ranking":["id1","id2",...]}`만 허용한다. Markdown code fence, 설명 문장, 후보 누락, 중복, 미등록 후보가 있으면 benchmark 성공으로 세지 않는다. 생성형 모델의 출력 파싱 비용과 schema 불안정성도 서빙 특성의 일부로 보기 때문이다.
+## 3. benchmark용 소량 추출
 
-## 2. synthetic relevance
-
-각 요청은 두 개의 선호 theme를 가진다. 각 후보도 두 개의 theme를 가진다.
+대용량 benchmark가 목적이 아니므로 기본값은 24건이다.
 
 ```text
-relevance(candidate) = | preferred_themes ∩ candidate_themes |
+test rows: 381
+      |
+      v
+group by domain
+      |
+seeded shuffle
+      |
+round-robin selection
+      |
+24 requests
 ```
 
-따라서 relevance는 0, 1, 2 중 하나다. 모든 후보가 0인 요청은 첫 후보를 강제로 완전 일치시켜 최소 한 개의 relevant candidate가 존재하도록 한다.
+가능한 한 네 domain이 고르게 포함되도록 domain별 round-robin selection을 사용한다.
 
-이 정답은 **실제 여행 선호도 ground truth가 아니다.** 두 backend가 같은 명시적 규칙을 얼마나 잘 복원하는지 확인하기 위한 synthetic task다.
+각 request에 target 이후 history가 섞이지 않도록:
 
-## 3. 실행
+```text
+history.pos < target.pos
+```
 
-기본값은 로컬 JEV-compatible endpoint와 OpenAI-compatible chat endpoint를 가정한다.
+조건을 적용하고, 그중 가장 최근 8개만 사용한다.
+
+원래 Amazon `user_id`, `asin`, `parent_asin`은 model prompt나 benchmark report에 사용하지 않는다. benchmark 내부 candidate는 요청별 `candidate-00` ~ `candidate-09`로 다시 이름 붙인다.
+
+## 4. 내려받는 데이터
+
+전체 source repository를 clone하지 않는다. 다음 세 파일만 받는다.
+
+```text
+interactions.parquet
+test.parquet
+items_text.parquet
+```
+
+역할은 다음과 같다.
+
+| 파일 | 사용 목적 |
+| --- | --- |
+| `interactions.parquet` | target 이전 사용자 history 구성 |
+| `test.parquet` | 10개 candidate와 ground truth |
+| `items_text.parquet` | history/candidate title과 description |
+
+기본 cache:
+
+```text
+results/issue-90/hf-amazon-llm/
+```
+
+`results/`는 Git에서 제외된다. benchmark JSON에는 세 파일의 SHA-256만 기록해 실제 비교에서 동일 파일을 사용했는지 확인한다.
+
+## 5. 모델에 전달되는 요청
+
+예시는 구조만 보여준다.
+
+```text
+This is a sequential recommendation task.
+The candidate domain is Books.
+
+The user's recent positively rated/reviewed history,
+oldest to newest, is:
+
+1. <past item title>: <description>
+2. <past item title>: <description>
+...
+8. <past item title>: <description>
+
+Rank all candidates by which item is most likely to be
+the user's next positively rated/reviewed item.
+```
+
+후보 10개는 양쪽 backend에 동일한 title/description으로 전달한다.
+
+candidate description은 기본 320자로 자른다. 이는 긴 product description 때문에 token/cost가 과도하게 증가하는 것을 막기 위한 serving benchmark 조건이다.
+
+## 6. JEV 경로
+
+```text
+RecommendationRequest
+      |
+      v
+Choice question
+      |
+POST /v1/systemone
+      |
+      v
+probability per candidate
+      |
+descending sort
+      |
+      v
+RankingResult
+```
+
+모든 candidate에 probability가 있어야 성공이다. 누락되거나 범위를 벗어난 probability가 있으면 실패로 집계한다.
+
+## 7. Conversational LLM 경로
+
+```text
+RecommendationRequest
+      |
+      v
+chat prompt
+      |
+POST /v1/chat/completions
+      |
+      v
+{"ranking":[...]}
+      |
+strict parser
+      |
+      v
+RankingResult
+```
+
+candidate 누락, 중복, 알 수 없는 candidate, Markdown fence, 추가 field가 있으면 실패로 집계한다.
+
+이 정책은 생성형 model의 output-contract 안정성을 serving 특성의 일부로 보기 위한 것이다.
+
+## 8. 품질 지표
+
+각 source test row에는 relevant candidate가 정확히 하나 있다.
+
+따라서 다음 지표를 사용한다.
+
+- **NDCG@K**: ground-truth item이 상위에 있을수록 높은 점수
+- **HitRate@K**: ground-truth item이 top K 안에 들어왔는지
+- **MRR(Mean Reciprocal Rank)**: ground-truth rank가 1이면 1, 2이면 1/2, 10이면 1/10
+
+특히 이 benchmark에서는 MRR이 직관적인 핵심 ranking metric이다.
+
+## 9. 실행
+
+endpoint가 준비되면 기본 benchmark는 다음과 같이 실행한다.
 
 ```bash
 python scripts/recommendation/serving_benchmark.py \
-  --requests 100 \
-  --candidates 16 \
-  --concurrency 8 \
+  --fixture-source hf-amazon-llm \
+  --requests 24 \
+  --history-size 8 \
+  --description-chars 320 \
+  --concurrency 1 \
   --k 5 \
   --jev-base-url http://localhost:8790 \
-  --jev-model jev-latest \
+  --jev-model <JEV_MODEL> \
   --llm-base-url http://localhost:8000/v1 \
-  --llm-model <MODEL_ID>
+  --llm-model <LLM_MODEL>
 ```
 
-인증이 필요한 경우 secret 자체를 명령행에 넣지 않는다.
+인증이 필요한 경우 secret 자체를 argument로 넘기지 않는다.
 
 ```bash
 export JEV_API_KEY=...
 export LLM_API_KEY=...
 
 python scripts/recommendation/serving_benchmark.py \
-  --llm-model <MODEL_ID> \
+  --llm-model <LLM_MODEL> \
   --jev-api-key-env JEV_API_KEY \
   --llm-api-key-env LLM_API_KEY
 ```
 
-출력은 JSON 한 개이며 다음을 포함한다.
+첫 실행에서 세 parquet file만 cache에 내려받는다. 이후 실행은 cache를 재사용한다.
 
-- 요청 수, 후보 수, seed, concurrency
-- 성공/실패 수와 success rate
-- elapsed time과 requests/sec
-- latency p50/p95/mean
-- NDCG@K
-- HitRate@K
-- endpoint가 제공한 input/output token 합계
-- 최대 10개의 실패 샘플(type/message)
+synthetic smoke fixture는 다음처럼 선택한다.
 
-## 4. 비교할 때 고정해야 하는 조건
+```bash
+python scripts/recommendation/serving_benchmark.py \
+  --fixture-source synthetic \
+  --requests 20 \
+  --candidates 8 \
+  --llm-model <LLM_MODEL>
+```
 
-단순히 JEV와 LLM의 숫자를 한 번 실행해 비교하면 모델 자체의 차이와 serving runtime 차이가 섞인다. 실제 성능 비교에서는 최소한 다음 조건을 함께 기록한다.
+## 10. 결과 JSON
 
-- model/checkpoint와 정확한 version
-- GPU/CPU와 장비 수
-- serving runtime과 version
-- quantization 여부
-- batch/scheduler 설정
-- 후보 수
-- 요청 수
-- concurrency
-- network path
-- warm-up 여부
+결과에는 다음을 포함한다.
+
+- fixture source
+- dataset repository / revision
+- selected request count
+- history size
+- candidate count
+- source parquet SHA-256
 - seed
+- concurrency / K
+- backend별 success/failure
+- throughput
+- latency p50/p95/mean
+- NDCG@K / HitRate@K / MRR
+- token usage
+- 실패 sample
 
-같은 장비에서 실행하기 어렵다면 결과를 "모델 A가 모델 B보다 빠르다"로 일반화하지 않고 **해당 배포 조건에서 관측된 end-to-end 결과**라고 기록한다.
+raw user identifier나 source local path는 결과에 넣지 않는다.
 
-## 5. 권장 sweep
+## 11. 공정 비교 조건
 
-첫 실제 실행은 작은 범위부터 시작한다.
+실제 latency 비교에서는 model family 외 요인을 함께 기록해야 한다.
 
-| 단계 | 후보 수 | concurrency | 목적 |
-| --- | ---: | ---: | --- |
-| smoke | 8 | 1 | schema/adapter 정상 동작 |
-| single-user latency | 8, 16, 32 | 1 | p50/p95 비교 |
-| moderate load | 8, 16, 32 | 8 | batching 효과 확인 |
-| pressure | 16, 32 | 32 | throughput과 tail latency 확인 |
+- model/checkpoint/version
+- GPU/CPU 및 장비 수
+- serving runtime/version
+- quantization
+- batch/scheduler 설정
+- request count
+- concurrency
+- warm-up
+- network path
+- source file SHA-256
 
-각 조건은 동일 fixture seed로 두 backend에 반복한다.
+서로 다른 장비에서 실행했다면 "JEV가 LLM보다 N배 빠르다"처럼 model 자체의 효과로 일반화하지 않고, 해당 deployment 조건의 end-to-end 결과라고 기록한다.
 
-## 6. 한계
+## 12. 한계
 
 ### 확인된 사실
 
-- harness는 실제 AI Hub/TourAPI 데이터를 읽지 않는다.
-- JEV와 LLM은 동일한 synthetic candidate information을 받는다.
-- JEV 결과는 후보별 probability distribution을 ranking으로 바꾼다.
-- LLM 결과는 strict JSON permutation일 때만 성공이다.
+- source benchmark는 Amazon product recommendation이며 여행 추천 dataset이 아니다.
+- source build의 positive interaction은 rating 4~5다.
+- test candidate는 10개이며 ground truth는 정확히 하나다.
+- user history와 item text를 이용해 text-based ranker가 평가 가능하다.
 
 ### 해석
 
-이 구조는 **서빙 방식 자체의 차이**를 보기 위한 것이다. JEV가 생성 토큰 없이 bounded choice를 반환하는 구조가 latency/throughput/validity에서 어떤 효과를 보이는지 비교하기에 적합하다.
+이 benchmark는 실제 travel domain quality를 재현하려는 목적이 아니다. JEV와 conversational LLM을 **동일한 실제 recommendation ranking problem**에서 소량 비교하기 위한 중간 benchmark다.
 
 ### 미결정 / 추가 검증 필요
 
-synthetic NDCG가 높다고 실제 여행 추천 품질이 좋다는 뜻은 아니다. 실제 제품 품질 비교를 하려면 별도의 candidate/exposure/ground-truth 계약과 실제 평가 데이터가 필요하다.
+Amazon benchmark에서 좋은 ranking을 보였다고 실제 여행 POI 추천 품질이 좋다는 뜻은 아니다.
 
-또한 서로 다른 hardware/runtime에서 나온 latency 차이는 모델 구조만의 효과로 해석할 수 없다.
+또한 source dataset은 active users를 대상으로 하고 item overlap이 낮다. 따라서 이 결과는 일반 recommender 전체 성능보다는 text-conditioned cold-item ranking 성격이 강하다.
 
-## 7. 검증
+## 13. 검증
 
-네트워크 없는 단위 테스트는 다음을 확인한다.
+네트워크 없는 테스트는 다음을 검증한다.
 
-- deterministic synthetic fixture
-- JEV Choice request shape와 probability ranking 변환
-- partial JEV probability response 거부
-- conversational LLM strict JSON ranking 검증
-- OpenAI-compatible request shape
-- NDCG@K / HitRate@K
-- success/failure aggregate reporter
+- JEV/LLM adapter contract
+- strict LLM JSON parsing
+- deterministic synthetic fallback
+- source parquet schema fixture loading
+- target 이후 history 제외
+- 10 distinct candidates
+- ground-truth candidate invariant
+- description truncation
+- Git-ignored download cache reuse
+- NDCG / HitRate / MRR 계산
 
-```bash
-python -m unittest tests.test_serving_benchmark -v
-python -m py_compile \
-  scripts/recommendation/serving_benchmark.py \
-  tests/test_serving_benchmark.py
-```
-
-실제 JEV/LLM endpoint 호출은 이 Issue 구현 검증에 포함하지 않는다. 유료 API 사용이나 특정 provider credential은 별도 실행 결정으로 남긴다.
+실제 Hugging Face 다운로드와 JEV/LLM endpoint 호출은 endpoint/runtime이 준비된 환경에서 실행한다.
