@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Synthetic serving benchmark for JEV-style decisions vs conversational LLM ranking.
+"""Serving benchmark for JEV-style decisions vs conversational LLM ranking.
 
-This module deliberately avoids project/raw data. Both backends receive the same
-synthetic recommendation request and candidate descriptions. JEV returns a typed
-Choice probability distribution; the conversational LLM returns a JSON ranking.
+The default fixture is a small public sequential-recommendation benchmark derived
+from Amazon Reviews 2023. The original synthetic theme fixture remains available
+for smoke testing. Both backends always receive the same request and candidates.
 """
 
 from __future__ import annotations
@@ -19,7 +19,10 @@ import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
+
+from scripts.recommendation.hf_amazon_benchmark import prepare_hf_amazon_fixture
 
 
 THEMES = (
