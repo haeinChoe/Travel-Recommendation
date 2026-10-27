@@ -1110,6 +1110,7 @@ def score_inner_validation_queries(
     progress_total: int = 0,
     inference_mode: str = "dataframe",
     predict_thread_count: int | None = None,
+    prediction_tree_end: int | None = None,
 ) -> StreamingEvaluationResult:
     """Score the region inventory in bounded chunks, one query at a time.
 
@@ -1118,6 +1119,11 @@ def score_inner_validation_queries(
     against the helper's split before scoring. The row bound applies to each
     prediction frame; the immutable prepared catalog itself remains resident.
     """
+    if prediction_tree_end is not None:
+        if isinstance(prediction_tree_end, bool) or not isinstance(prediction_tree_end, int):
+            raise ValueError("prediction_tree_end must be an integer")
+        if not 1 <= prediction_tree_end <= model.tree_count_:
+            raise ValueError("prediction_tree_end exceeds fitted tree range")
     if max_rows_per_batch <= 0:
         raise ValueError("max_rows_per_batch must be positive")
     if inference_mode not in {
@@ -1286,6 +1292,8 @@ def score_inner_validation_queries(
                     {"thread_count": predict_thread_count}
                     if predict_thread_count is not None else {}
                 )
+                if prediction_tree_end is not None:
+                    predict_kwargs.update(ntree_start=0, ntree_end=prediction_tree_end)
                 scores = model.predict(prediction_data, **predict_kwargs)
                 predict_seconds = time.perf_counter() - predict_started
                 if profiler is not None:

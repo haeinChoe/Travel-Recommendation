@@ -1,7 +1,7 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
 **관련 Issue:** #79, #82
-**현재 상태:** PR #88/#89의 과거 full-run은 TN_POI_MASTER 모든 고유 ID에 source-package region을 부여한 잘못된 geography scope였다. Runner는 #81 canonical administrative location과 versioned `poi-catalog-candidate-v1` 정책으로 후보 geography를 분리했다. Corrected 수도권 TL full benchmark는 3,052,797개 후보·432 validation query·1,318,808,304 scored rows에서 total 1,139.035초, runner-scoped scoring 959.962초, peak RSS 3,786 MiB였다. 이 비용을 기준으로, 향후 full-catalog search가 end-to-end 300초 이내가 되면 forward + 정확히 한 번의 backward cleanup pass, broad screen 1 seed/config, 선택된 finalist 3 total seeds를 쓴다. 현재는 scoring이 cutoff를 넘으므로 그 conditional plan의 실행을 보류한다. 다음 checkpoint는 별도의 Candidate Generation → CatBoost reranking 설계와 runtime 재측정이다. VL은 읽지 않았다.
+**현재 상태:** PR #88/#89의 과거 full-run은 TN_POI_MASTER 모든 고유 ID에 source-package region을 부여한 잘못된 geography scope였다. Runner는 #81 canonical administrative location과 versioned `poi-catalog-candidate-v1` 정책으로 후보 geography를 분리했다. Corrected 수도권 TL full benchmark는 3,052,797개 후보·432 validation query·1,318,808,304 scored rows에서 total 1,139.035초, runner-scoped scoring 959.962초, peak RSS 3,786 MiB였다. 이 비용을 기준으로, 향후 full-catalog search가 end-to-end 300초 이내가 되면 forward + 정확히 한 번의 backward cleanup pass, broad screen 1 seed/config, 선택된 finalist 3 total seeds를 쓴다. 현재는 scoring이 cutoff를 넘으므로 그 conditional plan의 실행을 보류한다. 다음 checkpoint는 고정된 1000-tree 모델의 prefix inference(처음 N개 트리만 사용하는 추론) 비용 검증이다. 충분한 개선이 없을 때만 Candidate Generation → CatBoost reranking 설계로 넘어간다. VL은 읽지 않았다.
 
 ## 이 문서가 답하려는 질문
 
@@ -52,7 +52,7 @@ VL 최종 평가 (#83)
 
 ## 다음 행동
 
-#80/#81, scorer profiling, corrected actual-TL benchmark, synthetic/bounded parity와 full-run search-cost 계산을 완료했다. PR #88/#89의 과거 full-run은 candidate geography 오류 때문에 corrected baseline을 대체하지 않는다. Corrected default scorer도 16.0분이 걸려 5분 cutoff를 넘는다. 다음 checkpoint는 candidate generation과 CatBoost reranking을 분리하는 설계를 비교하고 전체 검증계약 아래 runtime을 다시 측정하는 것이다. 그 설계 전에는 negative-sampling search를 시작하지 않는다.
+#80/#81, scorer profiling, corrected actual-TL benchmark, synthetic/bounded parity와 full-run search-cost 계산을 완료했다. PR #88/#89의 과거 full-run은 candidate geography 오류 때문에 corrected baseline을 대체하지 않는다. Corrected default scorer도 16.0분이 걸려 5분 cutoff를 넘는다. 다음 checkpoint는 tree-budget study이며, 같은 후보·평가 계약에서 추론 트리 수만 줄여 비용을 측정한다. 그 설계 전에는 negative-sampling search를 시작하지 않는다.
 
 ---
 
@@ -241,7 +241,7 @@ Compared with the same-scope uncached 131,072-row full run, final frame build fe
 
 Final process RSS snapshots (MiB): after Master load 2,805; after geography filter 1,993; after materialization 3,041; after PreparedItemCatalog 3,446; after train frame 3,481; after fit 3,565; 500 ms sampled scoring RSS peak 3,687; after scoring 3,547. Process peak across all stages was 3,786 MiB.
 
-The evidence classifies the result as **A — inference-bound**: prediction accounts for 75.4% of scoring wall, with DataFrame construction the secondary cost at 17.0%. Top-K is 7.5%; context prep and metrics are negligible. The cache reduces frame construction but the resulting 959.962초 full scoring time remains far above the 5-minute cutoff. The next action is a separate Candidate Generation → CatBoost reranking design. Do not start sampling search or implement candidate retrieval in this checkpoint.
+The evidence classifies the result as **A — inference-bound**: prediction accounts for 75.4% of scoring wall, with DataFrame construction the secondary cost at 17.0%. Top-K is 7.5%; context prep and metrics are negligible. The cache reduces frame construction but the resulting 959.962초 full scoring time remains far above the 5-minute cutoff. The next action is the tree-budget checkpoint below; Candidate Generation → CatBoost reranking design remains conditional on its evidence. Do not start sampling search or implement candidate retrieval in this checkpoint.
 
 | Metric | K | PR #88 historical scope | Corrected geography scope | 비교 |
 | --- | ---: | ---: | ---: | --- |
@@ -260,7 +260,7 @@ The evidence classifies the result as **A — inference-bound**: prediction acco
 
 #### Conditional search strategy와 seed budget 결정
 
-이전 PR #89의 geography-unfiltered timing과 uncached configuration cost를 사용한 projection은 superseded다. Corrected runner-scoped full run은 1,139.035초/configuration (18.98분)이 걸렸고 scoring stage는 959.962초였다. **Conditional strategy decision:** 이후 Candidate Generation → CatBoost reranking 설계 뒤에도 full-catalog evaluation을 사용하고 end-to-end 1-config runtime이 300초 이하면, forward selection 뒤 정확히 한 번 backward cleanup pass를 사용한다. Broad screen은 1 seed/config이며, 선택된 finalist는 해당 configuration의 screen seed를 재사용해 총 3 seeds로 평가한다. Backward pass는 선택 집합의 각 feature를 한 번 제거 평가하고 종료하며 반복 제거/재진입은 하지 않는다. Runtime gate가 충족되기 전까지 이 계획은 실행 보류 상태다. 아래 비용은 측정된 1,139.035초/configuration을 그대로 적용한 산술이며 재시도·환경 변동은 포함하지 않는다.
+이전 PR #89의 geography-unfiltered timing과 uncached configuration cost를 사용한 projection은 superseded다. Corrected runner-scoped full run은 1,139.035초/configuration (18.98분)이 걸렸고 scoring stage는 959.962초였다. **Conditional strategy decision:** tree-budget checkpoint 이후에도 full-catalog evaluation을 사용하고 end-to-end 1-config runtime이 300초 이하면, forward selection 뒤 정확히 한 번 backward cleanup pass를 사용한다. Broad screen은 1 seed/config이며, 선택된 finalist는 해당 configuration의 screen seed를 재사용해 총 3 seeds로 평가한다. Backward pass는 선택 집합의 각 feature를 한 번 제거 평가하고 종료하며 반복 제거/재진입은 하지 않는다. Runtime gate가 충족되기 전까지 이 계획은 실행 보류 상태다. 아래 비용은 측정된 1,139.035초/configuration을 그대로 적용한 산술이며 재시도·환경 변동은 포함하지 않는다.
 
 - **Exhaustive:** 1,023개 non-empty feature-group 조합 × 1,139.035초 = 1,165,232.805초 (약 13.49일)/seed.
 - **Chosen conditional feature strategy:** forward 55회 + exactly one backward cleanup pass에서 최대 10회 제거 평가 + baseline 1회 = 최대 66 configuration-equivalents, 75,176.310초 (약 20.88시간)/seed. Backward는 forward 선택 집합에서 각 선택 그룹을 한 번씩 제거 평가하고 종료하며 iterative re-entry는 없다.
@@ -268,13 +268,13 @@ The evidence classifies the result as **A — inference-bound**: prediction acco
 - **Conditional finalist seed budget:** broad screen은 1 seed/config, 선택된 configuration은 해당 screen seed를 포함해 총 3 seeds로 평가한다. 추가 두 번의 repeat는 약 0.63시간이다. 세 seed는 stability heuristic이지 formal confidence interval이 아니다.
 - **Conditional plan total / remaining:** completed uniform baseline 1 + remaining 3 sampling configs + greedy baseline 이후 최대 65개 추가 feature configs + finalist 2-seed repeats = 71 configuration-equivalents, 약 22.46시간. 완료된 baseline을 빼면 70 equivalents, 약 22.15시간이 남는다. Ratio 확장, objective, hyperparameter와 재시도는 제외한다.
 
-비용 때문에 1,023개 exhaustive 조합 대신 future full-catalog search에는 위 greedy strategy를 선택했다. 단, 현재 1,139.035초 configuration cost는 300초 gate를 넘으므로 sampling/feature/objective/hyperparameter search와 seed repeats는 실행하지 않는다. Candidate Generation → CatBoost reranking 설계, 같은 candidate/evaluation 계약 검증, end-to-end runtime 재측정 후 300초 이하일 때만 conditional plan을 시작한다.
+비용 때문에 1,023개 exhaustive 조합 대신 future full-catalog search에는 위 greedy strategy를 선택했다. 단, 현재 1,139.035초 configuration cost는 300초 gate를 넘으므로 sampling/feature/objective/hyperparameter search와 seed repeats는 실행하지 않는다. Tree-budget checkpoint의 같은 candidate/evaluation 계약 검증과 end-to-end runtime 재측정 후 300초 이하일 때만 conditional plan을 시작한다.
 
 Coverage 진단은 필요한 privacy-safe aggregate만 기록하며, 기존 195-ID/245-pair missing-key 결과의 원인을 다시 조사하지 않는다. VL 평가는 포함하지 않는다.
 
 ## Stage 2 — Negative sampling search
 
-**상태: 미시작.** Final full-catalog cached scoring은 959.962초로 5분 cutoff를 넘는다. Candidate-generation/reranking 설계와 재측정 전까지 이 Stage 및 이후 search stage를 시작하지 않는다.
+**상태: 미시작.** Final full-catalog cached scoring은 959.962초로 5분 cutoff를 넘는다. Tree-budget checkpoint와 재측정 전까지 이 Stage 및 이후 search stage를 시작하지 않는다.
 
 ### 질문
 
@@ -336,10 +336,10 @@ C1 Region
 탐색 원칙:
 
 - Full-catalog을 유지한다는 가정 아래의 exhaustive 및 greedy 비용 projection은 위 **Search strategy와 seed budget 결정**에 기록했다. Feature search 계획을 실행하게 되면 backward cleanup은 단일 pass로 제한한다.
-- Full-catalog scorer는 cutoff를 넘으므로 위에서 정한 conditional full-catalog strategy와 seed budget은 실행 보류 상태다. Post-design end-to-end runtime이 300초 이하일 때 forward + exactly one backward cleanup pass, broad search 1 seed/config, selected finalist 3 total seeds를 적용한다.
+- Full-catalog scorer는 cutoff를 넘으므로 위에서 정한 conditional full-catalog strategy와 seed budget은 실행 보류 상태다. Post-checkpoint end-to-end runtime이 300초 이하일 때 forward + exactly one backward cleanup pass, broad search 1 seed/config, selected finalist 3 total seeds를 적용한다.
 - I2와 I4는 runnable이다. `fit_catboost`는 I3/I4를 포함한 행마다 helper가 발급한 immutable materialization과의 item key, trip partition, feature 값 일치를 확인한다. `inner-train` 문자열만으로는 fit을 허용하지 않는다.
 
-기존 search plan의 첫 축은 negative sampling이었으나 실행하지 않았다. Candidate-generation/reranking 설계와 end-to-end runtime 재측정 뒤에도 cutoff를 만족하면 그때 uniform, popularity-weighted, mixed, hard 1× screen을 다시 평가한다. Ratio 확장 계획도 미결정이다.
+기존 search plan의 첫 축은 negative sampling이었으나 실행하지 않았다. Tree-budget checkpoint와 end-to-end runtime 재측정 뒤에도 cutoff를 만족하면 그때 uniform, popularity-weighted, mixed, hard 1× screen을 다시 평가한다. Ratio 확장 계획도 미결정이다.
 
 해석을 위해 best configuration 하나만 남기지 않고 최소 다음 비교도 보존한다.
 
@@ -391,7 +391,7 @@ sampling, feature, objective를 먼저 잠근 뒤 CatBoost 세부 설정을 조�
 
 ## Stage 6 — Seed 반복
 
-Conditional seed decision: broad search candidate마다 1 seed/config을 사용하고, 선택된 finalist는 해당 configuration의 screen seed를 재사용해 총 3 seeds로 확인한다. 현재 full-catalog run이 cutoff를 넘으므로 retrieval/reranking 설계와 300초 gate 통과 전까지 seed 반복을 실행하지 않는다.
+Conditional seed decision: broad search candidate마다 1 seed/config을 사용하고, 선택된 finalist는 해당 configuration의 screen seed를 재사용해 총 3 seeds로 확인한다. 현재 full-catalog run이 cutoff를 넘으므로 tree-budget 결정과 300초 gate 통과 전까지 seed 반복을 실행하지 않는다.
 
 이미 screening에서 실행한 seed를 재사용하면 finalist에는 2회 추가 run이 필요하다. 이 세 seed는 stability heuristic이며 formal CI가 아니다.
 
@@ -484,4 +484,50 @@ synthetic unit test로 다음을 확인한다.
 - group contiguity와 binary label
 - VL tuning 금지 protocol
 
-실제 AI Hub Stage 1 prototype smoke, corrected full-TL scoring profile와 cached-item rerun은 위에 기록했다. Scoring이 5분 cutoff를 넘으므로 다음 단계는 retrieval/reranking architecture design이며, sampling/feature/objective/hyperparameter search와 final three-seed 확인은 아직 수행하지 않았다. VL은 이번 checkpoint에서 확인하거나 읽지 않았다.
+실제 AI Hub Stage 1 prototype smoke, corrected full-TL scoring profile와 cached-item rerun은 위에 기록했다. Scoring이 5분 cutoff를 넘으므로 다음 단계는 tree-budget study이며, sampling/feature/objective/hyperparameter search와 final three-seed 확인은 아직 수행하지 않았다. VL은 이번 checkpoint에서 확인하거나 읽지 않았다.
+
+
+## Issue #82 트리 예산 checkpoint (2026-10-27)
+
+**질문:** 후보 geography와 평가 계약을 유지하면서 CatBoost가 사용하는 트리 수만 줄여 full-config 실행을 300초 이내로 낮출 수 있는가?
+
+**현재 상태 / 결정:** 추론 범위 지정과 집계 전용 sweep을 구현하고 CatBoost 1.2.10 합성 검증을 수행했다. 현재 Work 실행 환경에는 승인된 수도권 TL 입력과 이전 fitted 모델/결과가 연결되지 않아 실제 8-query profile 및 432-query full run은 **미실행**이다. 따라서 screening budget은 선택하지 않았고 search 비용도 재계산하지 않는다. Broad search는 계속 보류한다. 실측 없이 Candidate Generation이 필요하다고 확정하지 않는다.
+
+- 보존 계약: 수도권 TL inner-validation, traveler split, 모든 validation positives, selected Q4/I2/I3/I4와 inner-train provenance, uniform 1×, YetiRank, seed 20261025, K=5/10/20 및 `(-score, item_id)` tie-break를 유지한다. VL은 읽지 않는다.
+- `prediction_tree_end=N`은 이미 학습된 모델에 `ntree_start=0, ntree_end=N`을 전달한다. 범위는 `[0,N)`이며 기본값 `None`은 기존 전체 모델 추론이다. 0을 전달해 CatBoost의 '전체 트리' 의미로 오해하지 않도록 거부한다.
+- Prefix inference truncation과 train-at-N(처음부터 N회만 학습)은 서로 다른 실행 의미다. 1000-tree YetiRank 합성 모델과 동일 데이터·설정·seed로 별도 학습한 250/500 모델은 이번 fixture에서 예측이 정확히 같았고 max absolute delta는 모두 0이었다. 자동 learning rate는 모두 0.029999999329447743이었다. 이는 해당 fixture 관측이며 실제 데이터나 다른 설정의 동등성을 보장하지 않는다. `copy().shrink(N)`과 prefix 예측도 정확히 같았다.
+- Sweep은 같은 fitted 모델·같은 query 순서로 1000 reference를 먼저 실행한다. 메모리 안의 top-K만 비교하여 overlap과 동일 위치 비율을 집계하고 식별자·점수 dump는 출력하지 않는다. 모든 12개 metric의 절대 delta와 상대 delta를 출력하며 baseline=0이면 상대 delta는 null이다.
+- RSS는 scoring 중 표본 peak, scoring 이후 RSS, process lifetime peak를 구분한다. 한 프로세스의 후속 budget process peak는 이전 run의 high-water mark를 포함할 수 있다.
+- `config_total_seconds_accounted`는 공유 preprocessing/fit 비용 한 번 + 각 budget의 measured scoring이다. 독립 프로세스 full-run total과 구분한다. 실제 gate 결정에는 선택 budget의 독립 end-to-end 측정을 추가 확인한다.
+
+실제 TL 결과는 아직 없으며 아래 항목은 모두 pending이다.
+
+| 트리 수 | scoring / predict / frame / top-K 시간 | rows/sec · RSS | 12개 metric · baseline delta | 실제 full run |
+| --- | --- | --- | --- | --- |
+| 100 | 미측정 | 미측정 | 미측정 | 미선택 |
+| 250 | 미측정 | 미측정 | 미측정 | 미선택 |
+| 500 | 미측정 | 미측정 | 미측정 | 미선택 |
+| 750 | 미측정 | 미측정 | 미측정 | 미선택 |
+| 1000 | corrected historical total 1139.035초 / scoring 959.962초 | 이전 baseline 참고 | 기존 표 참고; 이번 환경 재측정 없음 | 이번 checkpoint 미실행 |
+
+### 실제 데이터 환경에서 이어갈 절차
+
+1. 승인된 RAW_ROOT/CAPITAL_TL/CAPITAL_OTHER 역할과 provenance를 검증한다. Runner는 실행마다 같은 계약의 1000-tree 모델을 fit하고 그 객체를 모든 prefix run에 재사용한다. 이전 serialized 모델을 사용했다고 주장하지 않는다.
+2. 기존 8-query cohort로 `python -m scripts.recommendation.run_catboost_tl_smoke --region capital --mode profile --tree-budgets 100 250 500 750 1000 --time-limit-seconds 600`을 실행한다.
+3. 선형 비례를 가정하지 않고 실측 시간·메모리·12개 metric·rank stability를 비교한다. 가장 정보가 많은 reduced budget 최대 두 개만 선정한다. Full mode는 baseline 포함 최대 세 budget만 허용한다. 예: 250을 선정한 경우 `--mode full --tree-budgets 250 1000`.
+4. Full 432 query / 3,052,797 candidate / 1,318,808,304 scored rows와 계약이 같은지 확인한다. Metric마다 절대·상대 degradation을 모두 보고한다. Primary metric과 허용 degradation은 아직 잠기지 않았으므로 임의의 통과 임계값을 만들지 않는다.
+5. End-to-end ≤300초와 허용 가능한 품질 저하가 확인될 때만 screening budget 및 #82 search-cost projection을 제안한다. Finalist confirmation은 기본 1000 trees다. 합리적인 budget이 gate를 통과하지 못하면 다음 checkpoint를 Candidate Generation → CatBoost reranking **설계**로 제안한다. 이 checkpoint에서는 구현하지 않는다.
+
+상세 집계는 Git-ignored `results/issue-82/tree-budget/` 및 runner의 `results/experiments/catboost-ranking/issue82-tree-budget-*`에 둔다. 이번 합성 sweep은 `python -m scripts.recommendation.benchmark_catboost_tree_budget`, semantics 검증은 `python -m unittest tests.test_tree_budget`로 재현한다. 합성 시간과 품질은 실제 TL 비용이나 품질의 대용물이 아니다.
+
+### 합성 실행 경로 확인 (실제 TL 아님)
+
+2048개 합성 item, 8개 query, 16384 scored rows의 단일 sweep이다. 모든 12개 metric은 0이고 overlap/position agreement는 모두 1이다. 품질 보존이나 허용 degradation을 판단할 수 없는 fixture이며 아래 시간도 실제 TL 비용 예측에 사용하지 않는다. 실행 순서·캐시·작은 workload 영향을 포함하므로 선형 scaling을 가정하지 않는다.
+
+| Trees | scoring s | predict s | frame s | top-K s | rows/s | sampled RSS MiB | process peak MiB |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 100 | 0.04011 | 0.02233 | 0.01180 | 0.00240 | 408487 | 121.20 | 121.29 |
+| 250 | 0.03219 | 0.01791 | 0.00943 | 0.00222 | 509037 | 121.23 | 121.29 |
+| 500 | 0.03511 | 0.02085 | 0.00971 | 0.00218 | 466659 | 121.23 | 121.29 |
+| 750 | 0.03832 | 0.02415 | 0.00932 | 0.00194 | 427612 | 121.13 | 121.29 |
+| 1000 | 0.04740 | 0.02914 | 0.01170 | 0.00235 | 345685 | 121.34 | 121.29 |

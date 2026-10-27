@@ -562,7 +562,12 @@ def run(
     *,
     profile_scoring: bool = False,
     profile_sweep: bool = False,
+    tree_budgets: tuple[int, ...] = (),
 ) -> dict[str, object]:
+    if tree_budgets and (mode == "probe" or profile_sweep):
+        raise ValueError("Tree study requires profile/full without input sweep")
+    if mode == "full" and len(tree_budgets) > 3:
+        raise ValueError("Select at most two informative reduced budgets plus baseline")
     TELEMETRY.clear()
     total_start = time.monotonic()
     if _available_bytes() < MIN_AVAILABLE_BYTES:
@@ -758,7 +763,32 @@ def run(
         )
 
     result = None
-    if profile_sweep:
+    if tree_budgets:
+        from scripts.recommendation.tree_budget import run_tree_budget_sweep
+
+        shared_setup_seconds = phase - total_start
+        scoring_runs = run_tree_budget_sweep(
+            model, catalog, ground_truth, query_features=query_context,
+            config=catalog_config, budgets=tree_budgets,
+            batch_rows=PREDICTION_BATCH_ROWS,
+        )
+        for row in scoring_runs:
+            row["shared_setup_seconds"] = shared_setup_seconds
+            row["config_total_seconds_accounted"] = (
+                shared_setup_seconds + row["scoring_wall_seconds"]
+            )
+            row["total_accounting_note"] = "shared_setup_once_plus_measured_scoring_not_independent_process"
+        reference = next(row for row in scoring_runs if row["trees"] == ITERATIONS)
+        # The ordinary result wrapper describes the 1000-tree reference only.
+        from types import SimpleNamespace
+        result = SimpleNamespace(
+            query_count=reference["query_count"], candidate_count=reference["candidate_count"],
+            scored_rows=reference["scored_rows"], metrics=reference["metrics"],
+        )
+        _emit("evaluation", total_start, stage_seconds=time.monotonic()-phase,
+              query_count=result.query_count, candidate_count=result.candidate_count,
+              scored_rows=result.scored_rows)
+    elif profile_sweep:
         sweep_variants = [
             {
                 "name": f"dataframe_batch_{batch_rows}",
@@ -984,7 +1014,7 @@ def run(
             "contains only resolved canonical SIDO codes in the versioned ProductRegion policy"
         ),
         "telemetry": list(TELEMETRY),
-        "scoring_runs": scoring_runs if profile_sweep else None,
+        "scoring_runs": scoring_runs if profile_sweep or tree_budgets else None,
         "inference_path_probe": (
             {
                 "catboost_pool_quantize_api_available": True,
@@ -1013,7 +1043,17 @@ def main() -> int:
         "--time-limit-seconds", type=int, default=120,
         help="Probe watchdog limit; use a bounded increase for actual throughput profiling.",
     )
+    parser.add_argument(
+        "--tree-budgets", type=int, nargs="+", default=[],
+        help="Prefix budgets; include 1000 as within-run reference. Profile before full.",
+    )
     args = parser.parse_args()
+    if args.tree_budgets and (
+        args.mode == "probe" or args.profile_sweep or 1000 not in args.tree_budgets
+        or any(not 1 <= n <= 1000 for n in args.tree_budgets)
+        or len(set(args.tree_budgets)) != len(args.tree_budgets)
+    ):
+        parser.error("tree budgets require profile/full, unique 1..1000 including1000, no input sweep")
     if args.time_limit_seconds <= 0:
         parser.error("--time-limit-seconds must be positive")
     if args.profile_sweep and args.mode != "profile":
@@ -1026,14 +1066,19 @@ def main() -> int:
             args.region, args.mode,
             profile_scoring=args.profile_scoring or args.profile_sweep,
             profile_sweep=args.profile_sweep,
+            tree_budgets=tuple(args.tree_budgets),
         )
-        if args.mode == "full" or args.profile_sweep:
+        if args.mode == "full" or args.profile_sweep or args.tree_budgets:
             output_name = (
                 "issue82-scoring-sweep-item-cache-20261027" if args.profile_sweep else (
                     "issue82-scoring-profile-cached-items-131072-20261027" if args.profile_scoring
                     else "issue82-inner-tl-smoke-20261026"
                 )
             )
+            if args.tree_budgets:
+                output_name = "issue82-tree-budget-" + args.mode + "-" + "-".join(
+                    str(n) for n in args.tree_budgets
+                )
             output = REPO_ROOT / "results" / "experiments" / "catboost-ranking" / output_name
             # Fail closed unless the local policy already excludes this path.
             ignored = subprocess.run(

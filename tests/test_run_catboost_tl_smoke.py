@@ -106,7 +106,10 @@ class ProjectedCsvTests(unittest.TestCase):
 
         captured = {}
         class Ranker:
-            def predict(self, frame):
+            tree_count_ = 1000
+
+            def predict(self, frame, **kwargs):
+                captured.setdefault("predict_kwargs", []).append(kwargs)
                 return frame["train_positive_interaction_count"].to_numpy()
         def fit(train, **kwargs):
             captured["train"] = train
@@ -137,6 +140,16 @@ class ProjectedCsvTests(unittest.TestCase):
             ])
             with patch.object(runner, "_bound_inputs", return_value=(root, tl, other)), patch.object(runner, "fit_catboost", side_effect=fit), patch.object(runner, "_available_bytes", return_value=32 * 1024**3), redirect_stdout(StringIO()):
                 result = runner.run("capital", "probe")
+                profile = runner.run("capital", "profile", tree_budgets=(100, 250, 500, 750, 1000))
+                self.assertEqual([r["trees"] for r in profile["scoring_runs"]],
+                                 [100, 250, 500, 750, 1000])
+                self.assertEqual(profile["metrics"], profile["scoring_runs"][-1]["metrics"])
+                self.assertEqual({kw["ntree_end"] for kw in captured["predict_kwargs"] if kw},
+                                 {100, 250, 500, 750, 1000})
+                for run in profile["scoring_runs"]:
+                    self.assertEqual(len(run["metrics"]), 12)
+                    self.assertEqual(len(run["rank_stability"]), 6)
+                    self.assertGreater(run["config_total_seconds_accounted"], 0)
         train = captured["train"]
         self.assertEqual(set(train.loc[train.label == 1, "item_id"]), {"core"})
         items = {row["item_id"]: row for row in captured["materialization"].item_features}
