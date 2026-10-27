@@ -46,6 +46,7 @@ from scripts.recommendation.catboost_ranking_experiment import (  # noqa: E402
     CandidateInventory,
     ExperimentConfig,
     PreparedItemCatalog,
+    ScoringProfiler,
     SamplingStrategy,
     fit_catboost,
     materialize_inner_train_item_features,
@@ -67,7 +68,9 @@ from scripts.recommendation.training_dataset import (  # noqa: E402
 from scripts.recommendation.evaluate_popularity import (  # noqa: E402
     approved_capital_filekey_root,
 )
+from scripts.recommendation.poi_catalog_policy import load_poi_catalog_policy  # noqa: E402
 from scripts.recommendation.tl_traveler_split import (  # noqa: E402
+    deterministic_traveler_group_split,
     valid_unique_trip_owner_rows,
 )
 
@@ -94,12 +97,17 @@ ITERATIONS = 1000
 PROBE_ITERATIONS = 20
 PROBE_TRAIN_TRIPS = 32
 PROBE_VALIDATION_QUERIES = 8
-PREDICTION_BATCH_ROWS = 32_768
+PREDICTION_BATCH_ROWS = 131_072
+PROFILE_SWEEP_BATCH_ROWS = (65_536, 131_072, 262_144, 524_288)
+PROFILE_SWEEP_OPTIONAL_BATCH_ROWS = 1_048_576
 VALIDATION_PROGRESS_QUERIES = 10
 SOFT_RSS_LIMIT_BYTES = 16 * 1024**3
 MIN_AVAILABLE_BYTES = 8 * 1024**3
-MASTER_PROGRESS_ROWS = 25_000
+MASTER_PROGRESS_ROWS = 250_000
 TELEMETRY: list[dict[str, object]] = []
+RESOLVED_ADMIN_LOCATION_STATUSES = frozenset({
+    "resolved_single_source", "resolved_multi_source",
+})
 
 
 class SafeFailure(RuntimeError):
@@ -302,19 +310,28 @@ def read_projected_csv(path: Path, required: Iterable[str], selected: Iterable[s
     return list(iter_projected_csv(path, required, selected))
 
 
-def _load_master(path: Path, admin_lookup: Mapping[str, object], total_start: float) -> dict[str, dict[str, object]]:
+def _load_master(
+    path: Path,
+    admin_lookup: Mapping[str, object],
+    total_start: float,
+    *,
+    source_package_region: str,
+) -> tuple[dict[str, dict[str, object]], set[str], int, int]:
     required = ("POI_ID", "SGG_CD", "ASORT_LCLASDC", "ASORT_MLSFCDC", "ASORT_SDASDC", "ROAD_NM_ADDR", "LOTNO_ADDR")
     duplicate_ids: set[str] = set()
     unique: dict[str, dict[str, object]] = {}
     master_start = time.monotonic()
     last_emit = master_start
     seen_rows = 0
+    blank_id_rows = 0
     address_lookup = build_admin_address_lookup(admin_lookup)
     address_result_cache: dict[str, tuple[str, ...]] = {}
     for values in iter_projected_values(path, required, required):
         seen_rows += 1
         item = _clean_str(values[0])
-        if item:
+        if not item:
+            blank_id_rows += 1
+        else:
             if item in duplicate_ids:
                 pass
             elif item in unique:
@@ -335,7 +352,7 @@ def _load_master(path: Path, admin_lookup: Mapping[str, object], total_start: fl
                 )
                 unique[item] = {
                     "item_id": item,
-                    "region": "",
+                    "source_package_region": source_package_region,
                     "source_category_l1_code": _clean_str(values[2]),
                     "source_category_l2_code": _clean_str(values[3]),
                     "source_category_l3_code": _clean_str(values[4]),
@@ -345,11 +362,133 @@ def _load_master(path: Path, admin_lookup: Mapping[str, object], total_start: fl
                 }
         if seen_rows % MASTER_PROGRESS_ROWS == 0 or time.monotonic()-last_emit >= 10:
             _emit("master_csv_read", total_start, stage_seconds=time.monotonic()-master_start,
-                  source_rows=seen_rows, unique_ids=len(unique) + len(duplicate_ids))
+                  source_rows=seen_rows, unique_ids=len(unique) + len(duplicate_ids),
+                  blank_id_rows=blank_id_rows)
             _emit("master_location", total_start, stage_seconds=time.monotonic()-master_start,
-                  unique_candidates_resolved=len(unique), total_unique_ids=len(unique) + len(duplicate_ids))
+                  nonduplicate_unique_ids=len(unique), total_unique_ids=len(unique) + len(duplicate_ids),
+                  duplicate_id_groups=len(duplicate_ids))
             last_emit = time.monotonic()
-    return unique
+    return unique, duplicate_ids, seen_rows, blank_id_rows
+
+
+def _resolved_canonical_sido_code(row: Mapping[str, object]) -> str:
+    status = _clean_str(row.get("canonical_admin_location_status"))
+    code = _clean_str(row.get("canonical_admin_sido_code"))
+    if status not in RESOLVED_ADMIN_LOCATION_STATUSES:
+        return ""
+    return code
+
+
+def _pre_filter_candidate_aggregates(
+    master: Mapping[str, Mapping[str, object]],
+    duplicate_ids: set[str],
+    validation_truth: Mapping[str, set[str]],
+    *,
+    source_package_region: str,
+    policy,
+    source_rows: int,
+    blank_id_rows: int,
+) -> dict[str, object]:
+    """Summarize geography and validation coverage before candidate filtering."""
+    codes = policy.product_region_to_ldong_regn_cd.get(source_package_region)
+    if not codes:
+        raise SafeFailure("product_region_policy")
+    counts_by_code = {code: 0 for code in sorted(codes)}
+    unresolved_ids = 0
+    resolved_outside_region_ids = 0
+    for row in master.values():
+        code = _resolved_canonical_sido_code(row)
+        if not code:
+            unresolved_ids += 1
+        elif code in counts_by_code:
+            counts_by_code[code] += 1
+        else:
+            resolved_outside_region_ids += 1
+
+    positive_pairs = 0
+    candidate_pairs = 0
+    missing_pairs = 0
+    unresolved_positive_pairs = 0
+    other_region_positive_pairs = 0
+    duplicate_positive_pairs = 0
+    covered_queries = 0
+    for trip_id, positive_ids in validation_truth.items():
+        query_covered = False
+        for item_id in positive_ids:
+            positive_pairs += 1
+            row = master.get(item_id)
+            if row is None:
+                if item_id in duplicate_ids:
+                    duplicate_positive_pairs += 1
+                else:
+                    missing_pairs += 1
+                continue
+            code = _resolved_canonical_sido_code(row)
+            if not code:
+                unresolved_positive_pairs += 1
+            elif code in counts_by_code:
+                candidate_pairs += 1
+                query_covered = True
+            else:
+                other_region_positive_pairs += 1
+        covered_queries += int(query_covered)
+
+    geography_denominator = len(master)
+    return {
+        "source_package_region": source_package_region,
+        "candidate_region_policy_version": policy.version,
+        "master_source_rows": source_rows,
+        "master_blank_id_rows": blank_id_rows,
+        "master_total_unique_ids": len(master) + len(duplicate_ids),
+        "master_duplicate_id_groups": len(duplicate_ids),
+        "master_unique_ids_after_duplicate_policy": geography_denominator,
+        "canonical_candidate_ids_by_admin_sido_code": counts_by_code,
+        "master_resolved_outside_requested_region_ids": resolved_outside_region_ids,
+        "master_geography_unresolved_ids": unresolved_ids,
+        "master_geography_resolution_denominator_ids": geography_denominator,
+        "master_geography_unresolved_rate": round(
+            unresolved_ids / geography_denominator, 6
+        ) if geography_denominator else 0.0,
+        "validation_positive_queries": len(validation_truth),
+        "validation_positive_pairs": positive_pairs,
+        "validation_candidate_covered_queries": covered_queries,
+        "validation_candidate_covered_pairs": candidate_pairs,
+        "validation_candidate_pair_coverage_rate": round(
+            candidate_pairs / positive_pairs, 6
+        ) if positive_pairs else 0.0,
+        "validation_master_missing_positive_pairs": missing_pairs,
+        "validation_master_duplicate_key_positive_pairs": duplicate_positive_pairs,
+        "validation_master_present_geography_unresolved_positive_pairs": unresolved_positive_pairs,
+        "validation_master_present_other_region_positive_pairs": other_region_positive_pairs,
+    }
+
+
+def _filter_master_to_product_region(
+    master: dict[str, dict[str, object]],
+    *,
+    source_package_region: str,
+    policy,
+) -> dict[str, dict[str, object]]:
+    """Drain full master rows into the resolved, policy-mapped candidate scope."""
+    codes = policy.product_region_to_ldong_regn_cd.get(source_package_region)
+    if not codes:
+        raise SafeFailure("product_region_policy")
+    candidates: dict[str, dict[str, object]] = {}
+    # Move references rather than copying the full 7M-row map into a second map.
+    while master:
+        item_id, row = master.popitem()
+        if row.get("source_package_region") != source_package_region:
+            raise SafeFailure("source_region_provenance")
+        code = _resolved_canonical_sido_code(row)
+        if code in codes:
+            row["product_region"] = source_package_region
+            # `region` is the prepared candidate/request scope enforced by the
+            # ranking contract; source provenance remains separately recorded.
+            row["region"] = source_package_region
+            candidates[item_id] = row
+    if not candidates:
+        raise SafeFailure("empty_geographic_inventory")
+    return candidates
 
 
 def _context_rows(travel_rows: list[dict[str, str]], traveler_rows: list[dict[str, str]], region: str, run_id: str):
@@ -417,7 +556,13 @@ def _make_frame(queries, positives, materialization, catalog, *, limit: int | No
     return pd.DataFrame(rows), groups
 
 
-def run(region: str, mode: str) -> dict[str, object]:
+def run(
+    region: str,
+    mode: str,
+    *,
+    profile_scoring: bool = False,
+    profile_sweep: bool = False,
+) -> dict[str, object]:
     TELEMETRY.clear()
     total_start = time.monotonic()
     if _available_bytes() < MIN_AVAILABLE_BYTES:
@@ -439,13 +584,16 @@ def run(region: str, mode: str) -> dict[str, object]:
     admin_lookup = build_admin_lookup(_normalize_admin_codebook_rows(sgg_rows))
     if not admin_lookup:
         raise SafeFailure("admin_codebook")
-    master = _load_master(master_path, admin_lookup, total_start)
+    policy = load_poi_catalog_policy()
+    master, duplicate_master_ids, master_source_rows, master_blank_id_rows = _load_master(
+        master_path, admin_lookup, total_start, source_package_region=region,
+    )
     if not master:
         raise SafeFailure("empty_master")
-    for row in master.values():
-        row["region"] = region
     _emit("static_catalog", total_start, stage_seconds=time.monotonic()-phase,
-          candidate_items=len(master), admin_codes=len(admin_lookup))
+          master_unique_ids=len(master) + len(duplicate_master_ids),
+          nonduplicate_master_ids=len(master), duplicate_id_groups=len(duplicate_master_ids),
+          admin_codes=len(admin_lookup), policy_version=policy.version)
 
     phase = time.monotonic()
     traveler_rows = read_projected_csv(traveler_path, TRAVELER_COLUMNS, TRAVELER_COLUMNS)
@@ -471,11 +619,38 @@ def run(region: str, mode: str) -> dict[str, object]:
           trip_count=len(owners), traveler_rows=len(traveler_rows),
           valid_visit_events=len(valid_events), positive_pairs=len(positives))
 
+    validation_partition = deterministic_traveler_group_split(
+        owners, seed=SPLIT_SEED, validation_fraction=0.2,
+    )
+    validation_truth: dict[str, set[str]] = defaultdict(set)
+    for positive in eligible_positives:
+        if validation_partition.get(positive.travel_id) == "inner-validation":
+            validation_truth[positive.travel_id].add(positive.poi_id)
+    pre_filter_aggregates = _pre_filter_candidate_aggregates(
+        master, duplicate_master_ids, validation_truth,
+        source_package_region=region, policy=policy,
+        source_rows=master_source_rows, blank_id_rows=master_blank_id_rows,
+    )
+    _emit("candidate_scope_pre_filter", total_start, **pre_filter_aggregates)
+    phase = time.monotonic()
+    master = _filter_master_to_product_region(
+        master, source_package_region=region, policy=policy,
+    )
+    _emit("geographic_candidate_inventory", total_start,
+          stage_seconds=time.monotonic()-phase, product_region=region,
+          candidate_items=len(master), policy_version=policy.version)
+
     phase = time.monotonic()
     materialization = materialize_inner_train_item_features(
         trip_owner=owners, item_features=master.values(),
         positive_interactions=positive_rows, visit_events=valid_events,
         split_seed=SPLIT_SEED,
+    )
+    if dict(materialization.partition_by_trip) != validation_partition:
+        raise SafeFailure("inner_split_mismatch")
+    _emit(
+        "inner_train_materialization", total_start,
+        candidate_items=len(master), derived_i3_i4="inner-train_only",
     )
     catalog_config = ExperimentConfig(
         feature_groups=FEATURE_GROUPS,
@@ -487,6 +662,11 @@ def run(region: str, mode: str) -> dict[str, object]:
         k_values=(5, 10, 20),
     )
     catalog = PreparedItemCatalog.from_materialization(materialization, catalog_config, region=region)
+    _emit(
+        "prepared_item_catalog", total_start,
+        candidate_items=len(catalog.inventory.items),
+        feature_columns=len(catalog.feature_columns),
+    )
     inner_train = sum(v == "inner-train" for v in materialization.partition_by_trip.values())
     inner_validation = sum(v == "inner-validation" for v in materialization.partition_by_trip.values())
     _emit("inner_split_features", total_start, stage_seconds=time.monotonic()-phase,
@@ -503,12 +683,8 @@ def run(region: str, mode: str) -> dict[str, object]:
     _emit("uniform_sampling", total_start, stage_seconds=time.monotonic()-phase,
           train_rows=len(train_frame), train_queries=train_groups, negative_ratio=1)
 
-    # Validation ground truth remains all distinct TL positives, including any
-    # positives absent from the configured same-source-region candidate set.
-    validation_truth: dict[str, set[str]] = defaultdict(set)
-    for positive in eligible_positives:
-        if materialization.partition_by_trip.get(positive.travel_id)=="inner-validation":
-            validation_truth[positive.travel_id].add(positive.poi_id)
+    # Validation ground truth remains all positives, including positives
+    # missing from master, geographically unresolved, or outside ProductRegion.
     ordered_validation = sorted(validation_truth)
     if mode in {"probe", "profile"}:
         ordered_validation = ordered_validation[:PROBE_VALIDATION_QUERIES]
@@ -526,22 +702,257 @@ def run(region: str, mode: str) -> dict[str, object]:
           train_queries=train_groups)
 
     phase = time.monotonic()
-    validation_progress_interval = max(
-        1, min(VALIDATION_PROGRESS_QUERIES, len(ordered_validation) // 10)
-    )
+    validation_progress_interval = max(1, (len(ordered_validation) + 9) // 10)
     def ground_truth():
-        for index, trip in enumerate(ordered_validation, start=1):
-            yield trip, validation_truth[trip]
-            if index % validation_progress_interval == 0 or index == len(ordered_validation):
-                _emit("validation_progress", total_start, queries_completed=index,
-                      queries_total=len(ordered_validation), candidate_items=len(catalog.inventory.items))
-    result = score_inner_validation_queries(
-        model, catalog, ground_truth(), query_features=query_context,
-        config=catalog_config, max_rows_per_batch=PREDICTION_BATCH_ROWS,
+        yield from ((trip, validation_truth[trip]) for trip in ordered_validation)
+
+    scoring_profiler: ScoringProfiler | None = None
+    scoring_runs: list[dict[str, object]] = []
+
+    def scoring_progress(
+        progress: dict[str, object], *, variant: str = "default",
+    ) -> None:
+        completed = int(progress["queries_completed"])
+        elapsed = float(progress["elapsed_seconds"])
+        eta = elapsed * (len(ordered_validation) - completed) / completed if completed else 0.0
+        query_elapsed = progress["query_elapsed_seconds"]
+        query_rates = progress["query_rows_per_second"]
+        _emit(
+            "scoring_profile_progress", total_start,
+            variant=variant,
+            queries_completed=completed, queries_total=len(ordered_validation),
+            scored_rows=progress["scored_rows"], elapsed_seconds=round(elapsed, 3),
+            current_rss_mib=progress["current_rss_mib"],
+            scoring_sampled_peak_rss_mib=progress["scoring_sampled_peak_rss_mib"],
+            scoring_rss_sampling_interval_ms=progress["scoring_rss_sampling_interval_ms"],
+            cumulative_query_context_seconds=round(float(progress["query_context_seconds"]), 4),
+            cumulative_ground_truth_seconds=round(float(progress["ground_truth_seconds"]), 4),
+            cumulative_frame_seconds=round(float(progress["frame_seconds"]), 3),
+            cumulative_candidate_item_slice_seconds=round(
+                float(progress["candidate_item_slice_seconds"]), 3,
+            ),
+            cumulative_query_context_broadcast_seconds=round(
+                float(progress["query_context_broadcast_seconds"]), 3,
+            ),
+            cumulative_frame_container_seconds=round(
+                float(progress["frame_container_seconds"]), 3,
+            ),
+            cumulative_static_item_cache_seconds=round(
+                float(progress["static_item_cache_seconds"]), 3,
+            ),
+            cumulative_pool_build_seconds=round(float(progress["pool_build_seconds"]), 3),
+            cumulative_predict_seconds=round(float(progress["predict_seconds"]), 3),
+            cumulative_top_k_seconds=round(float(progress["top_k_seconds"]), 3),
+            cumulative_metric_seconds=round(float(progress["metric_seconds"]), 4),
+            unaccounted_seconds=round(float(progress["unaccounted_seconds"]), 3),
+            user_cpu_seconds=round(float(progress["user_cpu_seconds"]), 2),
+            system_cpu_seconds=round(float(progress["system_cpu_seconds"]), 2),
+            query_elapsed_p50=round(float(query_elapsed["p50"]), 4),
+            query_elapsed_p95=round(float(query_elapsed["p95"]), 4),
+            query_elapsed_p99=round(float(query_elapsed["p99"]), 4),
+            query_elapsed_max=round(float(query_elapsed["max"]), 4),
+            query_rows_per_second_p50=round(float(query_rates["p50"]), 2),
+            query_rows_per_second_p95=round(float(query_rates["p95"]), 2),
+            rows_per_second=round(float(progress["rows_per_second"]), 2),
+            eta_seconds=round(eta, 1),
+        )
+
+    result = None
+    if profile_sweep:
+        sweep_variants = [
+            {
+                "name": f"dataframe_batch_{batch_rows}",
+                "batch_rows": batch_rows,
+                "inference_mode": "dataframe",
+                "thread_count": None,
+            }
+            for batch_rows in PROFILE_SWEEP_BATCH_ROWS
+        ]
+        sweep_variants.extend([
+            {
+                "name": "dataframe_cached_items_batch_131072",
+                "batch_rows": 131_072,
+                "inference_mode": "dataframe_cached_items",
+                "thread_count": None,
+            },
+            {
+                "name": "numpy_array_batch_262144",
+                "batch_rows": 262_144,
+                "inference_mode": "numpy_array",
+                "thread_count": None,
+            },
+            {
+                "name": "numpy_array_batch_1048576",
+                "batch_rows": 1_048_576,
+                "inference_mode": "numpy_array",
+                "thread_count": None,
+                "optional_memory_gate": True,
+            },
+            {
+                "name": f"dataframe_batch_{PROFILE_SWEEP_OPTIONAL_BATCH_ROWS}",
+                "batch_rows": PROFILE_SWEEP_OPTIONAL_BATCH_ROWS,
+                "inference_mode": "dataframe",
+                "thread_count": None,
+                "optional_memory_gate": True,
+            },
+            {
+                "name": "dataframe_pool_batch_262144",
+                "batch_rows": 262_144,
+                "inference_mode": "dataframe_pool",
+                "thread_count": None,
+            },
+            {
+                "name": "numpy_pool_batch_262144",
+                "batch_rows": 262_144,
+                "inference_mode": "numpy_pool",
+                "thread_count": None,
+            },
+            *[
+                {
+                    "name": f"dataframe_thread_{thread_count}_batch_262144",
+                    "batch_rows": 262_144,
+                    "inference_mode": "dataframe",
+                    "thread_count": thread_count,
+                }
+                for thread_count in (1, 2, 4)
+            ],
+        ])
+        reference_rankings = None
+        reference_metrics = None
+        for variant in sweep_variants:
+            variant_name = str(variant["name"])
+            if variant.get("optional_memory_gate"):
+                current_rss = _rss_bytes()
+                host_available = _available_bytes()
+                if current_rss >= 8 * 1024**3 or host_available < 16 * 1024**3:
+                    skipped_variant = {
+                        **variant,
+                        "status": "skipped_memory_headroom_gate",
+                        "current_rss_mib": round(current_rss / 1024**2),
+                        "host_available_mib": round(host_available / 1024**2),
+                    }
+                    scoring_runs.append(skipped_variant)
+                    _emit("scoring_sweep_variant", total_start, **skipped_variant)
+                    continue
+            profiler = ScoringProfiler(capture_rankings=True)
+
+            def variant_progress(progress: dict[str, object]) -> None:
+                scoring_progress(progress, variant=variant_name)
+
+            variant_started = time.monotonic()
+            try:
+                variant_result = score_inner_validation_queries(
+                    model, catalog, ground_truth(), query_features=query_context,
+                    config=catalog_config,
+                    max_rows_per_batch=int(variant["batch_rows"]),
+                    profiler=profiler,
+                    progress_callback=variant_progress,
+                    progress_interval=validation_progress_interval,
+                    progress_total=len(ordered_validation),
+                    inference_mode=str(variant["inference_mode"]),
+                    predict_thread_count=variant["thread_count"],
+                )
+            except SafeFailure:
+                raise
+            except Exception as exc:
+                failed_variant = {
+                    **variant,
+                    "status": "failed",
+                    "error_class": type(exc).__name__,
+                }
+                scoring_runs.append(failed_variant)
+                _emit(
+                    "scoring_sweep_variant", total_start,
+                    variant=variant_name,
+                    stage_seconds=time.monotonic() - variant_started,
+                    status="failed", error_class=type(exc).__name__,
+                )
+                continue
+            if reference_rankings is None:
+                reference_rankings = profiler.top_rankings
+                reference_metrics = dict(variant_result.metrics)
+            exact_rank_score_parity = profiler.top_rankings == reference_rankings
+            exact_metric_parity = dict(variant_result.metrics) == reference_metrics
+            summary = profiler.summary(
+                scored_rows=variant_result.scored_rows,
+                candidate_count=variant_result.candidate_count,
+            )
+            scoring_runs.append({
+                **variant,
+                "query_count": variant_result.query_count,
+                "candidate_count": variant_result.candidate_count,
+                "scored_rows": variant_result.scored_rows,
+                "max_batch_rows": variant_result.max_batch_rows,
+                "metrics": dict(variant_result.metrics),
+                "exact_top_k_score_parity_with_first_variant": exact_rank_score_parity,
+                "exact_metric_parity_with_first_variant": exact_metric_parity,
+                "profiler": summary,
+            })
+            _emit(
+                "scoring_sweep_variant", total_start,
+                variant=variant_name,
+                stage_seconds=time.monotonic() - variant_started,
+                query_count=variant_result.query_count,
+                candidate_count=variant_result.candidate_count,
+                scored_rows=variant_result.scored_rows,
+                exact_top_k_score_parity=exact_rank_score_parity,
+                exact_metric_parity=exact_metric_parity,
+                scoring_sampled_peak_rss_mib=summary["scoring_sampled_peak_rss_mib"],
+                scoring_rss_sampling_interval_ms=summary[
+                    "scoring_rss_sampling_interval_ms"
+                ],
+            )
+            if variant_name == "dataframe_batch_262144":
+                result = variant_result
+                scoring_profiler = profiler
+        if result is None or scoring_profiler is None:
+            raise SafeFailure("missing_sweep_reference_variant")
+        _emit(
+            "evaluation", total_start,
+            stage_seconds=time.monotonic() - phase,
+            query_count=result.query_count,
+            candidate_count=result.candidate_count,
+            sweep_run_count=len(scoring_runs),
+            scored_rows_per_run=result.scored_rows,
+        )
+    else:
+        scoring_profiler = ScoringProfiler() if profile_scoring else None
+        result = score_inner_validation_queries(
+            model, catalog, ground_truth(), query_features=query_context,
+            config=catalog_config, max_rows_per_batch=PREDICTION_BATCH_ROWS,
+            profiler=scoring_profiler,
+            progress_callback=scoring_progress if profile_scoring else None,
+            progress_interval=validation_progress_interval if profile_scoring else 0,
+            progress_total=len(ordered_validation) if profile_scoring else 0,
+            inference_mode="dataframe_cached_items",
+        )
+        _emit("evaluation", total_start, stage_seconds=time.monotonic()-phase,
+              query_count=result.query_count, candidate_count=result.candidate_count,
+              scored_rows=result.scored_rows, max_prediction_rows=result.max_batch_rows)
+    telemetry_by_stage = {str(record["stage"]): record for record in TELEMETRY}
+    rss_snapshot_stages = (
+        "static_catalog", "geographic_candidate_inventory", "inner_train_materialization",
+        "prepared_item_catalog", "uniform_sampling", "catboost_fit", "evaluation",
     )
-    _emit("evaluation", total_start, stage_seconds=time.monotonic()-phase,
-          query_count=result.query_count, candidate_count=result.candidate_count,
-          scored_rows=result.scored_rows, max_prediction_rows=result.max_batch_rows)
+    rss_snapshots = {
+        stage: next(
+            (record["rss_mib"] for record in reversed(TELEMETRY) if record["stage"] == stage),
+            None,
+        )
+        for stage in rss_snapshot_stages
+    }
+    rss_snapshots["train_frame"] = rss_snapshots["uniform_sampling"]
+    profile_summary = (
+        scoring_profiler.summary(
+            scored_rows=result.scored_rows,
+            candidate_count=result.candidate_count,
+        ) if scoring_profiler is not None else None
+    )
+    if profile_summary is not None:
+        rss_snapshots["scoring_sampled_peak"] = profile_summary[
+            "scoring_sampled_peak_rss_mib"
+        ]
+        rss_snapshots["after_scoring"] = profile_summary["scoring_after_rss_mib"]
     return {
         "region": region,
         "mode": mode,
@@ -556,14 +967,33 @@ def run(region: str, mode: str) -> dict[str, object]:
         "validation_queries": result.query_count,
         "candidate_items": result.candidate_count,
         "scored_rows": result.scored_rows,
+        "prediction_frame_row_cap": PREDICTION_BATCH_ROWS,
+        "fit_seconds": telemetry_by_stage["catboost_fit"]["stage_seconds"],
+        "scoring_seconds": telemetry_by_stage["evaluation"]["stage_seconds"],
+        "peak_rss_mib": max(int(record["peak_rss_mib"]) for record in TELEMETRY),
+        "rss_snapshots_mib": rss_snapshots,
         "metrics": dict(result.metrics),
         "total_seconds": round(time.monotonic()-total_start, 3),
         "positive_diagnostics": {
             "distinct_trip_poi_positives": positive_diagnostics["distinct_trip_poi_positives"],
             "tourism_core_trip_poi_positives": positive_diagnostics["tourism_core_trip_poi_positives"],
         },
-        "scope_note": "source-region-scoped static TN_POI_MASTER; not an admin-geographic filter",
+        "candidate_scope_aggregates": pre_filter_aggregates,
+        "scope_note": (
+            "source-package provenance is distinct from ProductRegion; candidate inventory "
+            "contains only resolved canonical SIDO codes in the versioned ProductRegion policy"
+        ),
         "telemetry": list(TELEMETRY),
+        "scoring_runs": scoring_runs if profile_sweep else None,
+        "inference_path_probe": (
+            {
+                "catboost_pool_quantize_api_available": True,
+                "synthetic_exact_score_parity": False,
+                "reason": "model_predict_rejected_quantized_mixed_feature_pool",
+                "included_in_actual_sweep": False,
+            } if profile_sweep else None
+        ),
+        "scoring_profile": profile_summary,
     }
 
 
@@ -572,19 +1002,39 @@ def main() -> int:
     parser.add_argument("--region", choices=REGIONS, required=True)
     parser.add_argument("--mode", choices=("probe", "profile", "full"), required=True)
     parser.add_argument(
+        "--profile-scoring", action="store_true",
+        help="Collect aggregate-only scoring timings and RSS for a full-mode profiling run.",
+    )
+    parser.add_argument(
+        "--profile-sweep", action="store_true",
+        help="Sweep bounded inner-validation prediction inputs/batches with one fitted model.",
+    )
+    parser.add_argument(
         "--time-limit-seconds", type=int, default=120,
         help="Probe watchdog limit; use a bounded increase for actual throughput profiling.",
     )
     args = parser.parse_args()
     if args.time_limit_seconds <= 0:
         parser.error("--time-limit-seconds must be positive")
+    if args.profile_sweep and args.mode != "profile":
+        parser.error("--profile-sweep requires --mode profile")
     try:
         _start_memory_watchdog(
             timeout_seconds=args.time_limit_seconds if args.mode in {"probe", "profile"} else None
         )
-        result = run(args.region, args.mode)
-        if args.mode == "full":
-            output = REPO_ROOT / "results" / "experiments" / "catboost-ranking" / "issue82-inner-tl-smoke-20261026"
+        result = run(
+            args.region, args.mode,
+            profile_scoring=args.profile_scoring or args.profile_sweep,
+            profile_sweep=args.profile_sweep,
+        )
+        if args.mode == "full" or args.profile_sweep:
+            output_name = (
+                "issue82-scoring-sweep-item-cache-20261027" if args.profile_sweep else (
+                    "issue82-scoring-profile-cached-items-131072-20261027" if args.profile_scoring
+                    else "issue82-inner-tl-smoke-20261026"
+                )
+            )
+            output = REPO_ROOT / "results" / "experiments" / "catboost-ranking" / output_name
             # Fail closed unless the local policy already excludes this path.
             ignored = subprocess.run(
                 ["git", "-C", str(REPO_ROOT), "check-ignore", "-q", str(output)],

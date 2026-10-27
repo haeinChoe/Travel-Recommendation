@@ -1,7 +1,7 @@
 # Cold-user POI ranking 학습·평가 계약
 
 **관련 Issue:** #41, #79, #80, #81, #82, #83
-**현재 상태:** #80 traveler split·I3/I4 재계산 경계와 #81 I2 계약 반영 완료 / #82 실제 TL inner-validation 실험 대기
+**현재 상태:** #80 traveler split·I3/I4 경계와 #81 I2 계약이 반영됐다. PR #88/#89의 실제 run은 source-package region을 POI geography로 잘못 사용해 corrected baseline이 아니다. #82 runner는 resolved canonical SIDO와 versioned candidate policy로 ProductRegion을 판정한다. Corrected 수도권 TL full benchmark는 1,139.035초 total, runner-scoped scoring 959.962초, 3,786 MiB process peak RSS였다. 과거 source-tagged run과 direct actual-data metric parity/speedup을 주장하지 않으며, corrected geography 안에서 cached-vs-uncached metric parity는 exact다. Scoring이 5분 cutoff를 넘으므로 search는 보류한다. 향후 full-catalog end-to-end runtime이 300초 이하면 forward + 정확히 한 번 backward cleanup, broad screen 1 seed/config, 선택 finalist 3 total seeds를 적용한다. 다음 단계는 Candidate Generation → CatBoost reranking 설계와 재측정이다.
 
 ## 이 문서가 답하려는 질문
 
@@ -27,13 +27,15 @@ POI score → Top-K ranking
 
 ## 현재 결정된 것
 
+아래는 공통 프로토콜과 Stage 1 baseline 설정이다. 아직 sampling, feature-group, objective 탐색을 실행하거나 최종 모델 설정을 고르지 않았다.
+
 - 문제 유형: **cold-user contextual POI ranking**
 - ranking group: 한 trip/request
 - 요청 지역을 ranking 전에 hard filter
 - 현재 offline candidate/evaluation source는 AI Hub만 사용
 - prototype model은 **CatBoostRanker**
-- prototype objective는 **YetiRank**
-- objective 비교 후보는 **YetiRank / PairLogit / LambdaMart**
+- Stage 1 baseline objective는 **YetiRank**이며 최종 objective 선택은 아니다.
+- planned objective 비교 후보는 **YetiRank / PairLogit / LambdaMart**이며 아직 비교하지 않았다.
 - TL 내부에서 모델 선택을 수행하고 공식 VL은 최종 holdout으로 보존
 - 평가 지표는 NDCG@K, Recall@K, MRR@K, HitRate@K
 - raw 좌표, H3, distance, TN_GPS_COORD는 현재 ranking feature에서 제외
@@ -41,10 +43,10 @@ POI score → Top-K ranking
 ## 확인 완료 및 남은 결정
 
 - #80 실제 감사 완료: 네 권역 모두 traveler:trip = 1:1, multi-trip traveler = 0%, seed `issue80-v1`·validation fraction 0.2에서 권역별 inner-train 2,048 / inner-validation 512 traveler와 trip, traveler overlap 0이다.
-- #81 I2 Administrative Location 계약 완료: `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용한다. 실제 AI Hub coverage/conflict/provenance 감사만 후속 입력 확보 후 수행한다.
-- #80 I4 Historical POI의 inner-train-safe 재계산 helper 구현·테스트 완료. 남은 것은 #82 CatBoost runner의 TL visit-event input 연결이다.
-- sampling / feature group / objective의 실제 최종 선택: #82
-- seed 반복 횟수: #82에서 runtime 확인 후 결정
+- #81 I2 Administrative Location 계약 완료: `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용한다. #82는 수도권 후보 eligibility와 validation-positive coverage의 제한된 aggregate를 기록했다. 전 권역 source/conflict/provenance 감사는 별도 후속 작업이다.
+- #80 I4 Historical POI의 inner-train-safe 재계산 helper 구현·테스트 완료. PR #88에서 #82 runner의 TL visit-event input 연결을 완료했다.
+- sampling / feature group / objective의 실제 최종 선택은 #82 담당이지만 아직 미결정이다. 5분 runtime cutoff 때문에 candidate-generation/reranking 설계와 재측정 전까지 search를 시작하지 않는다.
+- conditional seed budget decision: runtime gate가 통과되면 broad search 후보당 1 seed, 선택된 finalist는 그 screen seed를 재사용해 총 3 seeds로 평가한다. 현재는 5분 cutoff를 넘어 실행을 보류한다.
 - bootstrap: 현재 데이터 기준 trip/request 단위를 기본으로 하고, #83에서 입력 데이터와 traveler identity 전제가 유지되는지 확인한 뒤 신뢰구간 설정을 확정한다.
 
 남은 항목은 설계 누락이 아니라 #82/#83의 실제 실험 결과로 결정하도록 분리한 항목이다.
@@ -54,7 +56,7 @@ POI score → Top-K ranking
 1. #79 완료: 계약과 synthetic experiment harness를 구현했다.
 2. #80 완료: traveler-trip 분포 감사, traveler group split, inner-train I3/I4 재계산 경계를 구현·검증했다.
 3. #81 완료: canonical administrative location(I2) 계약과 synthetic reconciliation을 구현·검증했다.
-4. **다음 단계 #82:** TL inner-validation으로 runner integration → sampling → feature → objective → hyperparameter 순서로 비교한다.
+4. **#82 진행:** PR #88/#89의 실제 metrics는 source-region-tagged 후보 scope 결과라 corrected geography scope와 직접 비교하지 않는다. Corrected 수도권 TL inner-validation benchmark는 versioned ProductRegion candidate filter 아래 수행했다. Legacy-vs-optimized scorer와 cached item-frame 경로의 exact score/rank/metric parity를 synthetic 및 bounded actual cohort에서 확인했다. Final 432-query run은 959.962초 scoring으로 5분 cutoff를 넘었다. 다음은 candidate generation과 CatBoost reranking 설계를 분리해 검토하고 full contract runtime을 다시 측정하는 것이다. 그 전에는 negative sampling이나 나머지 search를 시작하지 않는다.
 5. configuration을 잠근 뒤 #83에서 처음 VL을 평가하고 bootstrap 신뢰구간을 계산한다.
 
 ---
@@ -146,6 +148,8 @@ region은 다음 두 역할을 구분한다.
 
 따라서 hard filter를 했다는 이유로 C1 ablation을 자동 생략하지 않는다.
 
+Issue #82의 corrected 수도권 TL baseline에서 source-package region은 입력 provenance만 나타내며 POI geography가 아니다. Candidate hard filter는 #81의 resolved `canonical_admin_sido_code`와 `poi-catalog-candidate-v1`의 `product_region_to_ldong_regn_cd` mapping을 사용한다. 이 mapping은 candidate eligibility에만 적용하고 I2 feature 값이나 validation positive ground truth를 바꾸지 않는다.
+
 ## 3. Split과 데이터 누수 방지
 
 ### 3.1 outer split
@@ -183,7 +187,7 @@ synthetic fixture 테스트는 감사 함수와 4개 권역 CSV CLI를 실행하
 
 popularity-weighted / mixed sampling의 popularity와 hard sampling의 score도 inner-train 정보만 사용한다.
 
-canonical `trip_item_interaction.parquet`에는 visit type이 없어 그 파일만으로 I4를 재계산할 수 없다. #80의 `recompute_inner_train_visit_type_codes` 함수는 같은 TL의 `TN_VISIT_AREA_INFO` 이벤트를 inner-train 여행에 한정해 읽고, 관광 핵심 방문이 있는 trip-item의 유효 `VISIT_AREA_TYPE_CD`를 집계하도록 구현·테스트 완료했다. 방문 이벤트 입력이 없거나 필수 trip/item/visit-type/TL split 필드가 빠지면 `I4SourceUnavailableError`로 fail-closed한다. 후속 ranking runner는 이 helper의 결과를 사용해야 하며 canonical full-TL I4 값을 inner-validation에 제공하면 안 된다. 현재 CatBoost runner에는 visit-event input이 연결되지 않았으므로 #82에서 runner를 helper에 연결해야 한다. 따라서 pending/disabled는 runner integration 상태만 가리키며 I4 계산 방법은 구현 완료다.
+canonical `trip_item_interaction.parquet`에는 visit type이 없어 그 파일만으로 I4를 재계산할 수 없다. #80의 `recompute_inner_train_visit_type_codes` 함수는 같은 TL의 `TN_VISIT_AREA_INFO` 이벤트를 inner-train 여행에 한정해 읽고, 관광 핵심 방문이 있는 trip-item의 유효 `VISIT_AREA_TYPE_CD`를 집계하도록 구현·테스트 완료했다. 방문 이벤트 입력이 없거나 필수 trip/item/visit-type/TL split 필드가 빠지면 `I4SourceUnavailableError`로 fail-closed한다. PR #88에서 CatBoost runner는 이 helper에 visit-event input을 연결해 inner-train I4를 사용한다. canonical full-TL I4 값을 inner-validation에 제공하면 안 된다.
 
 ## 4. Feature Group v1
 
@@ -204,7 +208,7 @@ canonical `trip_item_interaction.parquet`에는 visit type이 없어 그 파일�
 | I1 | Category | source_category_l1_code, l2, l3 |
 | I2 | Administrative Location | `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status` |
 | I3 | Popularity | train_positive_interaction_count, inner-train 재계산 필수 |
-| I4 | Historical POI | `recompute_inner_train_visit_type_codes` 구현·테스트 완료; #82 runner visit-event input integration pending |
+| I4 | Historical POI | `recompute_inner_train_visit_type_codes` 구현·테스트 완료; PR #88에서 #82 runner가 TL visit-event input과 inner-train materialization을 연결 |
 
 ### Control
 
@@ -272,11 +276,11 @@ prototype은 YetiRank로 고정한다.
 
 현재 CatBoost 공식 문서는 위 objective를 ranking 최적화에 지원하고 CatBoostRanker.fit에서 group_id를 받을 수 있다. NDCG, RecallAt, MRR 같은 평가 metric과 학습 objective는 같은 개념이 아니다.
 
-Objective 비교에서는 세 모델에 같은 `iterations=1000` prototype budget과 `eval_metric=NDCG:top=10`을 사용한다. `use_best_model=False`로 두어 validation score가 모델별 저장 tree 수를 바꾸지 않게 한다. CatBoost는 eval set이 있고 validation label이 한 값으로만 구성되지 않으면 기본으로 best-model 저장을 켤 수 있으므로 명시적으로 끈다. 이 설정은 objective 비교를 통제하기 위한 초기 budget이지 최종 hyperparameter 결정이 아니다. 여러 K의 최종 ranking 지표는 별도 metric 코드로 계산하고, #82에서 objective 비교 후 hyperparameter search를 진행한다. ([CatBoost common training parameters](https://catboost.ai/docs/en/references/training-parameters/common))
+Objective 비교를 다시 시작할 수 있게 되면 세 모델에 같은 `iterations=1000` prototype budget과 `eval_metric=NDCG:top=10`을 적용한다. `use_best_model=False`로 두어 validation score가 모델별 저장 tree 수를 바꾸지 않게 한다. CatBoost는 eval set이 있고 validation label이 한 값으로만 구성되지 않으면 기본으로 best-model 저장을 켤 수 있으므로 명시적으로 끈다. 이 설정은 계획된 비교를 통제하기 위한 초기 budget이지 최종 hyperparameter 결정이 아니다. 여러 K의 최종 ranking 지표는 별도 metric 코드로 계산한다. 현재 objective 비교와 hyperparameter search는 미시작이며, candidate-generation/reranking 설계 후 full-contract runtime이 cutoff를 만족할 때에만 재검토한다. ([CatBoost common training parameters](https://catboost.ai/docs/en/references/training-parameters/common))
 
 CatBoost는 범주형 feature를 일반 수치형 결측 규칙으로 처리하지 않는다. 입력에 `None`, `NaN`, pandas의 nullable 값이 있으면 예약 문자열 `__MISSING__`으로 정규화하고, 나머지 범주값도 문자열로 통일한다. 이 값은 데이터의 실제 범주 코드로 사용하지 않는 sentinel이다. ([CatBoost missing values](https://catboost.ai/docs/en/concepts/algorithm-missing-values-processing), [categorical features FAQ](https://catboost.ai/docs/en/concepts/faq))
 
-#79는 CatBoost dependency를 실제 실행 환경에 고정하지 않고 thin adapter만 둔다. #82에서 실행 환경과 버전을 확인한 뒤 dependency와 runtime 설정을 고정한다.
+PR #88은 `pyproject.toml`과 `uv.lock`에 CatBoost runtime dependency를 고정했다. Issue #82의 실제 실행 환경은 Python 3.12와 CatBoost 1.2.10을 사용했다.
 
 ## 8. 평가 지표
 
@@ -301,7 +305,7 @@ CatBoost는 범주형 feature를 일반 수치형 결측 규칙으로 처리하�
 8. untouched VL final evaluation
 9. bootstrap confidence interval
 
-feature search는 runtime이 충분하면 exhaustive search를 사용한다. 비용이 크면 forward + backward greedy search로 축소한다.
+Full-catalog conditional decision은 forward 55개 + 정확히 한 번 backward cleanup에서 최대 10개 제거 평가 + baseline 1개, 총 최대 66 configuration-equivalents다 (약 20.88시간/seed; 1,023개 exhaustive는 약 13.49일/seed). End-to-end config runtime이 300초 이하인 경우 broad screen은 1 seed/config, 선택 finalist는 그 baseline seed를 포함해 총 3 seeds로 한다. 완료된 uniform baseline을 재사용하면 known plan 총량은 baseline 포함 71 equivalents / 22.46시간, remaining은 70 equivalents / 22.15시간이다. 현재 measured config cost 1,139.035초가 cutoff를 넘으므로 이 전략·budget의 실행은 retrieval/reranking 설계 후 runtime gate 통과 전까지 보류한다. 세 seed는 stability heuristic이며 formal confidence interval이 아니다. 산출 근거와 세부 범위는 ranking protocol을 따른다.
 
 ## 10. Bootstrap 리마인더
 
@@ -325,7 +329,7 @@ bootstrap은 negative sampling이 아니라 최종 metric의 변동성과 신뢰
 scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아니라 다음 계약 primitive를 제공한다.
 
 - Feature Group v1
-- pending group fail-closed
+- unknown or unavailable feature group fail-closed
 - train-derived inner-train scope guard
 - same-region candidate filter
 - 네 negative sampling strategy
@@ -335,7 +339,7 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 - CatBoost thin adapter
 - machine-readable default protocol 출력
 
-#80의 traveler 감사와 #81의 synthetic I2 검증은 완료됐다. 실제 ranking model 실행은 #82의 TL inner-validation과 #83의 untouched VL final evaluation 범위다.
+#80의 traveler 감사와 #81의 synthetic I2 검증은 완료됐다. PR #88/#89의 source-tagged candidate scope는 geographic ProductRegion과 달라 그 runtime 및 metric은 corrected baseline과 직접 비교하지 않는다. Corrected cached 수도권 TL full run은 1,139.035초 total, 3.880초 fit, runner-scoped 959.962초 scoring, 3,786 MiB process peak RSS였으며 432 query, 3,052,797 candidate, 1,318,808,304 scored rows를 기록했다. Search-strategy와 seed-budget 조건부 결정을 full-catalog cost에서 계산했다. 현재 비용은 300초 gate를 넘으므로 retrieval/reranking 설계 후 runtime이 gate를 통과하기 전까지 탐색은 보류한다. #83의 untouched VL 평가는 configuration lock 전에는 금지한다.
 
 ## 확인된 사실 / 결정 / 한계
 
@@ -349,15 +353,15 @@ scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아�
 ### 결정
 
 - TL tuning의 train-derived feature와 sampling 통계는 inner-train에서만 계산한다.
-- I2 canonical administrative location은 #81 코드 계약과 synthetic 검증 기준으로 available이다. I4 재계산 helper는 구현 완료이며, #82 runner가 visit-event input을 연결할 때까지 I4 runner feature group만 pending/disabled로 둔다.
+- I2 canonical administrative location은 #81 코드 계약과 synthetic 검증 기준으로 available이다. PR #88은 I4 재계산 helper를 TL visit-event input과 연결하고 inner-train materialization을 fit/scoring 경계까지 전달한다.
 - VL은 최종 configuration을 잠글 때까지 tuning에 사용하지 않는다.
 
 ### 한계
 
 - #79는 actual AI Hub row를 읽지 않는다.
-- 실제 CatBoost 학습 성능은 아직 없다.
-- #81 I2 코드 계약과 synthetic 구현은 준비됐으며, 승인된 입력으로 실제 coverage/conflict 감사는 아직 수행되지 않았다.
-- #80 traveler-trip aggregate 및 split leakage 검증은 완료했다. #82 runner의 inner-train I4 visit-event input 연결은 후속 작업이다.
+- PR #88은 YetiRank prototype feasibility smoke였지만, 후보 geography를 적용하지 않은 역사적 run이다. Corrected run은 geographic candidate policy를 적용한 actual-TL runtime·resource·ranking baseline이며 최종 모델 선택이나 일반화 성능 근거가 아니다. 모델 선택 근거는 다음 search 축에서 마련한다.
+- #81 I2 코드 계약과 synthetic 구현은 준비됐다. #82 actual TL run은 candidate geography를 위한 resolved/unresolved 및 validation coverage aggregate를 기록했으나, 전 권역의 source별 coverage/conflict 감사는 수행하지 않았다.
+- #80 traveler-trip aggregate 및 split leakage 검증은 완료했다. #82 corrected full-TL runtime, process peak RSS, metrics와 cost basis를 actual-data run으로 확인했다. Conditional decision은 forward + exactly one backward cleanup pass, broad 1 seed/config, selected finalist 3 total seeds다. Post-design end-to-end runtime이 300초 이하면 적용하며, 그 전에는 search 실행과 seed repeats를 보류한다. Sampling/feature/objective/hyperparameter 결과는 없다.
 
 ## 재현 참고
 

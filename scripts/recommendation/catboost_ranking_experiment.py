@@ -14,12 +14,17 @@ import argparse
 import bisect
 import json
 import math
+import os
 import random
+import resource
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+import threading
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import wraps
 from enum import StrEnum
-from itertools import combinations
+from itertools import combinations, pairwise
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -211,7 +216,6 @@ class PreparedItemCatalog:
     item_ids: tuple[str, ...]
     feature_columns: tuple[str, ...]
     item_columns: Mapping[str, tuple[Any, ...]] = field(repr=False, compare=False)
-    _row_index: Mapping[str, int] = field(repr=False, compare=False)
     inventory: CandidateInventory
     _normalization_key: tuple[Any, ...] = field(repr=False, compare=False)
     _provenance_token: object = field(default=None, repr=False, compare=False)
@@ -234,8 +238,12 @@ class PreparedItemCatalog:
         item_regions = {str(row.get("region", "")).strip() for row in rows}
         if item_regions != {region}:
             raise ValueError("Prepared candidate catalog must contain one matching region")
+        # Keep the immutable feature tuples in the inventory's lexical order.
+        # Scoring can then slice each cached column directly instead of building
+        # and retaining a second item-id -> row-index map for the full catalog.
+        rows = sorted(rows, key=lambda row: str(row.get("item_id", "")).strip())
         ids = tuple(str(row.get("item_id", "")).strip() for row in rows)
-        if any(not item for item in ids) or len(set(ids)) != len(ids):
+        if any(not item for item in ids) or any(left == right for left, right in pairwise(ids)):
             raise ValueError("Materialized item inventory must have unique non-empty ids")
 
         # Feature ownership comes from the experiment contract. Missing item
@@ -256,17 +264,14 @@ class PreparedItemCatalog:
                 normalize_feature_value(column, row[column], config) for row in rows
             )
         inventory = CandidateInventory.from_items(ids, region=region)
+        if inventory.items != ids:
+            raise ValueError("Prepared feature columns must align with the candidate inventory")
         instance = object.__new__(cls)
         object.__setattr__(instance, "materialization", materialization)
         object.__setattr__(instance, "region", region)
         object.__setattr__(instance, "item_ids", ids)
         object.__setattr__(instance, "feature_columns", selected)
         object.__setattr__(instance, "item_columns", MappingProxyType(normalized))
-        object.__setattr__(
-            instance,
-            "_row_index",
-            MappingProxyType({item: index for index, item in enumerate(ids)}),
-        )
         object.__setattr__(instance, "inventory", inventory)
         object.__setattr__(instance, "_normalization_key", _normalization_key(config))
         object.__setattr__(instance, "_provenance_token", _INNER_TRAIN_MATERIALIZATION_TOKEN)
@@ -778,6 +783,7 @@ def aggregate_ranking_metrics(
     query_rankings: Iterable[tuple[Sequence[str], Iterable[str]]],
     *,
     k_values: Sequence[int] = DEFAULT_K,
+    profiler: Any | None = None,
 ) -> dict[str, float]:
     """Average query-level ranking metrics without retaining prior queries."""
 
@@ -790,11 +796,14 @@ def aggregate_ranking_metrics(
         query_count += 1
         # Ground truth may be a one-shot iterator. Freeze once per query so
         # each requested K sees the same relevant set.
+        metric_started = time.perf_counter() if profiler is not None else 0.0
         relevant = frozenset(relevant_items)
         for k in k_values:
             metric = ranking_metric_at_k(ranked_items, relevant, k)
             for name in names:
                 sums[f"{name}@{k}"] += getattr(metric, name)
+        if profiler is not None:
+            profiler.metric_compute_seconds += time.perf_counter() - metric_started
     if query_count == 0:
         raise ValueError("at least one validation query is required")
     return {name: value / query_count for name, value in sums.items()}
@@ -821,6 +830,272 @@ class StreamingEvaluationResult:
     max_batch_rows: int
 
 
+class ScoringProfiler:
+    """In-memory aggregate-only instrumentation for bounded scorer profiling."""
+
+    PROFILE_VERSION = "catboost-scoring-profile-v3"
+    RSS_SAMPLE_INTERVAL_SECONDS = 0.5
+
+    def __init__(self, *, capture_rankings: bool = False) -> None:
+        self.capture_rankings = capture_rankings
+        self.top_rankings: list[tuple[tuple[str, float], ...]] = []
+        self.query_context_seconds: list[float] = []
+        self.ground_truth_seconds: list[float] = []
+        self.query_seconds: list[float] = []
+        self.query_rows: list[int] = []
+        self.frame_batches: list[tuple[float, int, int]] = []
+        self.candidate_item_slice_seconds = 0.0
+        self.query_context_broadcast_seconds = 0.0
+        self.frame_container_seconds = 0.0
+        self.static_item_cache_seconds = 0.0
+        self.static_item_cache_bytes_estimate = 0
+        self.pool_batches: list[tuple[float, int]] = []
+        self.predict_batches: list[tuple[float, int]] = []
+        self.top_partition_seconds = 0.0
+        self.top_boundary_seconds = 0.0
+        self.top_local_sort_seconds = 0.0
+        self.global_merge_seconds = 0.0
+        self.metric_compute_seconds = 0.0
+        self.aggregate_wall_seconds = 0.0
+        self.scoring_wall_seconds = 0.0
+        self.scoring_user_cpu_seconds = 0.0
+        self.scoring_system_cpu_seconds = 0.0
+        self.scoring_sampled_peak_rss_bytes = 0
+        self.scoring_after_rss_bytes = 0
+        self.inference_mode = "dataframe"
+        self.predict_thread_count: int | None = None
+        self._rss_stop = threading.Event()
+        self._rss_thread: threading.Thread | None = None
+        self._scoring_started: float | None = None
+        self._scoring_cpu_before: Any | None = None
+
+    @staticmethod
+    def _rss_bytes() -> int:
+        try:
+            with open("/proc/self/statm", encoding="ascii") as stream:
+                resident_pages = int(stream.read().split()[1])
+            return resident_pages * os.sysconf("SC_PAGE_SIZE")
+        except (OSError, ValueError, IndexError):
+            return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024)
+
+    @staticmethod
+    def _distribution(values: Sequence[float]) -> dict[str, float | int]:
+        ordered = sorted(float(value) for value in values)
+        if not ordered:
+            return {"count": 0, "mean": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0}
+
+        def percentile(fraction: float) -> float:
+            position = (len(ordered) - 1) * fraction
+            lower = int(position)
+            upper = min(lower + 1, len(ordered) - 1)
+            return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+        return {
+            "count": len(ordered),
+            "mean": sum(ordered) / len(ordered),
+            "p50": percentile(0.50),
+            "p90": percentile(0.90),
+            "p95": percentile(0.95),
+            "p99": percentile(0.99),
+            "max": ordered[-1],
+        }
+
+    def start_rss_sampling(self, *, started_at: float, cpu_before: Any) -> None:
+        self._rss_stop.clear()
+        self._scoring_started = started_at
+        self._scoring_cpu_before = cpu_before
+        self.scoring_sampled_peak_rss_bytes = self._rss_bytes()
+
+        def sample() -> None:
+            while not self._rss_stop.wait(self.RSS_SAMPLE_INTERVAL_SECONDS):
+                self.scoring_sampled_peak_rss_bytes = max(
+                    self.scoring_sampled_peak_rss_bytes, self._rss_bytes(),
+                )
+
+        self._rss_thread = threading.Thread(
+            target=sample, name="issue82-scoring-rss-profile", daemon=True,
+        )
+        self._rss_thread.start()
+
+    def stop_rss_sampling(self) -> None:
+        self._rss_stop.set()
+        if self._rss_thread is not None and self._rss_thread.ident is not None:
+            self._rss_thread.join()
+        self.scoring_after_rss_bytes = self._rss_bytes()
+        self.scoring_sampled_peak_rss_bytes = max(
+            self.scoring_sampled_peak_rss_bytes, self.scoring_after_rss_bytes,
+        )
+
+    @staticmethod
+    def _timing_totals(values: Sequence[tuple[float, int]]) -> dict[str, float | int]:
+        seconds = [entry[0] for entry in values]
+        row_count = sum(entry[1] for entry in values)
+        total_seconds = sum(seconds)
+        return {
+            "batches": len(values),
+            "rows": row_count,
+            "seconds": total_seconds,
+            "seconds_distribution": ScoringProfiler._distribution(seconds),
+            "mean_batch_seconds": total_seconds / len(values) if values else 0.0,
+            "rows_per_second": row_count / total_seconds if total_seconds else 0.0,
+        }
+
+    def summary(self, *, scored_rows: int, candidate_count: int) -> dict[str, object]:
+        frame_seconds = sum(row[0] for row in self.frame_batches)
+        pool_seconds = sum(row[0] for row in self.pool_batches)
+        predict_seconds = sum(row[0] for row in self.predict_batches)
+        frame_rows = sum(row[1] for row in self.frame_batches)
+        query_rates = [
+            rows / seconds if seconds else 0.0
+            for rows, seconds in zip(self.query_rows, self.query_seconds, strict=False)
+        ]
+        tracked = (
+            sum(self.query_context_seconds) + sum(self.ground_truth_seconds)
+            + frame_seconds + pool_seconds + predict_seconds + self.top_partition_seconds
+            + self.top_boundary_seconds + self.top_local_sort_seconds
+            + self.global_merge_seconds + self.metric_compute_seconds
+            + self.static_item_cache_seconds
+        )
+        return {
+            "profile_version": self.PROFILE_VERSION,
+            "query_context_normalization_seconds": self._distribution(self.query_context_seconds),
+            "ground_truth_preparation_seconds": self._distribution(self.ground_truth_seconds),
+            "frame_build": {
+                "batches": len(self.frame_batches),
+                "rows": frame_rows,
+                "columns": sorted({row[2] for row in self.frame_batches}),
+                "seconds": frame_seconds,
+                "mean_batch_seconds": frame_seconds / len(self.frame_batches) if self.frame_batches else 0.0,
+                "milliseconds_per_million_rows": (
+                    frame_seconds * 1_000_000_000 / frame_rows if frame_rows else 0.0
+                ),
+                "candidate_item_slice_seconds": self.candidate_item_slice_seconds,
+                "query_context_broadcast_seconds": self.query_context_broadcast_seconds,
+                "container_construction_seconds": self.frame_container_seconds,
+                "static_item_cache_seconds": self.static_item_cache_seconds,
+                "static_item_cache_bytes_estimate": self.static_item_cache_bytes_estimate,
+            },
+            "predict": self._timing_totals(self.predict_batches),
+            "pool_build": self._timing_totals(self.pool_batches),
+            "inference_mode": self.inference_mode,
+            "predict_thread_count": self.predict_thread_count,
+            "top_k": {
+                "partition_seconds": self.top_partition_seconds,
+                "boundary_tie_seconds": self.top_boundary_seconds,
+                "local_sort_seconds": self.top_local_sort_seconds,
+                "global_merge_seconds": self.global_merge_seconds,
+            },
+            "metric_compute_seconds": self.metric_compute_seconds,
+            "aggregate_ranking_wall_seconds": self.aggregate_wall_seconds,
+            "scoring_wall_seconds": self.scoring_wall_seconds,
+            "unaccounted_seconds": self.scoring_wall_seconds - tracked,
+            "query_elapsed_seconds": self._distribution(self.query_seconds),
+            "query_rows_per_second": self._distribution(query_rates),
+            "scored_rows": scored_rows,
+            "candidate_count": candidate_count,
+            "scoring_process_user_cpu_seconds": self.scoring_user_cpu_seconds,
+            "scoring_process_system_cpu_seconds": self.scoring_system_cpu_seconds,
+            "scoring_cpu_utilization": (
+                (self.scoring_user_cpu_seconds + self.scoring_system_cpu_seconds)
+                / self.scoring_wall_seconds if self.scoring_wall_seconds else 0.0
+            ),
+            "scoring_sampled_peak_rss_mib": round(
+                self.scoring_sampled_peak_rss_bytes / 1024**2, 2,
+            ),
+            "scoring_rss_sampling_interval_ms": round(self.RSS_SAMPLE_INTERVAL_SECONDS * 1000),
+            "scoring_after_rss_mib": round(self.scoring_after_rss_bytes / 1024**2, 2),
+            "batch_rows_per_second": scored_rows / predict_seconds if predict_seconds else 0.0,
+            "frame_rows_per_second": frame_rows / frame_seconds if frame_seconds else 0.0,
+            "top_k_rankings_captured": len(self.top_rankings),
+        }
+
+
+def _top_scored_items(
+    item_ids: Sequence[str], raw_scores: Any, limit: int,
+    *, profiler: ScoringProfiler | None = None,
+) -> list[tuple[str, float]]:
+    """Return exact lexical-tiebroken top-K from one lexically ordered batch."""
+    if limit <= 0:
+        raise ValueError("Top-K limit must be positive")
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("numpy is required for bounded CatBoost scoring") from exc
+
+    scores = np.asarray(raw_scores, dtype=np.float64)
+    if scores.ndim != 1 or len(scores) != len(item_ids):
+        raise ValueError("Model returned a score count that does not match the batch")
+    if not np.isfinite(scores).all():
+        raise ValueError("Model returned a non-finite ranking score")
+
+    if len(item_ids) <= limit:
+        positions = range(len(item_ids))
+    else:
+        threshold_index = len(item_ids) - limit
+        partition_started = time.perf_counter() if profiler is not None else 0.0
+        threshold = np.partition(scores, threshold_index)[threshold_index]
+        if profiler is not None:
+            profiler.top_partition_seconds += time.perf_counter() - partition_started
+        boundary_started = time.perf_counter() if profiler is not None else 0.0
+        above = np.flatnonzero(scores > threshold)
+        tied = np.flatnonzero(scores == threshold)
+        # Candidate IDs are lexically ordered, so the first boundary ties are
+        # exactly the legacy (-score, item_id) order without sorting the batch.
+        boundary_count = limit - len(above)
+        positions = [int(index) for index in above]
+        positions.extend(int(index) for index in tied[:boundary_count])
+        if profiler is not None:
+            profiler.top_boundary_seconds += time.perf_counter() - boundary_started
+
+    sort_started = time.perf_counter() if profiler is not None else 0.0
+    result = sorted(
+        ((item_ids[index], float(scores[index])) for index in positions),
+        key=lambda row: (-row[1], row[0]),
+    )
+    if profiler is not None:
+        profiler.top_local_sort_seconds += time.perf_counter() - sort_started
+    return result
+
+
+def _profile_scoring_call(
+    function: Callable[..., StreamingEvaluationResult],
+) -> Callable[..., StreamingEvaluationResult]:
+    """Guarantee profiler cleanup and final timing capture on success or failure."""
+
+    @wraps(function)
+    def wrapped(*args: Any, **kwargs: Any) -> StreamingEvaluationResult:
+        profiler = kwargs.get("profiler")
+        if profiler is None:
+            return function(*args, **kwargs)
+        call_started = time.perf_counter()
+        cpu_before = resource.getrusage(resource.RUSAGE_SELF)
+        profiler._scoring_started = None
+        profiler._scoring_cpu_before = None
+        profiler.aggregate_wall_seconds = 0.0
+        try:
+            return function(*args, **kwargs)
+        finally:
+            try:
+                scoring_started = profiler._scoring_started or call_started
+                cpu_start = profiler._scoring_cpu_before or cpu_before
+                elapsed = time.perf_counter() - scoring_started
+                if profiler.aggregate_wall_seconds == 0.0:
+                    profiler.aggregate_wall_seconds = elapsed
+                profiler.scoring_wall_seconds = elapsed
+                cpu_after = resource.getrusage(resource.RUSAGE_SELF)
+                profiler.scoring_user_cpu_seconds = cpu_after.ru_utime - cpu_start.ru_utime
+                profiler.scoring_system_cpu_seconds = cpu_after.ru_stime - cpu_start.ru_stime
+            finally:
+                try:
+                    profiler.stop_rss_sampling()
+                finally:
+                    profiler._scoring_started = None
+                    profiler._scoring_cpu_before = None
+
+    return wrapped
+
+
+@_profile_scoring_call
 def score_inner_validation_queries(
     model: Any,
     catalog: PreparedItemCatalog,
@@ -829,6 +1104,12 @@ def score_inner_validation_queries(
     query_features: Mapping[str, Mapping[str, Any]],
     config: ExperimentConfig,
     max_rows_per_batch: int = 2048,
+    profiler: ScoringProfiler | None = None,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
+    progress_interval: int = 0,
+    progress_total: int = 0,
+    inference_mode: str = "dataframe",
+    predict_thread_count: int | None = None,
 ) -> StreamingEvaluationResult:
     """Score the region inventory in bounded chunks, one query at a time.
 
@@ -839,6 +1120,12 @@ def score_inner_validation_queries(
     """
     if max_rows_per_batch <= 0:
         raise ValueError("max_rows_per_batch must be positive")
+    if inference_mode not in {
+        "dataframe", "dataframe_cached_items", "dataframe_pool", "numpy_pool", "numpy_array",
+    }:
+        raise ValueError("Unsupported prediction input mode")
+    if predict_thread_count is not None and predict_thread_count <= 0:
+        raise ValueError("predict_thread_count must be positive when provided")
     if catalog._provenance_token is not _INNER_TRAIN_MATERIALIZATION_TOKEN:
         raise ValueError("Prepared candidate catalog lacks runner provenance")
     if catalog.materialization._provenance_token is not _INNER_TRAIN_MATERIALIZATION_TOKEN:
@@ -852,6 +1139,10 @@ def score_inner_validation_queries(
     if not catalog.inventory.items:
         raise ValueError("Same-region candidate inventory must not be empty")
 
+    if profiler is not None:
+        profiler.inference_mode = inference_mode
+        profiler.predict_thread_count = predict_thread_count
+
     try:
         import pandas as pd
     except ImportError as exc:
@@ -861,15 +1152,52 @@ def score_inner_validation_queries(
     query_columns = _query_feature_columns(config)
     if set(catalog.item_columns) != item_columns:
         raise ValueError("Prepared catalog item columns do not match experiment contract")
-    inventory_indices = tuple(catalog._row_index[item] for item in catalog.inventory.items)
+    if catalog.item_ids != catalog.inventory.items:
+        raise ValueError("Prepared feature columns do not align with the candidate inventory")
+    categorical_columns = tuple(categorical_feature_columns(config))
+    categorical_indices = tuple(
+        catalog.feature_columns.index(column) for column in categorical_columns
+    )
+    pool_class = None
+    np = None
+    needs_pool = inference_mode in {"dataframe_pool", "numpy_pool"}
+    if needs_pool:
+        try:
+            from catboost import Pool as pool_class
+        except ImportError as exc:
+            raise RuntimeError("CatBoost Pool is required for this prediction input mode") from exc
+    if inference_mode in {"numpy_pool", "numpy_array"}:
+        try:
+            import numpy as np
+        except ImportError as exc:
+            raise RuntimeError("numpy is required for NumPy prediction input") from exc
     max_k = max(config.k_values)
     scored_rows = 0
     max_batch = 0
     query_count = 0
-
+    scoring_started = time.perf_counter()
+    cpu_before = resource.getrusage(resource.RUSAGE_SELF)
+    aggregate_started = scoring_started
+    if profiler is not None:
+        profiler.start_rss_sampling(started_at=scoring_started, cpu_before=cpu_before)
     def scored_rankings() -> Iterable[tuple[tuple[str, ...], frozenset[str]]]:
         nonlocal scored_rows, max_batch, query_count
+        static_item_frame = None
+        if inference_mode == "dataframe_cached_items":
+            static_columns = tuple(column for column in catalog.feature_columns if column in item_columns)
+            estimated_cache_bytes = len(catalog.inventory.items) * len(static_columns) * 8
+            if estimated_cache_bytes > 512 * 1024**2:
+                raise ValueError("Static item cache exceeds the scorer's memory bound")
+            cache_started = time.perf_counter()
+            static_item_frame = pd.DataFrame(
+                {column: catalog.item_columns[column] for column in static_columns},
+                columns=static_columns,
+            )
+            if profiler is not None:
+                profiler.static_item_cache_seconds += time.perf_counter() - cache_started
+                profiler.static_item_cache_bytes_estimate = estimated_cache_bytes
         for query_id, relevant_items in query_ground_truth:
+            query_started = time.perf_counter()
             query_key = str(query_id).strip()
             if catalog.materialization.partition_by_trip.get(query_key) != "inner-validation":
                 raise ValueError("Scoring query is not in the materialized inner-validation partition")
@@ -881,7 +1209,11 @@ def score_inner_validation_queries(
             if str(source_context["region"]).strip() != catalog.region:
                 raise ValueError("Query context region conflicts with the prepared candidate region")
             query_count += 1
+            truth_started = time.perf_counter()
             relevant = frozenset(str(item) for item in relevant_items)
+            if profiler is not None:
+                profiler.ground_truth_seconds.append(time.perf_counter() - truth_started)
+            context_started = time.perf_counter()
             normalized_query = {
                 column: normalize_feature_value(column, source_context[column], config)
                 for column in query_columns if column in source_context
@@ -889,36 +1221,153 @@ def score_inner_validation_queries(
             missing_query = set(query_columns) - set(normalized_query)
             if missing_query:
                 raise ValueError(f"Query context missing selected features: {sorted(missing_query)}")
+            if profiler is not None:
+                profiler.query_context_seconds.append(time.perf_counter() - context_started)
 
             best: list[tuple[str, float]] = []
             items = catalog.inventory.items
             for start in range(0, len(items), max_rows_per_batch):
                 stop = min(start + max_rows_per_batch, len(items))
+                frame_started = time.perf_counter()
+                item_slice_started = time.perf_counter()
                 batch_ids = items[start:stop]
-                batch_positions = inventory_indices[start:stop]
-                frame_columns: dict[str, list[Any]] = {}
-                for column in catalog.feature_columns:
-                    if column in item_columns:
-                        values = catalog.item_columns[column]
-                        frame_columns[column] = [values[position] for position in batch_positions]
+                item_values = {
+                    column: catalog.item_columns[column][start:stop]
+                    for column in catalog.feature_columns if column in item_columns
+                } if static_item_frame is None else None
+                static_slice = (
+                    static_item_frame.iloc[start:stop]
+                    if static_item_frame is not None else None
+                )
+                item_slice_seconds = time.perf_counter() - item_slice_started
+                query_broadcast_started = time.perf_counter()
+                query_values = {
+                    column: [normalized_query[column]] * len(batch_ids)
+                    for column in query_columns
+                }
+                query_broadcast_seconds = time.perf_counter() - query_broadcast_started
+                container_started = time.perf_counter()
+                if static_slice is not None:
+                    frame = static_slice.copy(deep=False)
+                    for column in query_columns:
+                        frame[column] = query_values[column]
+                    prediction_data = frame.loc[:, catalog.feature_columns]
+                else:
+                    frame_columns: dict[str, Sequence[Any]] = {
+                        column: item_values[column]
+                        for column in catalog.feature_columns if column in item_columns
+                    }
+                    frame_columns.update(query_values)
+                    if inference_mode in {"numpy_pool", "numpy_array"}:
+                        prediction_data = np.empty(
+                            (len(batch_ids), len(catalog.feature_columns)), dtype=object,
+                        )
+                        for column_index, column in enumerate(catalog.feature_columns):
+                            prediction_data[:, column_index] = frame_columns[column]
                     else:
-                        frame_columns[column] = [normalized_query[column]] * len(batch_ids)
-                frame = pd.DataFrame(frame_columns, columns=catalog.feature_columns)
-                scores = model.predict(frame)
-                if len(scores) != len(batch_ids):
-                    raise ValueError("Model returned a score count that does not match the batch")
-                batch_scored: list[tuple[str, float]] = []
-                for item, raw_score in zip(batch_ids, scores, strict=True):
-                    score = float(raw_score)
-                    if not math.isfinite(score):
-                        raise ValueError("Model returned a non-finite ranking score")
-                    batch_scored.append((item, score))
+                        prediction_data = pd.DataFrame(frame_columns, columns=catalog.feature_columns)
+                container_seconds = time.perf_counter() - container_started
+                if profiler is not None:
+                    profiler.candidate_item_slice_seconds += item_slice_seconds
+                    profiler.query_context_broadcast_seconds += query_broadcast_seconds
+                    profiler.frame_container_seconds += container_seconds
+                    profiler.frame_batches.append((time.perf_counter() - frame_started, len(batch_ids), len(catalog.feature_columns)))
+                if needs_pool:
+                    pool_started = time.perf_counter()
+                    pool_kwargs: dict[str, Any] = {"cat_features": categorical_indices}
+                    if inference_mode == "numpy_pool":
+                        pool_kwargs["feature_names"] = list(catalog.feature_columns)
+                    prediction_data = pool_class(prediction_data, **pool_kwargs)
+                    pool_seconds = time.perf_counter() - pool_started
+                    if profiler is not None:
+                        profiler.pool_batches.append((pool_seconds, len(batch_ids)))
+                predict_started = time.perf_counter()
+                predict_kwargs = (
+                    {"thread_count": predict_thread_count}
+                    if predict_thread_count is not None else {}
+                )
+                scores = model.predict(prediction_data, **predict_kwargs)
+                predict_seconds = time.perf_counter() - predict_started
+                if profiler is not None:
+                    profiler.predict_batches.append((predict_seconds, len(batch_ids)))
+                batch_scored = _top_scored_items(batch_ids, scores, max_k, profiler=profiler)
                 scored_rows += len(batch_ids)
                 max_batch = max(max_batch, len(batch_ids))
+                merge_started = time.perf_counter() if profiler is not None else 0.0
                 best = sorted((*best, *batch_scored), key=lambda row: (-row[1], row[0]))[:max_k]
+                if profiler is not None:
+                    profiler.global_merge_seconds += time.perf_counter() - merge_started
+            if profiler is not None:
+                profiler.query_seconds.append(time.perf_counter() - query_started)
+                profiler.query_rows.append(len(items))
+                if profiler.capture_rankings:
+                    profiler.top_rankings.append(tuple(best))
             yield tuple(item for item, _ in best), relevant
+            if (
+                profiler is not None and progress_callback is not None
+                and progress_interval > 0
+                and (
+                    query_count % progress_interval == 0
+                    or (progress_total > 0 and query_count == progress_total)
+                )
+            ):
+                elapsed = time.perf_counter() - scoring_started
+                frame_seconds = sum(row[0] for row in profiler.frame_batches)
+                predict_seconds = sum(row[0] for row in profiler.predict_batches)
+                top_k_seconds = (
+                    profiler.top_partition_seconds + profiler.top_boundary_seconds
+                    + profiler.top_local_sort_seconds + profiler.global_merge_seconds
+                )
+                query_context_seconds = sum(profiler.query_context_seconds)
+                ground_truth_seconds = sum(profiler.ground_truth_seconds)
+                tracked_seconds = (
+                    query_context_seconds + ground_truth_seconds + frame_seconds
+                    + sum(row[0] for row in profiler.pool_batches)
+                    + predict_seconds + top_k_seconds + profiler.metric_compute_seconds
+                    + profiler.static_item_cache_seconds
+                )
+                cpu_now = resource.getrusage(resource.RUSAGE_SELF)
+                query_rates = [
+                    rows / seconds if seconds else 0.0
+                    for rows, seconds in zip(
+                        profiler.query_rows, profiler.query_seconds, strict=False,
+                    )
+                ]
+                progress_callback({
+                    "queries_completed": query_count,
+                    "scored_rows": scored_rows,
+                    "elapsed_seconds": elapsed,
+                    "current_rss_mib": round(profiler._rss_bytes() / 1024**2, 2),
+                    "scoring_sampled_peak_rss_mib": round(
+                        profiler.scoring_sampled_peak_rss_bytes / 1024**2, 2,
+                    ),
+                    "scoring_rss_sampling_interval_ms": round(
+                        ScoringProfiler.RSS_SAMPLE_INTERVAL_SECONDS * 1000,
+                    ),
+                    "query_context_seconds": query_context_seconds,
+                    "ground_truth_seconds": ground_truth_seconds,
+                    "frame_seconds": frame_seconds,
+                    "candidate_item_slice_seconds": profiler.candidate_item_slice_seconds,
+                    "query_context_broadcast_seconds": profiler.query_context_broadcast_seconds,
+                    "frame_container_seconds": profiler.frame_container_seconds,
+                    "static_item_cache_seconds": profiler.static_item_cache_seconds,
+                    "pool_build_seconds": sum(row[0] for row in profiler.pool_batches),
+                    "predict_seconds": predict_seconds,
+                    "top_k_seconds": top_k_seconds,
+                    "metric_seconds": profiler.metric_compute_seconds,
+                    "unaccounted_seconds": elapsed - tracked_seconds,
+                    "user_cpu_seconds": cpu_now.ru_utime - cpu_before.ru_utime,
+                    "system_cpu_seconds": cpu_now.ru_stime - cpu_before.ru_stime,
+                    "query_elapsed_seconds": ScoringProfiler._distribution(profiler.query_seconds),
+                    "query_rows_per_second": ScoringProfiler._distribution(query_rates),
+                    "rows_per_second": scored_rows / elapsed if elapsed else 0.0,
+                })
 
-    metrics = aggregate_ranking_metrics(scored_rankings(), k_values=config.k_values)
+    metrics = aggregate_ranking_metrics(
+        scored_rankings(), k_values=config.k_values, profiler=profiler,
+    )
+    if profiler is not None:
+        profiler.aggregate_wall_seconds = time.perf_counter() - aggregate_started
     return StreamingEvaluationResult(
         metrics=MappingProxyType(metrics),
         query_count=query_count,

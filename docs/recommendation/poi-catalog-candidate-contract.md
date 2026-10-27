@@ -897,6 +897,18 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 **결론: D — 선택한 로컬 POI Master에서 실제 후보 부재가 확인됐고, 그 원인은 미확정이다.** 이번 진단은 수도권 TL inner-validation의 관측 양성과 같은 수도권 `Other` 역할 Master 사이의 키 포함 여부만 다룬다. 선행 기록의 `883/638/245`는 `(TRAVEL_ID, POI_ID)` 쌍 수다. 고유 `POI_ID` 수는 별도로 계산했다.
 
+### Issue #82 candidate geography correction
+
+`CAPITAL_TL` / `CAPITAL_OTHER`는 입력 출처와 관측 코호트의 역할 binding이다. 이 값만으로 POI의 지리적 수도권을 결정하지 않는다. Runner는 #81의 `canonical_admin_sido_code`와 `load_poi_catalog_policy()`가 읽는 versioned `product_region_to_ldong_regn_cd` 단일 정책으로 ProductRegion을 판정한다. 수도권 후보에는 위치가 resolved이고 canonical SIDO code가 해당 정책의 `capital` code 집합에 속하는 Master item만 포함한다. Unresolved 위치와 다른 ProductRegion은 candidate inventory에서 제외한다.
+
+Validation positive는 candidate filter로 제거하지 않는다. 평가 ground truth에 모두 남기고, privacy-safe 집계에서 candidate coverage, 원본 Master 부재, geography unresolved, duplicate-key 제외, 다른 ProductRegion을 구분한다. 이 offline ranking 후보 범위는 TourAPI serving eligibility나 POI identity를 정하지 않는다.
+
+Corrected 수도권 run은 Master 7,442,866개 중 resolved policy-mapped candidate 3,052,797개를 포함했다. SIDO code 11/28/41 candidate count는 1,158,806 / 338,281 / 1,555,710이며, geography unresolved 60,874개 (0.8179%)와 resolved-outside 4,329,195개는 제외했다. Inner-validation positives는 432 query/883 pairs 모두 ground truth에 남겼고 345 query/568 pairs가 eligible candidate와 교차했다. Runner의 full 432-query cached-item profile은 959.962초 scoring을 측정했다. Source-package region은 provenance로만 쓰였으며 ProductRegion eligibility와 분리됐다.
+
+Scorer optimization은 eligible candidate universe 밖으로 나가지 않는다. 131,072행 bounded frame과 static item-side shallow view cache는 이미 준비된 catalog feature values를 재사용하며 query-context만 query별로 broadcast한다. I2/I3/I4 값·정의, train/validation leakage 경계, positive ground truth, metric implementation, score tie-break를 변경하지 않는다. Cached-vs-uncached corrected geography full runs는 432 queries에서 metric parity가 exact였다. PR #88/#89는 source-tagged full-Master scope였으므로 그 후보 수·metric·runtime과 corrected result 사이의 actual speedup/parity를 주장하지 않는다. Detailed filter counts와 profiler 결과는 CatBoost ranking protocol을 따른다.
+
+아래 195-ID / 245-pair 결과는 이전 PR #88 runner가 사용한 전체 unique Master key 기준 exact-key 부재 기록이다. 해당 known limitation의 원인을 다시 조사하지 않는다. 이전 #88/#89의 전체 후보 수·metric·runtime은 source package region을 후보 geography로 잘못 쓴 run의 역사 기록으로 남기며, corrected ProductRegion baseline과 직접 비교하거나 search budget 단가로 사용하지 않는다. Corrected full TL rerun과 candidate-scope aggregate는 ranking protocol에 기록했다.
+
 ### 조사 순서
 
 #### 1. 입력 출처와 release
@@ -967,10 +979,10 @@ runner의 `_make_frame`은 관측 positive를 trip별로 모은 뒤 각 trip의 
 - `A_ID − B_ID`에 속하는 누락 positive ID와 `A_pair` 중 그 ID를 포함한 쌍에서 reader 값이 `_clean_str`로 바뀐 항목은 0 ID / 0쌍이고, 과학적 표기법 형태는 0개였다. 따라서 trim, null 변환, dtype 추론, BOM 또는 인코딩이 이 누락을 만들었다는 증거는 없다.
 - 유효 방문 이벤트 중 빈 Visit `POI_ID` 6,710행은 positive를 만들 때 제외됐다. 이는 비어 있지 않은 195개 누락 positive ID의 설명이 아니다.
 
-#### 5. Master 중복 및 runner 필터
+#### 5. Master 중복 및 이전 runner 필터의 범위
 
 - 선택한 Master는 7,442,866행이며 비공백 ID도 7,442,866개다. 빈 Master ID 0개, 중복 ID 0개였고 duplicate policy로 제외된 positive ID/쌍도 0/0이다.
-- Admin feature unavailable, category unavailable, same-region, 기타 runner 필터로 제외된 positive ID/쌍은 각각 0/0이다. runner는 해당 정적 feature 값이 비어 있어도 candidate key를 제거하지 않고, 이 실행의 모든 후보를 수도권으로 묶어 same-region 후보를 만든다.
+- 이 값은 이전 PR #88 runner의 source-region-tagged 후보 범위에 대한 기록이다. 그 runner는 canonical geography filter를 적용하지 않았으므로 이 결과를 현재 candidate filter의 제외 집계로 해석하지 않는다. Corrected runner는 canonical location unresolved와 정책 밖 geography를 candidate에서 제외하며, actual corrected filter 집계는 Issue #82 protocol에 기록했다.
 
 #### 6. 선택한 로컬 Master에서 확인된 부재
 
@@ -991,7 +1003,7 @@ runner의 `_make_frame`은 관측 positive를 trip별로 모은 뒤 각 trip의 
 #### 확인된 사실
 
 - inner-validation 양성은 883개 trip–POI 쌍과 610개 고유 POI ID다.
-- 원본 Master `B_ID`와 runner 후보 `C_ID`는 각각 7,442,866개다. `A_ID − B_ID`는 195개 고유 ID이며, `A_pair`에서 그 ID를 포함하는 쌍은 245개다.
+- 원본 Master `B_ID`와 이전 PR #88 runner 후보 `C_ID`는 각각 7,442,866개다. `A_ID − B_ID`는 195개 고유 ID이며, `A_pair`에서 그 ID를 포함하는 쌍은 245개다. 이는 현재 geography-scoped candidate size나 coverage가 아니다.
 - 432개 evaluation query 중 370개에는 후보 positive가 있었고 62개에는 없었다. 공식 end-to-end ranking 지표에서는 62개 query를 miss로 유지한다.
 - 문자열 변환 회복, duplicate, parser/dtype 및 후보 필터에 의한 설명은 0건이다.
 - 공식 schema는 ID 열 타입/필수 여부를 정의하지만 Visit ↔ Master 동일 namespace를 보장하지 않는다.
