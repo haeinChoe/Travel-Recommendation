@@ -14,6 +14,7 @@ from scripts.recommendation.serving_benchmark import (
     hit_rate_at_k,
     ndcg_at_k,
     parse_llm_ranking,
+    random_quality_baseline,
 )
 
 
@@ -206,6 +207,20 @@ class ServingBenchmarkTest(unittest.TestCase):
         self.assertEqual(report["success_rate"], 0.5)
         self.assertEqual(report["latency_ms"]["p50"], 10.0)
         self.assertEqual(report["failure_samples"][0]["error_type"], "ValueError")
+        self.assertEqual(
+            report["quality_failure_aware"]["mrr"],
+            report["quality_success_only"]["mrr"] / 2,
+        )
+
+    def test_random_quality_baseline_is_deterministic(self) -> None:
+        requests = generate_synthetic_requests(count=4, candidates_per_request=5, seed=11)
+        first = random_quality_baseline(requests, seed=99, k=3)
+        second = random_quality_baseline(requests, seed=99, k=3)
+
+        self.assertEqual(first, second)
+        self.assertIn("ndcg@3", first)
+        self.assertIn("hit_rate@3", first)
+        self.assertIn("mrr", first)
 
 
 if __name__ == "__main__":
