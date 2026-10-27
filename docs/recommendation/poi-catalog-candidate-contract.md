@@ -903,6 +903,10 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 
 Validation positive는 candidate filter로 제거하지 않는다. 평가 ground truth에 모두 남기고, privacy-safe 집계에서 candidate coverage, 원본 Master 부재, geography unresolved, duplicate-key 제외, 다른 ProductRegion을 구분한다. 이 offline ranking 후보 범위는 TourAPI serving eligibility나 POI identity를 정하지 않는다.
 
+Corrected 수도권 run은 Master 7,442,866개 중 resolved policy-mapped candidate 3,052,797개를 포함했다. SIDO code 11/28/41 candidate count는 1,158,806 / 338,281 / 1,555,710이며, geography unresolved 60,874개 (0.8179%)와 resolved-outside 4,329,195개는 제외했다. Inner-validation positives는 432 query/883 pairs 모두 ground truth에 남겼고 345 query/568 pairs가 eligible candidate와 교차했다. Runner의 full 432-query cached-item profile은 959.962초 scoring을 측정했다. Source-package region은 provenance로만 쓰였으며 ProductRegion eligibility와 분리됐다.
+
+Scorer optimization은 eligible candidate universe 밖으로 나가지 않는다. 131,072행 bounded frame과 static item-side shallow view cache는 이미 준비된 catalog feature values를 재사용하며 query-context만 query별로 broadcast한다. I2/I3/I4 값·정의, train/validation leakage 경계, positive ground truth, metric implementation, score tie-break를 변경하지 않는다. Cached-vs-uncached corrected geography full runs는 432 queries에서 metric parity가 exact였다. PR #88/#89는 source-tagged full-Master scope였으므로 그 후보 수·metric·runtime과 corrected result 사이의 actual speedup/parity를 주장하지 않는다. Detailed filter counts와 profiler 결과는 CatBoost ranking protocol을 따른다.
+
 아래 195-ID / 245-pair 결과는 이전 PR #88 runner가 사용한 전체 unique Master key 기준 exact-key 부재 기록이다. 해당 known limitation의 원인을 다시 조사하지 않는다. 이전 #88/#89의 전체 후보 수·metric·runtime은 source package region을 후보 geography로 잘못 쓴 run의 역사 기록으로 남기며, corrected ProductRegion baseline과 직접 비교하거나 search budget 단가로 사용하지 않는다. Corrected full TL rerun과 candidate-scope aggregate는 ranking protocol에 기록했다.
 
 ### 조사 순서

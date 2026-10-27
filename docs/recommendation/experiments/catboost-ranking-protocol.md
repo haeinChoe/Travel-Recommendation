@@ -1,7 +1,7 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
 **관련 Issue:** #79, #82
-**현재 상태:** PR #88/#89의 과거 full-run은 TN_POI_MASTER 모든 고유 ID에 source-package region을 부여한 잘못된 geography scope였다. Runner는 #81 canonical administrative location과 versioned `poi-catalog-candidate-v1` 정책으로 후보 geography를 분리했고, corrected 수도권 TL full rerun을 완료했다. 3,052,797개 후보·432 validation query·1,318,808,304 scored rows에서 total 1,532.677초, scoring 1,322.860초, peak RSS 3,788 MiB였다. 이 측정에 근거해 feature search는 한 번의 backward cleanup을 포함한 forward/backward greedy로 하고 broad screen은 1 seed, 최종 configuration은 총 3 seeds로 정했다. 다음 checkpoint는 negative sampling이며 아직 시작하지 않았다. VL은 읽지 않았다.
+**현재 상태:** PR #88/#89의 과거 full-run은 TN_POI_MASTER 모든 고유 ID에 source-package region을 부여한 잘못된 geography scope였다. Runner는 #81 canonical administrative location과 versioned `poi-catalog-candidate-v1` 정책으로 후보 geography를 분리했다. Corrected 수도권 TL full benchmark는 3,052,797개 후보·432 validation query·1,318,808,304 scored rows에서 total 1,139.035초, runner-scoped scoring 959.962초, peak RSS 3,786 MiB였다. 이 비용을 기준으로, 향후 full-catalog search가 end-to-end 300초 이내가 되면 forward + 정확히 한 번의 backward cleanup pass, broad screen 1 seed/config, 선택된 finalist 3 total seeds를 쓴다. 현재는 scoring이 cutoff를 넘으므로 그 conditional plan의 실행을 보류한다. 다음 checkpoint는 별도의 Candidate Generation → CatBoost reranking 설계와 runtime 재측정이다. VL은 읽지 않았다.
 
 ## 이 문서가 답하려는 질문
 
@@ -40,7 +40,7 @@ VL 최종 평가 (#83)
 - metrics: **NDCG@K / Recall@K / MRR@K / HitRate@K**
 - 기본 K: **5 / 10 / 20**
 - full-catalog scoring은 query별 제한 행 단위로 유지하고, 동률에서 item ID 오름차순을 포함한 global top-K 결과를 보존한다.
-- corrected full-TL cost 1,532.677초/config을 기준으로 10-group exhaustive는 18.15일/seed, forward 55 + 단일 backward cleanup 최대 10 + baseline 1의 greedy는 28.10시간/seed로 projection했다. **Forward + backward single cleanup greedy**를 선택하고, broad screen은 configuration당 1 seed, 최종 configuration은 총 3 seeds로 확인한다. Sampling+feature+seed repeats의 예상량은 현재 baseline 포함 최대 71 configuration-equivalents(약 30.23시간)이며, 세부 산술은 아래에 기록한다.
+- Conditional full-catalog decision, if the remeasured end-to-end configuration is at or below the 300-second gate: choose forward + exactly one backward cleanup pass (up to 66 config-equivalents including baseline), broad screen at 1 seed/config, then the selected finalist at 3 total seeds. At the measured 1,139.035-second/config cost, 10-group exhaustive would take 13.49 days/seed and the 66-config greedy path 20.88 hours/seed. Keep this chosen strategy/budget on hold until the gate passes; no search has started.
 - 공식 VL은 모든 tuning이 끝난 뒤 사용
 
 ## 선행 작업 상태
@@ -52,7 +52,7 @@ VL 최종 평가 (#83)
 
 ## 다음 행동
 
-#80/#81과 #82 scorer 최적화, synthetic parity, corrected actual-TL benchmark 및 budget 결정을 완료했다. PR #88/#89의 과거 full-run은 candidate geography 오류 때문에 corrected baseline을 대체하지 않는다. 다음 checkpoint에서 동일 candidate, split, feature, YetiRank 설정으로 uniform baseline과 popularity-weighted, mixed, hard를 1×·1 seed로 비교한다. 현재 sampling search는 실행하지 않았다.
+#80/#81, scorer profiling, corrected actual-TL benchmark, synthetic/bounded parity와 full-run search-cost 계산을 완료했다. PR #88/#89의 과거 full-run은 candidate geography 오류 때문에 corrected baseline을 대체하지 않는다. Corrected default scorer도 16.0분이 걸려 5분 cutoff를 넘는다. 다음 checkpoint는 candidate generation과 CatBoost reranking을 분리하는 설계를 비교하고 전체 검증계약 아래 runtime을 다시 측정하는 것이다. 그 설계 전에는 negative-sampling search를 시작하지 않는다.
 
 ---
 
@@ -120,7 +120,7 @@ feature = 작은 runnable set
 
 ### Scoring 최적화 checkpoint
 
-기존 scorer는 카탈로그 행 순서와 inventory의 정렬 순서 사이에 별도 전체 item-index map을 만들고, validation query마다 32,768행 chunk를 생성했다. 각 chunk에서 전체 score tuple을 정렬해 top-K를 골랐다. 새 경로는 immutable item feature tuple을 candidate ID 순으로 한 번 정렬해 정렬된 chunk를 직접 자르고, NumPy partition으로 경계 score와 동률 ID만 처리한다. prediction frame의 최대 행 수는 262,144로 올렸으며, 후보 전체를 한 번에 materialize하지 않는다. candidate universe, feature 값, metric, positive 처리와 동률 정렬 규칙은 그대로다.
+Scorer는 candidate ID 순서에 정렬된 immutable item feature columns를 query별 bounded batch로 읽고, 전체 score 배열을 정렬하지 않고 NumPy partition과 경계 동률 처리를 사용한다. Final runner는 131,072행 이하의 DataFrame batch를 사용하며, static item-side columns를 한 번 만든 DataFrame에서 shallow `.iloc` views로 재사용한다. Query context만 batch별 broadcast한다. Candidate universe, feature column/value, I2/I3/I4, validation-positive ground truth, metric, tie-break와 leakage boundary는 변경하지 않는다. Generic scorer의 기본 DataFrame 경로는 비교를 위해 유지한다.
 
 아래 synthetic 결과는 scorer 구현 parity와 bounded frame 크기만 검증한다. actual 수도권 TL을 다시 실행한 결과로 해석하지 않는다.
 
@@ -156,18 +156,19 @@ Corrected 수도권 TL rerun은 YetiRank, uniform 1×, 1,000 iterations, seed 20
 
 이 합계에서 후보 3,052,797개는 수도권 정책 코드별 resolved candidate count의 합이며 실제 post-filter inventory count와 일치했다. Validation positive 전체를 ground truth에 유지했다.
 
-Corrected full-run은 YetiRank, uniform negative sampling 1×, 1,000 iterations, seed 20261025, 기존 traveler split 및 동일한 feature groups로 수행했다. 아래 runtime은 전체 입력 구성부터 scoring 완료까지의 실제 측정이다.
+Corrected full-run은 YetiRank, uniform negative sampling 1×, 1,000 iterations, seed 20261025, 기존 traveler split 및 동일한 feature groups로 수행했다. Final run은 131,072행 batch와 cached static item-side frame을 사용했다. Runtime은 전체 입력 구성부터 scoring 완료까지의 실제 측정이다.
 
 | 항목 | Corrected 수도권 TL |
 | --- | ---: |
-| Total runtime | 1,532.677초 |
-| CatBoost fit | 6.296초 |
-| Validation scoring | 1,322.860초 |
-| Peak process RSS | 3,788 MiB |
+| Total runtime | 1,139.035초 |
+| CatBoost fit | 3.880초 |
+| Validation scoring | 959.962초 |
+| Peak process RSS | 3,786 MiB |
+| 500 ms sampled scoring RSS peak | 3,687.1 MiB |
 | Validation queries | 432 |
 | Candidate items | 3,052,797 |
 | Scored rows | 1,318,808,304 |
-| Maximum prediction frame | 262,144 rows |
+| Maximum prediction frame | 131,072 rows |
 
 | 비교 항목 | PR #88 historical | PR #89 historical optimized | Corrected geography |
 | --- | ---: | ---: | ---: |
@@ -175,12 +176,72 @@ Corrected full-run은 YetiRank, uniform negative sampling 1×, 1,000 iterations,
 | Candidate items | 7,442,866 | 7,442,866 | 3,052,797 |
 | Validation queries | 432 | 432 | 432 |
 | Scored rows | 3,215,318,112 | 3,215,318,112 | 1,318,808,304 |
-| Total runtime | 6,019초 | 4,655.510초 | 1,532.677초 |
-| Fit runtime | 8.7초 | 9.329초 | 6.296초 |
-| Scoring runtime | 5,764.1초 | 4,394.086초 | 1,322.860초 |
-| Peak process RSS | 미기록 | 6,779 MiB | 3,788 MiB |
+| Total runtime | 6,019초 | 4,655.510초 | 1,139.035초 |
+| Fit runtime | 8.7초 | 9.329초 | 3.880초 |
+| Scoring runtime | 5,764.1초 | 4,394.086초 | 959.962초 |
+| Peak process RSS | 미기록 | 6,779 MiB | 3,786 MiB |
 
-Runtime·RSS 행은 당시의 실제 기록이다. PR #88/#89와 corrected run의 candidate scope가 달라 실제 speedup, memory reduction, metric parity를 주장하지 않는다. Legacy와 optimized scorer의 exact score/rank/metric parity는 bounded synthetic test에서 검증했다.
+Runtime·RSS 행은 당시의 실제 기록이다. PR #88/#89와 corrected run의 candidate scope가 달라 이들 간 actual speedup, memory reduction, metric parity를 주장하지 않는다. Corrected uncached 131,072행과 cached 131,072행 full runs는 같은 geography, query, candidate count, model configuration, seed, metrics와 tie-break를 사용했고 full metrics가 정확히 같았다. 이 scope 안의 observed scoring time은 1,151.903초에서 959.962초로 16.7% 감소했고 total은 1,332.190초에서 1,139.035초로 14.5% 감소했다. 이는 단일 run 비교이므로 다른 환경의 보장값이 아니다.
+
+##### Scoring profiler와 bounded inference sweep
+
+두 개의 같은 8-query full-catalog cohort sweep에서 각 variant는 3,052,797개 후보 전체를 평가했고 run 안에서는 같은 fitted model을 재사용했다. 한 variant는 24,422,376개 row를 처리했다. 모든 variant의 top-K item/score 순서와 metric dictionary는 첫 DataFrame baseline과 정확히 같았다. 작은 cohort의 절대 ranking metric은 성능 평가로 쓰지 않고 scorer parity와 runtime만 비교한다.
+
+| DataFrame batch rows | sweep 1 wall | sweep 2 wall | sweep 1 / 2 sampled scoring RSS peak |
+| ---: | ---: | ---: | ---: |
+| 65,536 | 23.736초 | 20.527초 | 3,574 / 3,572 MiB |
+| 131,072 | 23.503초 | 19.574초 | 3,580 / 3,580 MiB |
+| 262,144 | 24.928초 | 19.876초 | 3,613 / 3,601 MiB |
+| 524,288 | 23.889초 | 19.853초 | 3,764 / 3,734 MiB |
+| 1,048,576 | 22.542초 | 20.609초 | 3,950 / 4,019 MiB |
+
+두 run의 시간 순위가 달랐고 batch를 키울수록 memory가 증가했다. 131,072와 1,048,576의 2-run 평균은 각각 약 21.54초와 21.58초로 사실상 비슷해 131,072행을 선택했다. 더 큰 batch가 안정적으로 빠르다는 근거는 없고 131,072는 500 ms sampled RSS peak가 더 낮았다.
+
+같은 세 번째 8-query cohort에서 static item-column 재사용을 비교했다. 131,072행 DataFrame baseline은 19.574초였고, static item columns 5개를 한 번 구성한 뒤 query별로 shallow batch view를 재사용한 경로는 cache 생성 0.460초를 포함해 18.122초였다. Frame build는 6.341초에서 2.970초로 줄었고, scoring wall은 7.4% 짧아졌다. Prediction은 11.911초에서 13.354초로 늘었으며, 500 ms sampled scoring RSS peak는 3,580 MiB에서 3,779 MiB로 늘었다. 추정 cache 크기는 122,111,880 bytes였다. Exact score/rank/metric parity를 확인했고 이 측정 때문에 full runner에 cache 경로를 채택했다. Full run에서는 sampled scoring RSS peak가 uncached보다 93 MiB 높았으나 total process peak는 3,787에서 3,786 MiB로 거의 같았다.
+
+DataFrame batch 65,536의 상세 frame stage는 candidate/item slice 0.478초, query-context broadcast 0.014초, container construction 6.061초로 frame 총 6.554초와 약 0.001초 차이였다. 세 번째 sweep의 cached path에서는 item slice 0.420초, query broadcast 0.033초, container construction 2.517초, one-time cache 0.460초였다. Query-context broadcast는 작고 DataFrame/container construction이 큰 변동을 설명한다.
+
+다른 inference 입력도 같은 full-candidate cohort에서 비교했고 exact parity는 유지됐다. Direct `model.predict(ndarray)`는 262,144행에서 23.550초, 1,048,576행에서 24.562초였고, DataFrame 구성 시간은 짧았지만 predict가 각각 19.049초 및 18.814초로 느려졌다. DataFrame→Pool은 20.025초, NumPy→Pool은 25.235초였다. 명시적 `thread_count=1/2/4`는 30.082/26.229/23.544초로 같은 cohort의 default DataFrame 경로보다 느렸다. 이 결과는 현재 머신과 CatBoost 1.2.10 설정에 한정되며 thread 수가 바뀐 다른 장비의 속도를 예측하지 않는다. CatBoost 1.2.10에 Pool `quantize` API는 있지만 mixed-feature 모델에서 `model.predict(quantized_pool)`은 필요한 feature가 없다는 오류로 exact parity를 충족하지 못해 sweep에서 제외했다.
+
+##### Final cached-run bottleneck profile
+
+Runner evaluation-stage timer measured scoring wall at 959.962초. The internal profiler recorded `scoring_wall_seconds=959.960`; the 0.002초 difference is timer-boundary overhead. Use 959.962초 for the recorded full-config runtime and cost projections, and the internal profiler duration for disjoint stage accounting below. That accounting sums context normalization, ground-truth prep, frame, one-time cache, prediction, top-K, metrics, and unaccounted sections without overlap. RSS is sampled every 500 ms, so brief spikes can be missed; the reported scoring value is a **500 ms sampled peak**, not a guaranteed instantaneous maximum. Final aggregate frame substages total 162.735초, 0.030초 below the 162.765초 batch-frame total due to timer-boundary/assembly overhead. Cache build 0.485초 is tracked once, separately from the batch-frame subtotal.
+
+| Full-run measure | Uncached, 262,144 rows | Uncached, 131,072 rows | Cached static items, 131,072 rows |
+| --- | ---: | ---: | ---: |
+| Total / scoring wall | 1,556.372 / 1,347.531초 | 1,332.190 / 1,151.903초 | 1,139.035 / 959.962초 |
+| Frame build | 404.061초 | 353.356초 | 162.765초 |
+| Prediction | 850.519초 / 1.551M rows/s | 725.684초 / 1.818M rows/s | 724.048초 / 1.821M rows/s |
+| Top-K partition / tie / local sort / merge | 90.153 / 1.649 / 0.185 / 0.101초 | 69.873 / 1.513 / 0.290 / 0.187초 | 69.677 / 1.515 / 0.286 / 0.186초 |
+| Metric / unaccounted | 0.025 / 0.830초 | 0.018 / 0.976초 | 0.017 / 0.977초 |
+| Peak process RSS / 500 ms sampled scoring RSS peak | 3,790 / 3,641.9 MiB | 3,787 / 3,593.6 MiB | 3,786 / 3,687.1 MiB |
+| Query elapsed p50/p95/p99/max | 3.072 / 3.486 / 3.714 / 4.086초 | 2.632 / 2.924 / 3.077 / 3.158초 | 2.192 / 2.478 / 2.606 / 2.681초 |
+| Query row rate p50/p95 | 0.994 / 1.061M rows/s | 1.160 / 1.238M rows/s | 1.393 / 1.512M rows/s |
+| CPU user/system / CPU per wall | 2,446.35 / 334.88초 / 2.064 | 2,149.64 / 548.71초 / 2.343 | 1,956.33 / 553.49초 / 2.615 |
+
+Compared with the same-scope uncached 131,072-row full run, final frame build fell by 190.591 seconds (53.9%) while prediction time stayed nearly flat; scoring wall fell by 16.7% and total runtime by 14.5%. Compared with the original uncached 262,144-row full profile, observed scoring time fell by 28.7%. Lower user CPU time across runs is an observed process delta, not an isolated cache effect.
+
+| Stage | Seconds | Scoring wall share |
+| --- | ---: | ---: |
+| Candidate/item slice | 23.319 | 2.43% |
+| Query-context broadcast | 1.823 | 0.19% |
+| DataFrame/container construction | 137.592 | 14.33% |
+| Frame build total (subtotal) | 162.765 | 16.96% |
+| Static item cache setup | 0.485 | 0.05% |
+| `model.predict` (1.3188B rows) | 724.048 | 75.42% |
+| Top-K partition | 69.677 | 7.26% |
+| Boundary ties | 1.515 | 0.16% |
+| Local sort | 0.286 | 0.03% |
+| Global merge | 0.186 | 0.02% |
+| Metric computation | 0.017 | <0.01% |
+| Query-context normalization + ground truth | 0.005 | <0.01% |
+| Unaccounted | 0.977 | 0.10% |
+
+`model.predict` throughput was 1.821M rows/s; query scoring time p50/p90/p95/p99/max was 2.192/2.425/2.478/2.606/2.681초, and per-query row rate p50/p95 was 1.393/1.512M rows/s. Scoring CPU user/system deltas were 1,956.33/553.49초 over the 959.960초 internal-profiler wall (2.615 CPU-seconds per wall-second). Total profiler remainder was 0.977초, about 0.10% of that profiler wall.
+
+Final process RSS snapshots (MiB): after Master load 2,805; after geography filter 1,993; after materialization 3,041; after PreparedItemCatalog 3,446; after train frame 3,481; after fit 3,565; 500 ms sampled scoring RSS peak 3,687; after scoring 3,547. Process peak across all stages was 3,786 MiB.
+
+The evidence classifies the result as **A — inference-bound**: prediction accounts for 75.4% of scoring wall, with DataFrame construction the secondary cost at 17.0%. Top-K is 7.5%; context prep and metrics are negligible. The cache reduces frame construction but the resulting 959.962초 full scoring time remains far above the 5-minute cutoff. The next action is a separate Candidate Generation → CatBoost reranking design. Do not start sampling search or implement candidate retrieval in this checkpoint.
 
 | Metric | K | PR #88 historical scope | Corrected geography scope | 비교 |
 | --- | ---: | ---: | ---: | --- |
@@ -197,21 +258,23 @@ Runtime·RSS 행은 당시의 실제 기록이다. PR #88/#89와 corrected run�
 | HitRate | 10 | 0.01852 | 0.006944444 | candidate scope differs |
 | HitRate | 20 | 0.02546 | 0.020833333 | candidate scope differs |
 
-#### Search strategy와 seed budget 결정
+#### Conditional search strategy와 seed budget 결정
 
-이전 4,655.510초 단가에 근거한 1,023 exhaustive 조합 55.1일, 최대 66-config greedy 3.56일, 73 config-equivalents 94.40시간 계산은 철회했다. Corrected full configuration은 1,532.677초(25.54분) 걸렸으며, 아래 projection은 이 한 번의 측정값을 각 configuration에 적용한 planning estimate다. Configurations 사이의 feature materialization 차이, 재시도, 환경 변동은 반영하지 않았다.
+이전 PR #89의 geography-unfiltered timing과 uncached configuration cost를 사용한 projection은 superseded다. Corrected runner-scoped full run은 1,139.035초/configuration (18.98분)이 걸렸고 scoring stage는 959.962초였다. **Conditional strategy decision:** 이후 Candidate Generation → CatBoost reranking 설계 뒤에도 full-catalog evaluation을 사용하고 end-to-end 1-config runtime이 300초 이하면, forward selection 뒤 정확히 한 번 backward cleanup pass를 사용한다. Broad screen은 1 seed/config이며, 선택된 finalist는 해당 configuration의 screen seed를 재사용해 총 3 seeds로 평가한다. Backward pass는 선택 집합의 각 feature를 한 번 제거 평가하고 종료하며 반복 제거/재진입은 하지 않는다. Runtime gate가 충족되기 전까지 이 계획은 실행 보류 상태다. 아래 비용은 측정된 1,139.035초/configuration을 그대로 적용한 산술이며 재시도·환경 변동은 포함하지 않는다.
 
-- **Exhaustive:** 1,023개 non-empty feature-group 조합 × 1,532.677초 = 1,567,928.6초(18.15일)/seed. 실행하지 않는다.
-- **Feature greedy:** forward 55회 + single backward cleanup pass에서 최대 10회 제거 평가 + baseline 1회 = 최대 66 configuration-equivalents, 101,156.7초(28.10시간)/seed. Forward는 매 단계 남은 그룹을 하나씩 추가해 평가한다. Backward는 forward 결과에서 각 선택 그룹 제거를 한 번씩 평가하고 종료하며, iterative re-entry는 하지 않는다.
-- **Negative-sampling screen:** uniform baseline을 포함한 4개 전략을 1×·1 seed로 비교한다. Uniform corrected baseline은 이미 측정됐으므로 추가 3개 전략은 약 1.28시간이다. 총 screen은 4 configuration-equivalents, 약 1.70시간이다.
-- **Seed budget:** broad sampling/feature screening은 configuration당 1 seed. 선택한 최종 configuration만 총 3 seeds로 확인하며, 기존 screen run을 포함해 2회 추가(약 51.1분)한다. 세 seed는 stability heuristic이며 formal confidence interval이 아니다.
-- **예상 run 수:** 4개 sampling screen configuration과, 그 baseline을 재사용한 feature greedy의 최대 65개 추가 평가, 최종 configuration의 2회 seed 반복을 합쳐 71 configuration-equivalents. 현재 측정값 기준 약 30.23시간이며, 이미 완료된 corrected uniform baseline 1회(25.54분)를 빼면 이후 약 29.80시간이다. Ratio 확장, objective search, hyperparameter grid 및 구현/실패 재시도는 제외한다.
+- **Exhaustive:** 1,023개 non-empty feature-group 조합 × 1,139.035초 = 1,165,232.805초 (약 13.49일)/seed.
+- **Chosen conditional feature strategy:** forward 55회 + exactly one backward cleanup pass에서 최대 10회 제거 평가 + baseline 1회 = 최대 66 configuration-equivalents, 75,176.310초 (약 20.88시간)/seed. Backward는 forward 선택 집합에서 각 선택 그룹을 한 번씩 제거 평가하고 종료하며 iterative re-entry는 없다.
+- **Conditional broad sampling budget:** uniform baseline을 재사용해 4개 strategy를 1×·1 seed/config로 screen하면 총 약 1.27시간이다. Uniform baseline은 완료됐으므로 추가 3개는 약 0.95시간이며, gate 통과 전까지 시작하지 않는다.
+- **Conditional finalist seed budget:** broad screen은 1 seed/config, 선택된 configuration은 해당 screen seed를 포함해 총 3 seeds로 평가한다. 추가 두 번의 repeat는 약 0.63시간이다. 세 seed는 stability heuristic이지 formal confidence interval이 아니다.
+- **Conditional plan total / remaining:** completed uniform baseline 1 + remaining 3 sampling configs + greedy baseline 이후 최대 65개 추가 feature configs + finalist 2-seed repeats = 71 configuration-equivalents, 약 22.46시간. 완료된 baseline을 빼면 70 equivalents, 약 22.15시간이 남는다. Ratio 확장, objective, hyperparameter와 재시도는 제외한다.
 
-따라서 exhaustive보다 forward + backward greedy를 선택한다. 한 축씩 잠그며 먼저 negative sampling을 비교하고, feature greedy는 선택된 sampling을 고정한 뒤 시작한다. 10개 feature group 전체 1,023개 조합은 실행하지 않는다.
+비용 때문에 1,023개 exhaustive 조합 대신 future full-catalog search에는 위 greedy strategy를 선택했다. 단, 현재 1,139.035초 configuration cost는 300초 gate를 넘으므로 sampling/feature/objective/hyperparameter search와 seed repeats는 실행하지 않는다. Candidate Generation → CatBoost reranking 설계, 같은 candidate/evaluation 계약 검증, end-to-end runtime 재측정 후 300초 이하일 때만 conditional plan을 시작한다.
 
 Coverage 진단은 필요한 privacy-safe aggregate만 기록하며, 기존 195-ID/245-pair missing-key 결과의 원인을 다시 조사하지 않는다. VL 평가는 포함하지 않는다.
 
 ## Stage 2 — Negative sampling search
+
+**상태: 미시작.** Final full-catalog cached scoring은 959.962초로 5분 cutoff를 넘는다. Candidate-generation/reranking 설계와 재측정 전까지 이 Stage 및 이후 search stage를 시작하지 않는다.
 
 ### 질문
 
@@ -272,11 +335,11 @@ C1 Region
 
 탐색 원칙:
 
-- Corrected full-configuration 측정에 근거한 exhaustive 및 greedy projection과 seed budget은 위의 **Search strategy와 seed budget 결정**에 기록했다. Feature search는 backward cleanup을 한 번만 수행한다.
-- 이에 **forward + backward greedy**를 선택하고 exhaustive 조합은 실행하지 않는다. Broad search는 후보당 1 seed를 사용하고 최종 configuration만 총 3 seeds로 확인한다. 세 seed 결과는 stability heuristic으로 사용하며 formal confidence interval로 해석하지 않는다.
+- Full-catalog을 유지한다는 가정 아래의 exhaustive 및 greedy 비용 projection은 위 **Search strategy와 seed budget 결정**에 기록했다. Feature search 계획을 실행하게 되면 backward cleanup은 단일 pass로 제한한다.
+- Full-catalog scorer는 cutoff를 넘으므로 위에서 정한 conditional full-catalog strategy와 seed budget은 실행 보류 상태다. Post-design end-to-end runtime이 300초 이하일 때 forward + exactly one backward cleanup pass, broad search 1 seed/config, selected finalist 3 total seeds를 적용한다.
 - I2와 I4는 runnable이다. `fit_catboost`는 I3/I4를 포함한 행마다 helper가 발급한 immutable materialization과의 item key, trip partition, feature 값 일치를 확인한다. `inner-train` 문자열만으로는 fit을 허용하지 않는다.
 
-첫 실제 search 축은 negative sampling이다. 다른 조건을 고정하고 1×에서 uniform, popularity-weighted, mixed, hard 네 전략을 비교한다. Uniform baseline은 현재 run을 재사용하고 나머지 세 configuration을 실행한다. 2×/4×/8×/16× ratio 확장 예산은 이 screen의 runtime과 결과를 본 뒤 별도 결정한다. 이 search는 아직 시작하지 않았다.
+기존 search plan의 첫 축은 negative sampling이었으나 실행하지 않았다. Candidate-generation/reranking 설계와 end-to-end runtime 재측정 뒤에도 cutoff를 만족하면 그때 uniform, popularity-weighted, mixed, hard 1× screen을 다시 평가한다. Ratio 확장 계획도 미결정이다.
 
 해석을 위해 best configuration 하나만 남기지 않고 최소 다음 비교도 보존한다.
 
@@ -324,11 +387,11 @@ sampling, feature, objective를 먼저 잠근 뒤 CatBoost 세부 설정을 조�
 - learning_rate
 - regularization 계열
 
-구체적인 search space는 objective search 결과와 과적합 패턴을 확인한 뒤 정한다. 초기 planning은 corrected full-TL configuration당 1,532.677초를 기준으로 하며, objective나 hyperparameter 조건이 달라지면 실제 비용을 다시 측정한다.
+구체적인 search space는 objective search 결과와 과적합 패턴을 확인한 뒤 정한다. Full-catalog을 유지한다는 가정에서 현 corrected configuration cost는 1,139.035초지만 5분 cutoff를 넘으므로 search가 재승인되기 전 planning 참고값으로만 쓴다.
 
 ## Stage 6 — Seed 반복
 
-Broad search 후보마다 seed 1개를 사용한다. 선택된 최종 configuration 한 개만 총 3 seeds로 확인한다.
+Conditional seed decision: broad search candidate마다 1 seed/config을 사용하고, 선택된 finalist는 해당 configuration의 screen seed를 재사용해 총 3 seeds로 확인한다. 현재 full-catalog run이 cutoff를 넘으므로 retrieval/reranking 설계와 300초 gate 통과 전까지 seed 반복을 실행하지 않는다.
 
 이미 screening에서 실행한 seed를 재사용하면 finalist에는 2회 추가 run이 필요하다. 이 세 seed는 stability heuristic이며 formal CI가 아니다.
 
@@ -393,7 +456,7 @@ scripts/recommendation/catboost_ranking_experiment.py가 제공하는 것:
 
 동일 권역 후보 목록은 `PreparedItemCatalog.from_materialization(...)`으로 한 번 준비한다. 이 객체는 helper가 만든 I3/I4 및 선택한 정적 item 열을 정규화해 불변 tuple로 보관하며, feature transform 설정과 helper provenance가 일치하지 않으면 평가를 거부한다. I2 열은 category depth와 관계없이 모두 보존하고, query-context 열은 매 query 입력에서만 가져온다. 원래 학습 frame을 `fit_catboost`에 전달할 때는 기존 raw feature 값과 materialization을 사용해야 하며, catalog의 log1p 변환값을 다시 학습 전처리에 넣지 않는다.
 
-Uniform sampling은 준비된 `catalog.inventory`를 사용하면 후보 목록을 매 query마다 복사·정렬하지 않고 같은 `random.sample` 결과를 만든다. `score_inner_validation_queries(...)` 호출자는 각 query의 권위 있는 `region`을 `query_features[trip_id]["region"]`에 반드시 제공해야 하며, 값이 후보 카탈로그 권역과 다르거나 누락되면 예측 전에 실패한다. `PreparedItemCatalog`의 정적 item columns는 candidate ID 오름차순으로 정렬해 immutable tuple로 보관한다. Scorer는 각 query마다 최대 262,144행 DataFrame만 만들고 정렬된 tuple slice를 재사용한다. 각 chunk는 NumPy partition으로 local top-K를 찾고, 동점에서는 item ID 오름차순을 지켜 global top-K를 합친다. 전체 candidate catalog는 메모리에 남으므로 frame 행 상한만으로 process RSS 상한을 보장하지 않는다.
+Uniform sampling은 준비된 `catalog.inventory`를 사용하면 후보 목록을 매 query마다 복사·정렬하지 않고 같은 `random.sample` 결과를 만든다. `score_inner_validation_queries(...)` 호출자는 각 query의 권위 있는 `region`을 `query_features[trip_id]["region"]`에 반드시 제공해야 하며, 값이 후보 카탈로그 권역과 다르거나 누락되면 예측 전에 실패한다. `PreparedItemCatalog`의 정적 item columns는 candidate ID 오름차순으로 immutable tuple에 보관한다. Final runner는 최대 131,072행 prediction frame을 만들고, 정적 item-side columns는 한 번 만든 DataFrame에서 shallow batch view로 재사용하며 query-context만 broadcast한다. 각 chunk는 NumPy partition으로 local top-K를 찾고, 동점에서는 item ID 오름차순을 지켜 global top-K를 합친다. 전체 candidate catalog와 static cache는 메모리에 남으므로 frame 행 상한만으로 process RSS 상한을 보장하지 않는다.
 
 합성 경로 확인 명령은 다음과 같다.
 
@@ -421,4 +484,4 @@ synthetic unit test로 다음을 확인한다.
 - group contiguity와 binary label
 - VL tuning 금지 protocol
 
-실제 AI Hub Stage 1 prototype smoke와 optimized full-TL scoring benchmark는 위에 기록했으며, feasibility와 search-budget 결정 근거다. Sampling/feature/objective/hyperparameter search와 final three-seed 확인은 아직 수행하지 않았다. VL은 이번 checkpoint에서 확인하거나 읽지 않았다.
+실제 AI Hub Stage 1 prototype smoke, corrected full-TL scoring profile와 cached-item rerun은 위에 기록했다. Scoring이 5분 cutoff를 넘으므로 다음 단계는 retrieval/reranking architecture design이며, sampling/feature/objective/hyperparameter search와 final three-seed 확인은 아직 수행하지 않았다. VL은 이번 checkpoint에서 확인하거나 읽지 않았다.
