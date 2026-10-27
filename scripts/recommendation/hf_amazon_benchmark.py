@@ -19,7 +19,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-import duckdb
 
 
 DATASET_REPO = "sungjin-code/amazon-reviews-for-llm"
@@ -135,6 +134,8 @@ def load_hf_amazon_cases(
         raise ValueError("history_size must be positive")
     if description_chars <= 0:
         raise ValueError("description_chars must be positive")
+
+    import duckdb
 
     connection = duckdb.connect(database=":memory:")
     try:
