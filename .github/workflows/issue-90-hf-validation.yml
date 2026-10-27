@@ -1,0 +1,66 @@
+name: Issue 90 HF benchmark validation
+
+on:
+  push:
+    branches:
+      - agent/90-jev-llm-serving-benchmark
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install focused dependency
+        run: python -m pip install "duckdb>=1.5.6"
+
+      - name: Run focused unit tests
+        run: |
+          python -m unittest             tests.test_serving_benchmark             tests.test_hf_amazon_benchmark             -v
+
+      - name: Download public benchmark and build 24-request fixture
+        run: |
+          python - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+
+          from scripts.recommendation.hf_amazon_benchmark import (
+              prepare_hf_amazon_fixture,
+          )
+
+          cases, metadata = prepare_hf_amazon_fixture(
+              cache_dir=Path("/tmp/issue-90-hf-amazon"),
+              request_count=24,
+              seed=20261027,
+              history_size=8,
+              description_chars=320,
+              revision="main",
+          )
+
+          candidate_counts = sorted({len(case["candidates"]) for case in cases})
+          domains = dict(sorted(Counter(case["domain"] for case in cases).items()))
+
+          assert len(cases) == 24
+          assert candidate_counts == [10]
+          assert all(
+              case["ground_truth_candidate_id"]
+              in {candidate["candidate_id"] for candidate in case["candidates"]}
+              for case in cases
+          )
+
+          print("fixture_requests:", len(cases))
+          print("candidate_counts:", candidate_counts)
+          print("domains:", domains)
+          print("history_size:", metadata["history_size"])
+          print("dataset_repo:", metadata["dataset_repo"])
+          print("revision:", metadata["revision"])
+          print("file_sha256:", metadata["file_sha256"])
+          PY
