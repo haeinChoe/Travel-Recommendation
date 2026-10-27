@@ -651,7 +651,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     report = {
-        "benchmark": "jev-vs-conversational-llm-synthetic-serving",
+        "benchmark": "jev-vs-conversational-llm-serving",
         "fixture": {
             **fixture_metadata,
             "k": args.k,
@@ -672,7 +672,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
         ],
         "limitations": [
-            "Synthetic relevance measures benchmark consistency, not real travel recommendation quality.",
+            "The default fixture is an Amazon sequential-recommendation benchmark, not travel-domain ground truth.",
+            "The 24-request default is a small serving comparison, not a statistically definitive recommender evaluation.",
             "Backends may use different hardware, batching, quantization, and network paths.",
             "Token counts are reported only when the endpoint returns usage metadata.",
         ],
