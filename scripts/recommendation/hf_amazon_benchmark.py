@@ -175,6 +175,10 @@ def load_hf_amazon_cases(
     history_by_user: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for user_idx, item_idx, pos in interaction_rows:
         history_by_user[int(user_idx)].append((int(pos), int(item_idx)))
+    interacted_items_by_user = {
+        user_idx: {item_id for _, item_id in interactions}
+        for user_idx, interactions in history_by_user.items()
+    }
 
     normalized_rows: list[dict[str, Any]] = []
     for user_idx, item_idx, domain, pos, candidates, gt_pos in test_rows:
@@ -189,6 +193,22 @@ def load_hf_amazon_cases(
             raise ValueError("Dataset invariant failed: candidates[gt_pos] != item_idx")
         if any(candidate_id not in items for candidate_id in candidate_ids):
             raise ValueError("A candidate does not resolve in items_text.parquet")
+
+        user_interactions = history_by_user[int(user_idx)]
+        prior_items = {
+            history_item
+            for history_pos, history_item in user_interactions
+            if history_pos < int(pos)
+        }
+        if target_item in prior_items:
+            # Keep the benchmark focused on next unseen-item ranking rather than repeats.
+            continue
+
+        negative_candidates = set(candidate_ids) - {target_item}
+        if negative_candidates & interacted_items_by_user[int(user_idx)]:
+            raise ValueError(
+                "Dataset invariant failed: a negative candidate appears in the user's sequence"
+            )
 
         normalized_rows.append(
             {
