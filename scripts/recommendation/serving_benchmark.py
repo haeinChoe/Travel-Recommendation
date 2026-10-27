@@ -377,6 +377,16 @@ def hit_rate_at_k(
     return float(any(relevance.get(cid, 0) > 0 for cid in ranked_candidate_ids[:k]))
 
 
+def reciprocal_rank(
+    ranked_candidate_ids: Sequence[str],
+    relevance: Mapping[str, int],
+) -> float:
+    for index, candidate_id in enumerate(ranked_candidate_ids, start=1):
+        if relevance.get(candidate_id, 0) > 0:
+            return 1.0 / index
+    return 0.0
+
+
 def _dcg(relevances: Sequence[int]) -> float:
     total = 0.0
     for index, rel in enumerate(relevances):
@@ -429,6 +439,10 @@ def benchmark_backend(
         hit_rate_at_k(result.ranked_candidate_ids, req.relevance, k)
         for req, result in successes
     ]
+    reciprocal_ranks = [
+        reciprocal_rank(result.ranked_candidate_ids, req.relevance)
+        for req, result in successes
+    ]
     input_tokens = [
         result.input_tokens for _, result in successes if result.input_tokens is not None
     ]
@@ -455,6 +469,7 @@ def benchmark_backend(
         },
         f"ndcg@{k}": statistics.fmean(ndcgs) if ndcgs else None,
         f"hit_rate@{k}": statistics.fmean(hits) if hits else None,
+        "mrr": statistics.fmean(reciprocal_ranks) if reciprocal_ranks else None,
         "usage": {
             "input_tokens_total": sum(input_tokens) if input_tokens else None,
             "output_tokens_total": sum(output_tokens) if output_tokens else None,
@@ -486,7 +501,12 @@ def _endpoint_url(base_url: str, path: str) -> str:
 
 
 def _candidate_text(candidate: Candidate) -> str:
-    return f"{candidate.name}. {candidate.description} Themes: {', '.join(candidate.themes)}."
+    parts = [candidate.name]
+    if candidate.description:
+        parts.append(candidate.description)
+    if candidate.themes:
+        parts.append(f"Themes: {', '.join(candidate.themes)}")
+    return ". ".join(parts) + "."
 
 
 def _auth_headers(api_key: str | None) -> dict[str, str]:
@@ -529,9 +549,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Compare JEV typed-decision serving with conversational LLM ranking."
     )
-    parser.add_argument("--requests", type=int, default=20)
-    parser.add_argument("--candidates", type=int, default=8)
+    parser.add_argument(
+        "--fixture-source",
+        choices=("hf-amazon-llm", "synthetic"),
+        default="hf-amazon-llm",
+        help="Benchmark fixture source. Hugging Face sequential recommendation is the default.",
+    )
+    parser.add_argument("--requests", type=int, default=24)
+    parser.add_argument(
+        "--candidates",
+        type=int,
+        default=8,
+        help="Synthetic fixture only; the Hugging Face benchmark has 10 fixed candidates.",
+    )
     parser.add_argument("--seed", type=int, default=20261027)
+    parser.add_argument("--history-size", type=int, default=8)
+    parser.add_argument("--description-chars", type=int, default=320)
+    parser.add_argument(
+        "--hf-cache-dir",
+        default="results/issue-90/hf-amazon-llm",
+        help="Git-ignored directory used for the three downloaded parquet files.",
+    )
+    parser.add_argument("--hf-revision", default="main")
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--k", type=int, default=5)
     parser.add_argument("--timeout-s", type=float, default=60.0)
@@ -548,11 +587,53 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    requests = generate_synthetic_requests(
-        count=args.requests,
-        candidates_per_request=args.candidates,
-        seed=args.seed,
-    )
+    if args.fixture_source == "synthetic":
+        requests = generate_synthetic_requests(
+            count=args.requests,
+            candidates_per_request=args.candidates,
+            seed=args.seed,
+        )
+        fixture_metadata: dict[str, Any] = {
+            "source": "synthetic-theme-overlap",
+            "requests": args.requests,
+            "candidates_per_request": args.candidates,
+            "seed": args.seed,
+        }
+    else:
+        cases, fixture_metadata = prepare_hf_amazon_fixture(
+            cache_dir=Path(args.hf_cache_dir),
+            request_count=args.requests,
+            seed=args.seed,
+            history_size=args.history_size,
+            description_chars=args.description_chars,
+            revision=args.hf_revision,
+        )
+        requests = []
+        for case in cases:
+            candidates = tuple(
+                Candidate(
+                    candidate_id=str(candidate["candidate_id"]),
+                    name=str(candidate["name"]),
+                    themes=(),
+                    description=str(candidate["description"]),
+                )
+                for candidate in case["candidates"]
+            )
+            ground_truth = str(case["ground_truth_candidate_id"])
+            requests.append(
+                RecommendationRequest(
+                    request_id=str(case["request_id"]),
+                    preference_text=str(case["preference_text"]),
+                    preferred_themes=(),
+                    candidates=candidates,
+                    relevance={
+                        candidate.candidate_id: int(candidate.candidate_id == ground_truth)
+                        for candidate in candidates
+                    },
+                )
+            )
+        fixture_metadata["seed"] = args.seed
+
     jev = JevAdapter(
         base_url=args.jev_base_url,
         model=args.jev_model,
@@ -569,9 +650,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = {
         "benchmark": "jev-vs-conversational-llm-synthetic-serving",
         "fixture": {
-            "requests": args.requests,
-            "candidates_per_request": args.candidates,
-            "seed": args.seed,
+            **fixture_metadata,
             "k": args.k,
             "concurrency": args.concurrency,
         },
