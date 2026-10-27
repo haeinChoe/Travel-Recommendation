@@ -34,6 +34,9 @@
 10. [POI 식별자 매칭 및 코호트 커버리지 실험](experiments/poi-identity-matching-v2.md)
    다단계 식별자 매칭 파이프라인의 단계별 결과와 관광 대상 코호트 분리 분석을 확인한다.
 
+11. [JEV와 대화형 LLM 추천 서빙 비교](experiments/jev-vs-conversational-llm-serving.md)
+   AI Hub/#82와 분리된 공개 Amazon sequential-recommendation 소량 benchmark에서 JEV typed decision과 conversational LLM의 latency, throughput, 응답 유효성, ranking 품질을 비교하는 serving 실험을 확인한다.
+
 ## 새 연구·실험 문서를 작성할 때
 
 - [사람 중심 문서 작성 가이드](../documentation-style-guide.md)
