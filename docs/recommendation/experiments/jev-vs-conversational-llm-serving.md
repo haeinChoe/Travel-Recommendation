@@ -1,7 +1,7 @@
 # JEV와 대화형 LLM 추천 서빙 비교
 
 **관련 Issue:** #90  
-**현재 상태:** 공개 benchmark fixture 구현 완료, 실제 endpoint benchmark 전
+**현재 상태:** 공개 benchmark 실제 다운로드·fixture 검증 완료, 실제 endpoint benchmark 전
 
 ## 한눈에 보기
 
@@ -335,6 +335,16 @@ Amazon benchmark에서 좋은 ranking을 보였다고 실제 여행 POI 추천 �
 
 ## 13. 검증
 
+2026-10-27 GitHub Actions의 독립 Ubuntu/Python 3.12 환경에서 공개 Hugging Face 파일을 실제로 다운로드해 검증했다.
+
+- focused unit tests: 11/11 PASS
+- 실제 fixture requests: 24
+- candidate count: 모든 요청 10개
+- domain 분포: Books 6 / CDs_and_Vinyl 6 / Movies_and_TV 6 / Video_Games 6
+- history size 상한: 8
+- 다운로드한 세 Parquet의 SHA-256은 해당 실행과 PR 검증 기록에 남겼다.
+- 실제 JEV/LLM endpoint는 아직 호출하지 않았다.
+
 네트워크 없는 테스트는 다음을 검증한다.
 
 - JEV/LLM adapter contract
@@ -348,4 +358,4 @@ Amazon benchmark에서 좋은 ranking을 보였다고 실제 여행 POI 추천 �
 - Git-ignored download cache reuse
 - NDCG / HitRate / MRR 계산
 
-실제 Hugging Face 다운로드와 JEV/LLM endpoint 호출은 endpoint/runtime이 준비된 환경에서 실행한다.
+실제 Hugging Face 다운로드와 24-request fixture 생성은 검증 완료했다. 남은 외부 실행은 JEV/LLM endpoint 비교다.
