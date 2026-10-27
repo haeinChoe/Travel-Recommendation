@@ -30,6 +30,8 @@ JEV는 `Choice` probability distribution을 ranking으로 변환하고, conversa
 - ground truth: 실제 다음 4~5점 interaction 1개
 - candidate negatives: source dataset이 같은 domain에서 미상호작용 item으로 고정 생성
 - metric: NDCG@K, HitRate@K, MRR
+- model output failure는 품질 0점으로 포함한 failure-aware metric을 기본 비교값으로 사용
+- 같은 fixture의 deterministic random ranking baseline도 함께 출력
 - serving metric: success rate, throughput, latency p50/p95/mean
 - token usage: endpoint가 usage metadata를 반환할 때만 기록
 - 다운로드 파일은 `results/` 아래 Git-ignored cache에 저장
@@ -226,6 +228,10 @@ candidate 누락, 중복, 알 수 없는 candidate, Markdown fence, 추가 field
 
 특히 이 benchmark에서는 MRR이 직관적인 핵심 ranking metric이다.
 
+JSON parsing이나 JEV response validation에 실패한 요청을 품질 평균에서 제거하면 실패가 많은 backend의 점수가 부풀 수 있다. 따라서 기본 비교값은 실패 요청을 0점으로 포함한 `quality_failure_aware`이며, 진단을 위해 성공 요청만의 `quality_success_only`도 함께 기록한다.
+
+동일한 24-request fixture를 seed-fixed random ranking으로 섞은 `quality_random_baseline`도 출력해 작은 sample의 절대 점수를 해석할 기준으로 사용한다.
+
 ## 9. 실행
 
 endpoint가 준비되면 기본 benchmark는 다음과 같이 실행한다.
@@ -283,7 +289,9 @@ python scripts/recommendation/serving_benchmark.py \
 - backend별 success/failure
 - throughput
 - latency p50/p95/mean
-- NDCG@K / HitRate@K / MRR
+- random ranking quality baseline
+- failure-aware NDCG@K / HitRate@K / MRR
+- success-only NDCG@K / HitRate@K / MRR
 - token usage
 - 실패 sample
 
