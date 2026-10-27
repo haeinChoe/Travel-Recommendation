@@ -457,12 +457,13 @@ def benchmark_backend(
     if successes:
         backend_name = successes[0][1].backend
 
+    request_count = len(requests)
     return {
         "backend": backend_name,
-        "requests": len(requests),
+        "requests": request_count,
         "successes": len(successes),
         "failures": len(failures),
-        "success_rate": len(successes) / len(requests),
+        "success_rate": len(successes) / request_count,
         "elapsed_s": elapsed_s,
         "throughput_requests_per_s": len(successes) / elapsed_s if elapsed_s > 0 else None,
         "latency_ms": {
@@ -470,14 +471,44 @@ def benchmark_backend(
             "p95": _percentile(latencies, 95) if latencies else None,
             "mean": statistics.fmean(latencies) if latencies else None,
         },
-        f"ndcg@{k}": statistics.fmean(ndcgs) if ndcgs else None,
-        f"hit_rate@{k}": statistics.fmean(hits) if hits else None,
-        "mrr": statistics.fmean(reciprocal_ranks) if reciprocal_ranks else None,
+        "quality_failure_aware": {
+            f"ndcg@{k}": sum(ndcgs) / request_count,
+            f"hit_rate@{k}": sum(hits) / request_count,
+            "mrr": sum(reciprocal_ranks) / request_count,
+        },
+        "quality_success_only": {
+            f"ndcg@{k}": statistics.fmean(ndcgs) if ndcgs else None,
+            f"hit_rate@{k}": statistics.fmean(hits) if hits else None,
+            "mrr": statistics.fmean(reciprocal_ranks) if reciprocal_ranks else None,
+        },
         "usage": {
             "input_tokens_total": sum(input_tokens) if input_tokens else None,
             "output_tokens_total": sum(output_tokens) if output_tokens else None,
         },
         "failure_samples": failures[:10],
+    }
+
+
+def random_quality_baseline(
+    requests: Sequence[RecommendationRequest],
+    *,
+    seed: int,
+    k: int,
+) -> dict[str, float]:
+    rng = random.Random(seed)
+    ndcgs: list[float] = []
+    hits: list[float] = []
+    reciprocal_ranks: list[float] = []
+    for request in requests:
+        ranked = [candidate.candidate_id for candidate in request.candidates]
+        rng.shuffle(ranked)
+        ndcgs.append(ndcg_at_k(ranked, request.relevance, k))
+        hits.append(hit_rate_at_k(ranked, request.relevance, k))
+        reciprocal_ranks.append(reciprocal_rank(ranked, request.relevance))
+    return {
+        f"ndcg@{k}": statistics.fmean(ndcgs),
+        f"hit_rate@{k}": statistics.fmean(hits),
+        "mrr": statistics.fmean(reciprocal_ranks),
     }
 
 
@@ -657,6 +688,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             "k": args.k,
             "concurrency": args.concurrency,
         },
+        "quality_random_baseline": random_quality_baseline(
+            requests,
+            seed=args.seed,
+            k=args.k,
+        ),
         "results": [
             benchmark_backend(
                 adapter=jev,
