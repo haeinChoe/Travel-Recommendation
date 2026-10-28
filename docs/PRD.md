@@ -582,7 +582,7 @@ AI Hub POI ↔ TourAPI contentid
 
 ### Recommendation
 
-이 항목의 현재 기준과 용어는 [추천 문제 정의 v2](recommendation/problem-definition-v2.md)에서 관리한다.
+이 프로젝트가 우선 해결하려는 것은 **여행자의 상황과 장소의 특징을 이용해 실제 방문 기록으로 적합도를 학습할 수 있는가**라는 문제다. 아래 항목은 추천 가능한 장소 범위와 평가 방법을 구현하기 전에 확인해야 할 판단이다. 원칙과 용어는 [추천 문제 정의](recommendation/problem-definition-v2.md)에 설명한다.
 
 아직 제품 및 실험 근거가 필요한 결정:
 
@@ -606,18 +606,13 @@ AI Hub와 TourAPI의 장소 식별자 연결은 일부 검증이 완료됐지만
 
 ---
 
-## 18. Related Initial Issues
+## 18. 초기 개발 계획의 기록
 
-- #1 기존 TravelMate 기능·API·서비스 계약 복원
-- #2 리뉴얼 목표 아키텍처와 서비스 경계 정의
-- #3 AI Hub 여행로그 원본 데이터와 과거 전처리 과정 복원
-- #4 AI Hub 방문지와 TourAPI 관광지 매핑 전략 재설계
-- #5 추천 시스템 오프라인 평가 프로토콜 정의
-- #6 추천 baseline 구현: Popularity, Content-based, Matrix Factorization
-- #7 Two-Tower 추천 모델 실험 설계
-- #8 추천 실험 추적 환경 설계: MLflow 및 Optuna
-- #9 Next.js 프론트엔드 마이그레이션 전략 수립
-- #10 NestJS 백엔드 마이그레이션 전략 수립
+프로젝트 초기에 작업을 세 영역으로 나눴다. 아래는 **당시 계획의 추적 링크**이며 현재 모델 채택 순서나 제품 요구사항을 대신하지 않는다.
+
+- **기존 서비스 복원과 신규 웹/API 기반:** [기존 기능·API 조사](https://github.com/haeinChoe/Travel-Recommendation/issues/1), [서비스 경계 설계](https://github.com/haeinChoe/Travel-Recommendation/issues/2), [Next.js 화면 구조](https://github.com/haeinChoe/Travel-Recommendation/issues/9), [NestJS API 구조](https://github.com/haeinChoe/Travel-Recommendation/issues/10).
+- **학습 데이터와 장소 연결:** [과거 AI Hub 전처리 복원](https://github.com/haeinChoe/Travel-Recommendation/issues/3), [초기 장소 매칭 조사](https://github.com/haeinChoe/Travel-Recommendation/issues/4). 장소 연결은 이후 실제 데이터로 개선했으므로 초기 조사 수치만으로 최신 성과를 판단하지 않는다.
+- **과거 모델 실험 계획:** [초기 평가 설계](https://github.com/haeinChoe/Travel-Recommendation/issues/5), [단순 추천 기준선](https://github.com/haeinChoe/Travel-Recommendation/issues/6), [두 개의 표현 모델을 이용한 검색 방식 검토](https://github.com/haeinChoe/Travel-Recommendation/issues/7), [실험 이력 관리](https://github.com/haeinChoe/Travel-Recommendation/issues/8). 구체적인 모델 도입은 현재의 추천 문제와 실제 데이터 제약을 확인한 뒤 결정한다.
 
 ---
 
