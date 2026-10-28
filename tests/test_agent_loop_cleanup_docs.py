@@ -266,13 +266,16 @@ class CleanupDocumentationTests(unittest.TestCase):
         self.assertIn("--merged-pr-head", cli)
         self.assertIn('["update-ref", "-d"', cli)
         self.assertIn("--no-overwrite-ignore", cli)
+        self.assertIn('"pr"', cli)
+        self.assertIn('"list"', cli)
+        self.assertIn('"MERGED"', cli)
         for text in (workflow, agents, reference, skill):
             self.assertIn("--merged-pr-head", text)
         for text in (workflow, agents, reference):
             self.assertIn("git update-ref -d", text)
             self.assertIn("headrefoid", text.casefold())
             self.assertIn("--no-overwrite-ignore", text)
-            self.assertIn("caller-supplied" if text is reference else "호출자", text.casefold() if text is reference else text)
+            self.assertIn("gh pr list", text)
             self.assertIn("ignored", text.casefold())
 
         for text in (workflow, agents, reference, skill):

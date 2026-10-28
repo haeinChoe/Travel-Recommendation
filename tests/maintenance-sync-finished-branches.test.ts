@@ -38,16 +38,31 @@ function gitIfPresent(cwd: string, args: readonly string[]): string {
   return result.status === 0 ? (result.stdout ?? "").trim() : "";
 }
 
-function runCli(cwd: string, args: readonly string[]): { status: number | null; output: string } {
+function runCli(
+  cwd: string,
+  args: readonly string[],
+  env?: NodeJS.ProcessEnv
+): { status: number | null; output: string } {
   const result = spawnSync(process.execPath, [cliPath, ...args], {
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, ...env },
   });
   return {
     status: result.status,
     output: `${result.stdout ?? ""}${result.stderr ?? ""}`,
   };
+}
+
+function createFakeGh(root: string, prs: readonly object[]): string {
+  const fakeGhPath = join(root, `fake-gh-${Math.random().toString(36).slice(2)}.cjs`);
+  const content = `#!/usr/bin/env node
+const prs = ${JSON.stringify(prs)};
+process.stdout.write(JSON.stringify(prs));
+`;
+  writeFileSync(fakeGhPath, content, { mode: 0o755 });
+  return fakeGhPath;
 }
 
 function makeFixture(context: TestContext): Fixture {
@@ -316,41 +331,68 @@ test("apply performs partial cleanup deleting eligible branches while holding in
   assert.notEqual(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${unmergedBranch}`]), "");
 });
 
-test("apply supports --merged-pr-head CAS deletion and holds on SHA mismatch", (context) => {
+test("apply supports --merged-pr-head CAS deletion verified by gh pr list and holds on mismatch", (context) => {
   const fixture = makeFixture(context);
   const branch = "agent/50-squashed";
   const tipSha = pushIssueBranch(fixture, branch);
   createLocalBranchAtRemoteTip(fixture, branch);
 
-  // Plan reports eligible for CAS deletion
-  const planMatch = runCli(fixture.dev, ["--merged-pr-head", `${branch}=${tipSha}`]);
-  assert.equal(planMatch.status, 0);
-  assert.match(planMatch.output, /local tip matches caller-supplied pr head .* eligible for cas deletion/i);
-
-  // Plan reports mismatch when SHA does not match
-  const wrongSha = "0123456789abcdef0123456789abcdef01234567";
-  const planMismatch = runCli(fixture.dev, ["--merged-pr-head", `${branch}=${wrongSha}`]);
-  assert.equal(planMismatch.status, 0);
-  assert.match(planMismatch.output, /local tip .* does not match caller-supplied pr head .* apply would hold/i);
-
-  // Apply holds on SHA mismatch
-  const applyMismatch = runCli(fixture.dev, [
-    "--apply",
-    "--merged-pr-head",
-    `${branch}=${wrongSha}`,
+  // 1. Success case: local tip matches sha AND gh pr list verifies MERGED PR into dev
+  const fakeGhSuccess = createFakeGh(fixture.root, [
+    {
+      number: 50,
+      state: "MERGED",
+      baseRefName: "dev",
+      headRefName: branch,
+      headRefOid: tipSha,
+      mergedAt: "2026-10-20T10:00:00Z",
+    },
   ]);
+  const planMatch = runCli(fixture.dev, ["--merged-pr-head", `${branch}=${tipSha}`], { GH_BIN: fakeGhSuccess });
+  assert.equal(planMatch.status, 0);
+  assert.match(planMatch.output, /local tip and github merged pr #50 into dev match head/i);
+  assert.match(planMatch.output, /eligible for cas deletion/i);
+
+  // 2. Unverified case: local tip matches sha, but gh pr list has no matching MERGED PR (or different sha)
+  const fakeGhUnverified = createFakeGh(fixture.root, []);
+  const planUnverified = runCli(fixture.dev, ["--merged-pr-head", `${branch}=${tipSha}`], { GH_BIN: fakeGhUnverified });
+  assert.equal(planUnverified.status, 0);
+  assert.match(planUnverified.output, /could not verify a github merged pr into dev matching head/i);
+  assert.match(planUnverified.output, /apply would hold/i);
+
+  const applyUnverified = runCli(
+    fixture.dev,
+    ["--apply", "--merged-pr-head", `${branch}=${tipSha}`],
+    { GH_BIN: fakeGhUnverified }
+  );
+  assert.equal(applyUnverified.status, 1);
+  assert.match(applyUnverified.output, /held local branch agent\/50-squashed: could not verify a github merged pr into dev matching head/i);
+  assert.notEqual(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]), "");
+
+  // 3. Mismatch case: local tip does not match sha
+  const wrongSha = "0123456789abcdef0123456789abcdef01234567";
+  const planMismatch = runCli(fixture.dev, ["--merged-pr-head", `${branch}=${wrongSha}`], { GH_BIN: fakeGhSuccess });
+  assert.equal(planMismatch.status, 0);
+  assert.match(planMismatch.output, /local tip .* does not match caller-supplied pr head/i);
+  assert.match(planMismatch.output, /apply would hold/i);
+
+  const applyMismatch = runCli(
+    fixture.dev,
+    ["--apply", "--merged-pr-head", `${branch}=${wrongSha}`],
+    { GH_BIN: fakeGhSuccess }
+  );
   assert.equal(applyMismatch.status, 1);
   assert.match(applyMismatch.output, /held local branch agent\/50-squashed: local tip .* does not match caller-supplied pr head/i);
   assert.notEqual(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]), "");
 
-  // Apply succeeds on exact SHA match
-  const applyMatch = runCli(fixture.dev, [
-    "--apply",
-    "--merged-pr-head",
-    `${branch}=${tipSha}`,
-  ]);
-  assert.equal(applyMatch.status, 0);
-  assert.match(applyMatch.output, /deleted legacy squash\/rebase branch agent\/50-squashed via cas at caller-supplied pr head/i);
+  // Finally, apply success case: CAS deletion succeeds when verified
+  const applySuccess = runCli(
+    fixture.dev,
+    ["--apply", "--merged-pr-head", `${branch}=${tipSha}`],
+    { GH_BIN: fakeGhSuccess }
+  );
+  assert.equal(applySuccess.status, 0);
+  assert.match(applySuccess.output, /deleted legacy squash\/rebase branch agent\/50-squashed via cas at github-verified merged pr #50 head/i);
   assert.equal(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]), "");
 });
 

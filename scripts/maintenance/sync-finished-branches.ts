@@ -171,6 +171,58 @@ function localTip(worktree: string, branch: string): string | null {
     : null;
 }
 
+interface PrRecord {
+  readonly number?: number;
+  readonly state?: string;
+  readonly baseRefName?: string;
+  readonly headRefName?: string;
+  readonly headRefOid?: string;
+  readonly mergedAt?: string;
+}
+
+function verifyMergedPr(primary: string, branch: string, sha: string): { number: number } | null {
+  const ghBin = process.env.GH_BIN || "gh";
+  try {
+    const stdout = execFileSync(
+      ghBin,
+      [
+        "pr",
+        "list",
+        "--state",
+        "merged",
+        "--base",
+        "dev",
+        "--head",
+        branch,
+        "--json",
+        "number,state,baseRefName,headRefName,headRefOid,mergedAt",
+      ],
+      {
+        cwd: primary,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+    const parsed: unknown = JSON.parse(stdout);
+    if (!Array.isArray(parsed)) return null;
+    const match = (parsed as readonly PrRecord[]).find(
+      (pr) =>
+        pr &&
+        typeof pr.number === "number" &&
+        pr.state === "MERGED" &&
+        pr.baseRefName === "dev" &&
+        pr.headRefName === branch &&
+        typeof pr.headRefOid === "string" &&
+        pr.headRefOid.toLowerCase() === sha.toLowerCase() &&
+        typeof pr.mergedAt === "string" &&
+        pr.mergedAt.length > 0
+    );
+    return match && typeof match.number === "number" ? { number: match.number } : null;
+  } catch {
+    return null;
+  }
+}
+
 function printPlan(primary: string, options: Options): void {
   const head = git(primary, ["rev-parse", "HEAD"]).trim();
   const originDev = currentOriginDev(primary);
@@ -201,10 +253,15 @@ function printPlan(primary: string, options: Options): void {
       console.log(`Legacy squash/rebase ${branch}: already absent.`);
     } else if (worktrees.some((item) => item.branch === `refs/heads/${branch}`)) {
       console.log(`Legacy squash/rebase ${branch}: checked out in a worktree; apply would hold.`);
-    } else if (tip.toLowerCase() === sha) {
-      console.log(`Legacy squash/rebase ${branch}: local tip matches caller-supplied PR head ${sha} (CLI does not query GitHub; verify MERGED PR headRefOid first); eligible for CAS deletion.`);
-    } else {
+    } else if (tip.toLowerCase() !== sha) {
       console.log(`Legacy squash/rebase ${branch}: local tip (${tip}) does not match caller-supplied PR head ${sha}; apply would hold.`);
+    } else {
+      const verifiedPr = verifyMergedPr(primary, branch, sha);
+      if (verifiedPr) {
+        console.log(`Legacy squash/rebase ${branch}: local tip and GitHub MERGED PR #${verifiedPr.number} into dev match head ${sha}; eligible for CAS deletion.`);
+      } else {
+        console.log(`Legacy squash/rebase ${branch}: could not verify a GitHub MERGED PR into dev matching head ${sha}; apply would hold.`);
+      }
     }
   }
 }
@@ -299,8 +356,14 @@ function applyPlan(primary: string, options: Options): number {
       branchHeld = true;
       continue;
     }
+    const verifiedPr = verifyMergedPr(primary, branch, sha);
+    if (!verifiedPr) {
+      console.log(`Held local branch ${branch}: could not verify a GitHub MERGED PR into dev matching head ${sha}.`);
+      branchHeld = true;
+      continue;
+    }
     git(primary, ["update-ref", "-d", `refs/heads/${branch}`, sha]);
-    console.log(`Deleted legacy squash/rebase branch ${branch} via CAS at caller-supplied PR head ${sha} (GitHub MERGED state must be pre-verified by caller).`);
+    console.log(`Deleted legacy squash/rebase branch ${branch} via CAS at GitHub-verified MERGED PR #${verifiedPr.number} head ${sha}.`);
   }
 
   return devSyncHeld || branchHeld ? 1 : 0;
