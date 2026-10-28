@@ -2,9 +2,15 @@ import { execFileSync, type ExecFileSyncOptions } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
+interface MergedPrHeadTarget {
+  readonly branch: string;
+  readonly sha: string;
+}
+
 interface Options {
   readonly apply: boolean;
   readonly localBranches: readonly string[];
+  readonly mergedPrHeadBranches: readonly MergedPrHeadTarget[];
 }
 
 interface Worktree {
@@ -35,6 +41,7 @@ function gitStatus(cwd: string, args: readonly string[]): number {
 function parseOptions(argv: readonly string[]): Options {
   let apply = false;
   const localBranches: string[] = [];
+  const mergedPrHeadBranches: MergedPrHeadTarget[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -51,17 +58,40 @@ function parseOptions(argv: readonly string[]): Options {
       }
       index += 1;
       assertIssueBranch(branch);
-      if (localBranches.includes(branch)) {
-        throw new Error(`duplicate ${argument} branch: ${branch}`);
+      if (localBranches.includes(branch) || mergedPrHeadBranches.some((t) => t.branch === branch)) {
+        throw new Error(`duplicate branch in arguments: ${branch}`);
       }
       localBranches.push(branch);
+      continue;
+    }
+
+    if (argument === "--merged-pr-head") {
+      const param = argv[index + 1];
+      if (!param || param.startsWith("--")) {
+        throw new Error(`${argument} requires <branch>=<40-char-sha>`);
+      }
+      index += 1;
+      const eqIndex = param.indexOf("=");
+      if (eqIndex <= 0) {
+        throw new Error(`${argument} requires <branch>=<40-char-sha>`);
+      }
+      const branch = param.slice(0, eqIndex);
+      const sha = param.slice(eqIndex + 1);
+      assertIssueBranch(branch);
+      if (!/^[0-9a-fA-F]{40}$/.test(sha)) {
+        throw new Error(`${argument} requires a 40-character hex commit SHA`);
+      }
+      if (localBranches.includes(branch) || mergedPrHeadBranches.some((t) => t.branch === branch)) {
+        throw new Error(`duplicate branch in arguments: ${branch}`);
+      }
+      mergedPrHeadBranches.push({ branch, sha: sha.toLowerCase() });
       continue;
     }
 
     throw new Error(`unknown argument: ${argument}`);
   }
 
-  return { apply, localBranches };
+  return { apply, localBranches, mergedPrHeadBranches };
 }
 
 function assertIssueBranch(branch: string): void {
@@ -141,81 +171,202 @@ function localTip(worktree: string, branch: string): string | null {
     : null;
 }
 
+interface PrRecord {
+  readonly number?: number;
+  readonly state?: string;
+  readonly baseRefName?: string;
+  readonly headRefName?: string;
+  readonly headRefOid?: string;
+  readonly mergedAt?: string;
+}
+
+function verifyMergedPr(primary: string, branch: string, sha: string): { number: number } | null {
+  const ghBin = process.env.GH_BIN || "gh";
+  try {
+    const stdout = execFileSync(
+      ghBin,
+      [
+        "pr",
+        "list",
+        "--state",
+        "merged",
+        "--base",
+        "dev",
+        "--head",
+        branch,
+        "--json",
+        "number,state,baseRefName,headRefName,headRefOid,mergedAt",
+      ],
+      {
+        cwd: primary,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+    const parsed: unknown = JSON.parse(stdout);
+    if (!Array.isArray(parsed)) return null;
+    const match = (parsed as readonly PrRecord[]).find(
+      (pr) =>
+        pr &&
+        typeof pr.number === "number" &&
+        pr.state === "MERGED" &&
+        pr.baseRefName === "dev" &&
+        pr.headRefName === branch &&
+        typeof pr.headRefOid === "string" &&
+        pr.headRefOid.toLowerCase() === sha.toLowerCase() &&
+        typeof pr.mergedAt === "string" &&
+        pr.mergedAt.length > 0
+    );
+    return match && typeof match.number === "number" ? { number: match.number } : null;
+  } catch {
+    return null;
+  }
+}
+
 function printPlan(primary: string, options: Options): void {
   const head = git(primary, ["rev-parse", "HEAD"]).trim();
   const originDev = currentOriginDev(primary);
   console.log(`Primary dev HEAD: ${head}`);
   console.log(`Existing refs/remotes/origin/dev snapshot (may be stale): ${originDev ?? "missing; apply would fetch origin dev"}`);
-  console.log(`dev worktree status: ${isClean(primary) ? "clean" : "dirty (apply refused)"}`);
+  console.log(`dev worktree status: ${isClean(primary) ? "clean" : "dirty (apply would hold dev sync if update needed)"}`);
   console.log("Mode: plan only; no changes made.");
+
+  const worktrees = parseWorktrees(git(primary, ["worktree", "list", "--porcelain"]));
 
   for (const branch of options.localBranches) {
     const tip = localTip(primary, branch);
     if (!tip) {
       console.log(`Local ${branch}: already absent.`);
-    } else if (parseWorktrees(git(primary, ["worktree", "list", "--porcelain"])).some((item) => item.branch === `refs/heads/${branch}`)) {
-      console.log(`Local ${branch}: checked out in a worktree; apply would refuse.`);
+    } else if (worktrees.some((item) => item.branch === `refs/heads/${branch}`)) {
+      console.log(`Local ${branch}: checked out in a worktree; apply would hold.`);
     } else if (originDev && isAncestor(primary, tip, originDev)) {
       console.log(`Local ${branch}: tip is an ancestor of origin/dev; eligible for non-force deletion.`);
     } else {
-      console.log(`Local ${branch}: ancestry cannot be confirmed; apply would refuse.`);
+      console.log(`Local ${branch}: ancestry cannot be confirmed; apply would hold.`);
     }
   }
 
-}
-
-function prepareLocalTargets(
-  worktree: string,
-  branches: readonly string[],
-  originDev: string,
-  worktrees: readonly Worktree[],
-): Array<{ branch: string; tip: string | null }> {
-  return branches.map((branch) => {
-    const tip = localTip(worktree, branch);
-    if (!tip) return { branch, tip: null };
-    if (worktrees.some((item) => item.branch === `refs/heads/${branch}`)) {
-      throw new Error(`local branch ${branch} is checked out in a worktree; refusing cleanup`);
+  for (const target of options.mergedPrHeadBranches) {
+    const { branch, sha } = target;
+    const tip = localTip(primary, branch);
+    if (!tip) {
+      console.log(`Legacy squash/rebase ${branch}: already absent.`);
+    } else if (worktrees.some((item) => item.branch === `refs/heads/${branch}`)) {
+      console.log(`Legacy squash/rebase ${branch}: checked out in a worktree; apply would hold.`);
+    } else if (tip.toLowerCase() !== sha) {
+      console.log(`Legacy squash/rebase ${branch}: local tip (${tip}) does not match caller-supplied PR head ${sha}; apply would hold.`);
+    } else {
+      const verifiedPr = verifyMergedPr(primary, branch, sha);
+      if (verifiedPr) {
+        console.log(`Legacy squash/rebase ${branch}: local tip and GitHub MERGED PR #${verifiedPr.number} into dev match head ${sha}; eligible for CAS deletion.`);
+      } else {
+        console.log(`Legacy squash/rebase ${branch}: could not verify a GitHub MERGED PR into dev matching head ${sha}; apply would hold.`);
+      }
     }
-    if (!isAncestor(worktree, tip, originDev)) {
-      throw new Error(`local branch ${branch} is not merged into origin/dev; refusing cleanup`);
-    }
-    return { branch, tip };
-  });
-}
-
-function applyPlan(primary: string, options: Options): void {
-  if (!isClean(primary)) {
-    throw new Error("primary dev worktree is dirty; refusing apply before fetch or cleanup");
   }
+}
 
+function applyPlan(primary: string, options: Options): number {
   git(primary, ["fetch", "--no-tags", "--refmap=", "origin", "dev"]);
   const fetchedDev = git(primary, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]).trim();
-
   const devHead = git(primary, ["rev-parse", "HEAD"]).trim();
-  if (!isAncestor(primary, devHead, fetchedDev)) {
-    throw new Error("local dev is not an ancestor of fetched origin dev; refusing non-fast-forward update");
+
+  let devSyncHeld = false;
+  let branchHeld = false;
+
+  if (devHead === fetchedDev) {
+    console.log(`Primary dev already matches fetched origin dev (${fetchedDev}); sync skipped.`);
+  } else {
+    if (!isAncestor(primary, devHead, fetchedDev)) {
+      console.log("Primary dev sync held: local dev is not an ancestor of fetched origin dev.");
+      devSyncHeld = true;
+    } else if (git(primary, ["status", "--porcelain=v1", "--untracked-files=no"]).trim().length > 0) {
+      console.log("Primary dev sync held: tracked files are dirty in primary dev worktree.");
+      devSyncHeld = true;
+    } else {
+      const incomingFiles = git(primary, ["diff", "--name-only", "-z", devHead, fetchedDev])
+        .split("\0")
+        .filter(Boolean);
+      const localOtherFiles = git(primary, ["ls-files", "-z", "--others"])
+        .split("\0")
+        .filter(Boolean);
+      const colliding = incomingFiles.find((incoming) =>
+        localOtherFiles.some(
+          (local) => incoming === local || incoming.startsWith(local + "/") || local.startsWith(incoming + "/")
+        )
+      );
+      if (colliding) {
+        console.log(`Primary dev sync held: untracked or ignored file collides with incoming origin/dev changes (${colliding}).`);
+        devSyncHeld = true;
+      } else {
+        try {
+          git(primary, ["merge", "--ff-only", "--no-overwrite-ignore", fetchedDev]);
+          const updatedHead = git(primary, ["rev-parse", "HEAD"]).trim();
+          if (updatedHead !== fetchedDev) throw new Error("dev fast-forward readback did not match fetched origin dev");
+          console.log(`Primary dev fast-forwarded to ${updatedHead}.`);
+        } catch {
+          console.log("Primary dev sync held: git merge --ff-only --no-overwrite-ignore refused or failed.");
+          devSyncHeld = true;
+        }
+      }
+    }
   }
 
   const worktrees = parseWorktrees(git(primary, ["worktree", "list", "--porcelain"]));
-  const localPlans = prepareLocalTargets(primary, options.localBranches, fetchedDev, worktrees);
 
-  if (devHead !== fetchedDev) {
-    git(primary, ["merge", "--ff-only", fetchedDev]);
-  }
-  const updatedHead = git(primary, ["rev-parse", "HEAD"]).trim();
-  if (updatedHead !== fetchedDev) throw new Error("dev fast-forward readback did not match fetched origin dev");
-  if (!isClean(primary)) throw new Error("primary dev became dirty after fast-forward; refusing branch cleanup");
-
-  for (const plan of localPlans) {
-    if (!plan.tip) {
-      console.log(`Local branch ${plan.branch} was already absent.`);
+  for (const branch of options.localBranches) {
+    const tip = localTip(primary, branch);
+    if (!tip) {
+      console.log(`Local branch ${branch} was already absent.`);
       continue;
     }
-    git(primary, ["branch", "-d", "--", plan.branch]);
-    console.log(`Deleted local branch ${plan.branch} with git branch -d.`);
+    if (worktrees.some((item) => item.branch === `refs/heads/${branch}`)) {
+      console.log(`Held local branch ${branch}: checked out in a worktree.`);
+      branchHeld = true;
+      continue;
+    }
+    if (!isAncestor(primary, tip, fetchedDev)) {
+      console.log(`Held local branch ${branch}: local branch ${branch} is not merged into origin/dev.`);
+      branchHeld = true;
+      continue;
+    }
+    try {
+      git(primary, ["branch", "-d", "--", branch]);
+      console.log(`Deleted local branch ${branch} with git branch -d.`);
+    } catch {
+      console.log(`Held local branch ${branch}: git branch -d refused deletion.`);
+      branchHeld = true;
+    }
   }
 
-  console.log(`Primary dev fast-forwarded to ${updatedHead}.`);
+  for (const target of options.mergedPrHeadBranches) {
+    const { branch, sha } = target;
+    const tip = localTip(primary, branch);
+    if (!tip) {
+      console.log(`Local branch ${branch} was already absent.`);
+      continue;
+    }
+    if (worktrees.some((item) => item.branch === `refs/heads/${branch}`)) {
+      console.log(`Held local branch ${branch}: checked out in a worktree.`);
+      branchHeld = true;
+      continue;
+    }
+    if (tip.toLowerCase() !== sha) {
+      console.log(`Held local branch ${branch}: local tip (${tip}) does not match caller-supplied PR head ${sha}.`);
+      branchHeld = true;
+      continue;
+    }
+    const verifiedPr = verifyMergedPr(primary, branch, sha);
+    if (!verifiedPr) {
+      console.log(`Held local branch ${branch}: could not verify a GitHub MERGED PR into dev matching head ${sha}.`);
+      branchHeld = true;
+      continue;
+    }
+    git(primary, ["update-ref", "-d", `refs/heads/${branch}`, sha]);
+    console.log(`Deleted legacy squash/rebase branch ${branch} via CAS at GitHub-verified MERGED PR #${verifiedPr.number} head ${sha}.`);
+  }
+
+  return devSyncHeld || branchHeld ? 1 : 0;
 }
 
 function main(argv: readonly string[]): number {
@@ -224,12 +375,12 @@ function main(argv: readonly string[]): number {
     const invokingWorktree = git(process.cwd(), ["rev-parse", "--show-toplevel"]).trim();
     const primary = locatePrimaryDev(invokingWorktree);
     if (options.apply) {
-      applyPlan(primary, options);
+      return applyPlan(primary, options);
     } else {
       printPlan(primary, options);
-      console.log("Use --apply to fetch origin dev and fast-forward safely; add --local <branch> only for explicitly named local branch cleanup.");
+      console.log("Use --apply to fetch origin dev and fast-forward safely; add --local <branch> or --merged-pr-head <branch>=<sha> only for explicitly named branch cleanup.");
+      return 0;
     }
-    return 0;
   } catch (error) {
     console.error(`sync-finished-branches: ${(error as Error).message}`);
     return 1;
