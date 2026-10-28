@@ -4,9 +4,9 @@
 
 ## Skill 및 데이터 사전 점검
 
-- 특수 도구나 워크플로를 사용하기 전에 현재 세션의 skill catalog를 확인하고, 적용되는 각 skill의 전체 `SKILL.md`와 참조 자료를 읽는다. Issue/PR 작업에는 저장소 로컬 `.agents/skills/travel-issue-agent-loop/` skill과 현재 세션 catalog에서 찾은 전역 `herdr` skill을 모두 적용한다. 전역 skill의 파일 경로를 저장소 지침에 고정하지 않는다. Herdr 작업 전에 두 skill을 모두 따르고 필요한 Herdr 접근 절차를 확인한다.
+- 특수 도구나 워크플로를 사용하기 전에 현재 세션의 skill catalog를 확인하고, 적용되는 각 skill의 전체 `SKILL.md`와 참조 자료를 읽는다. Issue/PR 작업에는 저장소 로컬 `.agents/skills/travel-issue-agent-loop/` skill을 적용한다. **Herdr 관리 세션이거나 사용자가 Herdr 사용을 명시한 경우에만** 현재 세션 catalog에서 전역 `herdr` skill을 찾아 함께 적용한다. Herdr가 아닌 Work/Codex 세션에서는 해당 세션에서 승인된 전담 에이전트·저장소·작업 공간 경로를 사용하며, Herdr 부재만으로 작업을 중단하지 않는다. 전역 skill의 파일 경로를 저장소 지침에 고정하지 않는다.
 - 실제 데이터 분석, 추천 문제 정의 또는 반복 실험이 포함된 Issue에는 저장소 로컬 `.agents/skills/travel-data-scientist/` skill도 함께 적용한다. 이 skill은 단순 실행 절차가 아니라 problem/label/feature/metric 정렬, implicit feedback, leakage, ranking 평가와 여행로그 도메인 의미를 검토하는 전문 역할을 정의한다.
-- 승인된 실제 raw data를 한 번이라도 읽는 작업은 코드 수정 여부와 무관하게 `herdr-data-science` 전담 에이전트에 위임한다. 파일 존재 여부·개수, 디렉터리 구조, provenance/TL·VL 역할 매핑, schema/header 확인 같은 read-only 진단도 actual-data read로 간주한다. `entry-readonly` 조정자는 raw root나 TL/VL 입력을 직접 탐색하거나 파일 개수를 세지 않고, Issue·문서·Herdr 상태 확인과 위임만 담당한다.
+- 승인된 실제 raw data를 한 번이라도 읽는 작업은 코드 수정 여부와 무관하게 **승인된 전담 데이터 사이언스 에이전트**에 위임한다(Herdr 관리 세션에서는 `herdr-data-science`, 비-Herdr 세션에서는 해당 세션의 승인된 전담 경로). 파일 존재 여부·개수, 디렉터리 구조, provenance/TL·VL 역할 매핑, schema/header 확인 같은 read-only 진단도 actual-data read로 간주한다. 읽기 전용 조정자는 raw root나 TL/VL 입력을 직접 탐색하거나 파일 개수를 세지 않고, Issue·문서·에이전트 상태 확인과 위임만 담당한다.
 - 실제 데이터를 처리하기 전 선택한 실험·데이터 워크플로의 재현 명령을 읽고 필요한 데이터 입력을 식별한다. 현재 프로세스에서 `RAW_ROOT`, `CAPITAL_TL`, `CAPITAL_VL`, `WEST_TL`, `WEST_VL`, `EAST_TL`, `EAST_VL`, `JEJU_TL`, `JEJU_VL` 등 필요한 변수를 사용할 수 있으면 우선 사용한다. 변수가 보이지 않는다는 이유만으로 데이터가 없다고 판단하지 않는다.
 - 필요한 경로를 현재 환경에서 확인할 수 없으면, 선택된 Issue와 `docs/data/aihub-workflow.md`가 허용한 로컬·마운트 위치에서 제한된 깊이와 역할 marker를 사용해 bounded discovery를 수행한다. 환경변수 확인은 경로 해석 수단이지 actual-data 접근의 필수 gate가 아니다. 전체 홈 또는 드라이브를 훑지 않는다. 실제 입력을 열기 전 출처, 이용 조건, 권한, 예상 TL/VL 역할 매핑을 검증하고, 로컬 경로나 변수 값을 프롬프트·로그·Git·PR에 넣지 않는다. 승인된 데이터 위치를 유일하게 식별할 수 없거나 provenance/역할 검증에 실패할 때만 actual-data 작업을 중단한다.
 
