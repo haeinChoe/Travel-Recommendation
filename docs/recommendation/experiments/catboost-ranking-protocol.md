@@ -1,10 +1,11 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
-> **문서 상태 (2026-10-28):** 이 문서는 #79/#82의 CatBoost v1 prototype, 실험 계획과 측정 기록을 보존한다. [problem-definition-v2.md](../problem-definition-v2.md)가 문제와 현재 우선순위의 기준이다. Candidate Generation은 필요가 확인될 때만 추가하고 CatBoost의 최종 역할은 아직 정하지 않았다. full-catalog search는 현재 보류하며 공식 VL은 configuration 잠금 후 #83에서만 사용한다.
+> **이 실험을 그대로 재실행하지 않는 이유:** 기존 실험은 관광지를 포함한 지역의 원본 장소 목록을 크게 잡아 CatBoost로 전수 점수화했다. 수도권에서만 **3,052,797개 후보 × 432개 여행 요청**을 평가하면서 전체 **1,139.035초**가 걸렸고, 대부분의 장소는 기존 입력 특징으로 구별되지 않았다. 따라서 아래의 탐색 계획은 **그 당시 조건의 기록**이며 현재 실행 순서가 아니다. 먼저 [추천 문제와 장소 표현](../problem-definition-v2.md)에 따라 후보 자격·특징을 재정의한 후 더 단순한 모델부터 비교한다. 공식 VL은 모델을 최종 확정할 때까지 보관한다.
 
 
-**관련 Issue:** #79, #82
-**현재 상태:** PR #88/#89의 과거 full-run은 TN_POI_MASTER 모든 고유 ID에 source-package region을 부여한 잘못된 geography scope였다. Runner는 #81 canonical administrative location과 versioned `poi-catalog-candidate-v1` 정책으로 후보 geography를 분리했다. Corrected 수도권 TL full benchmark는 3,052,797개 후보·432 validation query·1,318,808,304 scored rows에서 total 1,139.035초, runner-scoped scoring 959.962초, peak RSS 3,786 MiB였다. 이 비용을 기준으로, 향후 full-catalog search가 end-to-end 300초 이내가 되면 forward + 정확히 한 번의 backward cleanup pass, broad screen 1 seed/config, 선택된 finalist 3 total seeds를 쓴다. 현재는 scoring이 cutoff를 넘으므로 그 conditional plan의 실행을 보류한다. 다음 checkpoint는 별도의 Candidate Generation → CatBoost reranking 설계와 runtime 재측정이다. VL은 읽지 않았다.
+**측정과 그 한계:** 최초 실행에서는 데이터 파일이 속한 권역을 장소의 실제 행정 위치로 잘못 취급했다. 이후 장소의 정적 시도 코드와 버전이 고정된 지역 정책을 기준으로 후보 범위를 보정했다. 보정된 수도권 실험은 **3,052,797개 후보**, **432개 내부 검증 요청**, 총 **1,318,808,304개 점수화 행**을 평가했고, 점수화만 **959.962초**, 최대 메모리 **3,786 MiB**가 필요했다. 당시의 5분 실행 기준을 만족하지 않으므로 추가 탐색을 시작하지 않았다. 300초 이내로 줄었을 경우를 가정한 추가 실험 계획은 기록으로만 유지한다.
+
+**실험 출처:** #79, #82; 이전 실행·지리 보정 PR #88/#89. **공식 VL은 이 단계에서 읽지 않았다.**
 
 ## 이 문서가 답하려는 질문
 
@@ -39,7 +40,7 @@ VL 최종 평가 (#83)
 - prototype objective: **YetiRank**
 - sampling: **uniform / popularity-weighted / mixed / hard**
 - 초기 negative ratio: **1 / 2 / 4 / 8 / 16**
-- feature: #41의 Feature Group v1
+- feature: 당시 정의된 Feature Group v1(여행 문맥·행정 위치·인기도·과거 방문 유형). 장소별 구별력이 낮아 현재는 추가 특징을 검증해야 함
 - metrics: **NDCG@K / Recall@K / MRR@K / HitRate@K**
 - 기본 K: **5 / 10 / 20**
 - full-catalog scoring은 query별 제한 행 단위로 유지하고, 동률에서 item ID 오름차순을 포함한 global top-K 결과를 보존한다.
@@ -48,9 +49,9 @@ VL 최종 평가 (#83)
 
 ## 선행 작업 상태
 
-- I2 Administrative Location의 feature 계약과 synthetic 검증은 #81에서 완료됐다. `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용한다. #82 actual TL run은 한 권역의 canonical eligibility, unresolved geography, validation candidate coverage aggregate를 기록했다. 전 권역 source별 provenance·conflict와 전체 coverage audit은 별도 후속 작업으로 남아 있다.
-- I3 Popularity의 inner-train 재계산 경계와 I4 Historical POI의 `recompute_inner_train_visit_type_codes` helper는 #80에서 구현·검증 완료됐다.
-- #82 runner는 한 권역의 TL trip-owner, positive interaction, `TN_VISIT_AREA_INFO` 이벤트, AI Hub 후보 feature를 받아 traveler-group split을 만들고 I3/I4를 inner-train에서 다시 계산한다. 기존 outer-TL I3/I4 값은 덮어쓴다.
+- **행정구역 특징:** 장소의 정적 위치를 표준화해 시도·시군구·해석 상태를 입력으로 사용한다. 수도권의 후보 포함 여부와 위치 해석 실패는 점검했지만, 네 권역 전체의 위치 출처·충돌·누락 분포는 아직 검증하지 않았다.
+- **행동 파생 특징:** 방문 횟수와 방문 유형은 내부 학습 여행자의 데이터에서만 재계산하도록 검증했다. 내부 검증 여행자의 실제 방문 결과는 입력 특징에 포함하지 않는다.
+- **실험 실행기:** 한 권역의 여행자·여행·방문 이벤트·후보 특징을 받아 여행자 기준으로 나누고, 장소의 인기도와 과거 방문 유형을 학습 집합에서 새로 집계한다. 기존 전체 TL 통계가 내부 검증 데이터에 섞이지 않도록 덮어쓴다.
 - CatBoost runtime dependency는 `pyproject.toml`과 `uv.lock`에서 고정한다. Issue #82 검증 환경은 Python 3.12와 CatBoost 1.2.10을 사용한다.
 
 ## 다음 행동
