@@ -1,10 +1,11 @@
 # Cold-user POI ranking 학습·평가 계약
 
-> **문서 상태 (2026-10-28):** 이 문서는 #41/#79~#83의 구체적인 v1 모델·candidate·평가 계약과 실험 이력을 보존한다. v2 최상위 문제 및 현재 미결정은 [problem-definition-v2.md](problem-definition-v2.md)가 기준이다. 특히 AI Hub 전체 direct ranking과 고정 CatBoost 역할은 canonical 문제가 아니며 #82 탐색은 보류 상태다. 공식 VL은 final holdout이며 configuration 잠금 전 사용하지 않는다.
+> **현재 적용 범위:** 과거에는 여행 지역의 AI Hub 장소를 거의 전부 후보로 두고 CatBoost로 순위를 매겼다. 그러나 수도권 후보 약 305만 개 중 대부분을 기존 장소 특징으로 구별할 수 없었고, 전체 점수화에도 지나치게 많은 시간이 들었다. 따라서 **그 방식의 추가 모델 탐색은 중단**했다. 현재는 [여행자-장소 적합도 문제](problem-definition-v2.md)를 기준으로, 장소 특징과 추천 가능한 후보 범위를 먼저 검증한다. 이 문서의 전수 점수화·CatBoost 설정은 **재현 가능한 과거 실험 조건**이며 앞으로의 필수 구조가 아니다. 공식 VL은 최종 평가용으로 보관한다.
 
 
-**관련 Issue:** #41, #79, #80, #81, #82, #83
-**현재 상태:** #80 traveler split·I3/I4 경계와 #81 I2 계약이 반영됐다. PR #88/#89의 실제 run은 source-package region을 POI geography로 잘못 사용해 corrected baseline이 아니다. #82 runner는 resolved canonical SIDO와 versioned candidate policy로 ProductRegion을 판정한다. Corrected 수도권 TL full benchmark는 1,139.035초 total, runner-scoped scoring 959.962초, 3,786 MiB process peak RSS였다. 과거 source-tagged run과 direct actual-data metric parity/speedup을 주장하지 않으며, corrected geography 안에서 cached-vs-uncached metric parity는 exact다. Scoring이 5분 cutoff를 넘으므로 search는 보류한다. 향후 full-catalog end-to-end runtime이 300초 이하면 forward + 정확히 한 번 backward cleanup, broad screen 1 seed/config, 선택 finalist 3 total seeds를 적용한다. 다음 단계는 Candidate Generation → CatBoost reranking 설계와 재측정이다.
+**현재까지 확인한 근거:** 여행자 기준으로 학습 데이터와 내부 검증 데이터를 나누어 정보가 섞이지 않도록 했고, 행정구역 코드도 장소의 실제 정적 근거를 사용하도록 보정했다. 초기 실행은 **원본 데이터 파일의 권역을 실제 장소 위치로 오인**했으므로 올바른 비교 기준이 아니다. 위치 조건을 보정한 수도권 실행에서는 **전체 1,139.035초**, 점수화 **959.962초**, 최대 메모리 **3,786 MiB**가 측정됐다. 당시 허용한 **5분 실행 예산을 초과**하므로 후보·특징 계약이 개선되기 전까지 탐색은 멈춘다. 캐시 사용 여부만 바꾼 경우의 순위 지표는 보정된 같은 후보 범위에서 일치했으며, 과거 잘못된 권역 실험과 성능 개선을 직접 비교할 수는 없다.
+
+**실험 이력:** #41, #79, #80, #81, #82, #83. 5분 이내 실행 가능한 환경을 전제로 세웠던 탐색 예산과 모델 조합은 아래에 기록으로 남기되 현재의 실행 지시로 사용하지 않는다.
 
 ## 이 문서가 답하려는 질문
 
@@ -45,12 +46,12 @@ POI score → Top-K ranking
 
 ## 확인 완료 및 남은 결정
 
-- #80 실제 감사 완료: 네 권역 모두 traveler:trip = 1:1, multi-trip traveler = 0%, seed `issue80-v1`·validation fraction 0.2에서 권역별 inner-train 2,048 / inner-validation 512 traveler와 trip, traveler overlap 0이다.
-- #81 I2 Administrative Location 계약 완료: `canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`를 모델 입력으로 사용한다. #82는 수도권 후보 eligibility와 validation-positive coverage의 제한된 aggregate를 기록했다. 전 권역 source/conflict/provenance 감사는 별도 후속 작업이다.
-- #80 I4 Historical POI의 inner-train-safe 재계산 helper 구현·테스트 완료. PR #88에서 #82 runner의 TL visit-event input 연결을 완료했다.
-- sampling / feature group / objective의 실제 최종 선택은 #82 담당이지만 아직 미결정이다. 5분 runtime cutoff 때문에 candidate-generation/reranking 설계와 재측정 전까지 search를 시작하지 않는다.
+- **여행자별 학습·검증 분할 확인:** 네 권역에서 각 여행자는 여행 1개를 기록했다. 설정된 난수 시드 `issue80-v1`, 검증 비율 0.2에서 권역별 학습 여행자 2,048명과 내부 검증 여행자 512명이 분리됐고, 서로 중복된 여행자는 없었다.
+- **장소의 행정 위치 특징:** 표준화한 시도·시군구·위치 해석 상태(`canonical_admin_sido_code`, `canonical_admin_sgg_code`, `canonical_admin_location_status`)를 사용한다. 수도권에서 후보 위치가 해석되는지와 관측 방문이 후보에 포함되는지만 제한적으로 점검했다. **전 권역의 출처별 충돌·누락 실태는 아직 확인하지 않았다.**
+- **방문 기록에서 만든 특징의 누수 방지:** 과거 방문 유형을 만드는 계산 함수는 내부 학습 여행자의 방문 이벤트만 사용하도록 구현·검증했다. 내부 검증 여행자의 방문 정보로 해당 특징을 보완해서는 안 된다.
+- **모델 비교는 보류:** 비교용 미관측 장소를 얼마나 뽑을지, 어떤 장소 특징을 쓸지, 어떤 학습 목표를 사용할지는 아직 정하지 않았다. 현재 후보 수와 점수화 시간으로는 5분 실행 예산을 초과하므로, 장소 표현과 추천 대상 범위를 먼저 확인해야 한다.
 - conditional seed budget decision: runtime gate가 통과되면 broad search 후보당 1 seed, 선택된 finalist는 그 screen seed를 재사용해 총 3 seeds로 평가한다. 현재는 5분 cutoff를 넘어 실행을 보류한다.
-- bootstrap: 현재 데이터 기준 trip/request 단위를 기본으로 하고, #83에서 입력 데이터와 traveler identity 전제가 유지되는지 확인한 뒤 신뢰구간 설정을 확정한다.
+- **최종 신뢰구간:** 여행/추천 요청 단위를 기본 재표집 대상으로 검토한다. 실제 최종 평가에서 여행자 식별과 데이터 분할 가정이 유지되는지 확인한 뒤 계산 방법을 확정한다.
 
 남은 항목은 설계 누락이 아니라 #82/#83의 실제 실험 결과로 결정하도록 분리한 항목이다.
 
