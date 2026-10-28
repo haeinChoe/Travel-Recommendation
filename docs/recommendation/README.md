@@ -5,13 +5,14 @@
 ## 처음 읽는 경우
 
 1. [추천 문제 정의 v2 — 단일 기준](problem-definition-v2.md) — 최상위 질문, 현재 확정 사항, 작업 가설, 미결정을 확인합니다.
-2. [추천 시스템 용어 사전](glossary.md) — user/traveler, trip/request, POI, observed visit, candidate eligibility/generation 등의 공통 의미를 확인합니다.
-3. [추천 학습 데이터 계약](training-data-contract.md) — 기존 AI Hub 관측 단위, 데이터 의미, feature/label 근거를 확인합니다. v1 코호트와 세부 규칙이 v2 제품 후보 범위를 자동 확정하지 않습니다.
-4. [표준 학습 데이터셋 스키마](training-dataset-schema.md) — Parquet 출력의 컬럼·타입·역할을 확인합니다. TL→train/VL→validation은 변환 출력 역할명이므로 모델 선택 split과 구분합니다.
-5. [학습·평가 계약](model-training-evaluation-contract.md) — 여행별 학습 행·관측 라벨·후보 집합과, 지역 전체 후보를 점수화했던 실험의 비용 및 현재 보류 이유를 확인합니다.
-6. [CatBoost ranking 실험 프로토콜](experiments/catboost-ranking-protocol.md) — YetiRank prototype 및 과거 실험 계획을 확인합니다. CatBoost의 최종 역할은 고정되지 않았습니다.
-7. [제품 카탈로그와 후보 계약](poi-catalog-candidate-contract.md) — 실제 서비스에 표시할 장소 카탈로그와 AI Hub 방문 기록을 연결하는 규칙, 양쪽 식별자 차이를 확인합니다.
-8. [다단계 POI 식별자 연결 실험 결과](experiments/poi-identity-matching-v2.md) — Stage 0과 Stage 5를 서로 다른 기준·분모로 확인합니다.
+2. [장소 특징을 풍부하게 표현하는 방법](poi-rich-feature-v1.md) — 정적 장소 속성·과거 방문자 통계·서비스 재현 가능성 기준과 수도권 TL + 정적 OTHER 집계 결과를 설명합니다. 결과는 특징 표현의 구별력만 나타내며 모델 성능과 제품 채택은 미결정입니다.
+3. [추천 시스템 용어 사전](glossary.md) — user/traveler, trip/request, POI, observed visit, candidate eligibility/generation 등의 공통 의미를 확인합니다.
+4. [추천 학습 데이터 계약](training-data-contract.md) — 기존 AI Hub 관측 단위, 데이터 의미, feature/label 근거를 확인합니다. v1 코호트와 세부 규칙이 v2 제품 후보 범위를 자동 확정하지 않습니다.
+5. [표준 학습 데이터셋 스키마](training-dataset-schema.md) — Parquet 출력의 컬럼·타입·역할을 확인합니다. TL→train/VL→validation은 변환 출력 역할명이므로 모델 선택 split과 구분합니다.
+6. [학습·평가 계약](model-training-evaluation-contract.md) — 여행별 학습 행·관측 라벨·후보 집합과, 지역 전체 후보를 점수화했던 실험의 비용 및 현재 보류 이유를 확인합니다.
+7. [CatBoost ranking 실험 프로토콜](experiments/catboost-ranking-protocol.md) — YetiRank prototype 및 과거 실험 계획을 확인합니다. CatBoost의 최종 역할은 고정되지 않았습니다.
+8. [제품 카탈로그와 후보 계약](poi-catalog-candidate-contract.md) — 실제 서비스에 표시할 장소 카탈로그와 AI Hub 방문 기록을 연결하는 규칙, 양쪽 식별자 차이를 확인합니다.
+9. [다단계 POI 식별자 연결 실험 결과](experiments/poi-identity-matching-v2.md) — Stage 0과 Stage 5를 서로 다른 기준·분모로 확인합니다.
 
 ## 관련 실험 문서
 
