@@ -1,12 +1,12 @@
 # 추천 학습 데이터 구성·포함 기준 및 Feature/Label 계약
 
-> **문서 상태 (2026-10-28):** 이 문서는 기존 #17/#45/#69/#71의 AI Hub 관측 단위와 데이터·feature/label 계약 및 감사를 보존한다. 문제의 최상위 정의와 v2 현재 상태는 [problem-definition-v2.md](problem-definition-v2.md)가 기준이다. 아래 과거 tourism_core, candidate/serving-parity 및 feature 결정은 v2 제품 후보 범위나 최종 feature 선택을 자동 확정하지 않는다.
+> **이 문서의 적용 범위:** AI Hub 방문 기록을 어떤 단위로 합치고 어떤 기록을 학습의 양성으로 다룰지, 원시 식별자와 모델 입력을 어떻게 구분할지를 설명한다. **기존 학습 규칙은 관광 관련 방문만 양성으로 선택했으므로**, 실제로 방문했지만 제외된 식당·카페·쇼핑·숙박과 아예 방문 기록이 없는 장소를 구분해야 한다. 앞으로 서비스가 어떤 장소를 추천할지 아직 정하지 않았기 때문에 이 과거 관광 코호트와 후보 정책이 그대로 적용되는 것은 아니다. [현재 추천 문제 정의](problem-definition-v2.md)를 먼저 읽고, 아래 수치·유형 코드·계산 규칙은 원래 실험의 조건으로 해석한다.
 
 
 - **관련 Issue:** [#17](https://github.com/haeinChoe/Travel-Recommendation/issues/17), [#45](https://github.com/haeinChoe/Travel-Recommendation/issues/45), [#69](https://github.com/haeinChoe/Travel-Recommendation/issues/69), [#71](https://github.com/haeinChoe/Travel-Recommendation/issues/71)
-- **현재 상태:** 아래 실제 데이터 코호트 수치는 Issue #71의 과거 감사 결과다. Issue #81의 canonical administrative location 합성 계약/코드와 full actual-source coverage/conflict 감사는 별개다. Issue #82 corrected 수도권 TL run은 candidate eligibility를 위한 resolved geography 및 validation coverage의 제한된 aggregate를 기록했으며, 전체 source별 conflict/provenance 감사는 수행하지 않았다.
+- **데이터 진단 범위:** 아래 방문 이벤트·여행-장소 관계 건수와 관광 코호트 집계는 기존 데이터 포함 규칙에서 계산했다. 장소의 표준 행정 위치 해석 함수는 마련됐지만, 네 권역 전체에서 출처별 위치 충돌·누락·사용 가능 비율을 상세 검증한 결과는 아니다. 수도권의 보정된 후보 실험은 위치를 해석할 수 있는지와 실제 방문이 후보에 포함되는지만 제한적으로 살펴봤다.
 
-- **TL inner split (Issue #80):** 권역 단위 `(region, TRAVELER_ID)` 결정론적 분할과 privacy-safe 분포 감사 CLI를 추가했다. 네 권역 입력의 provenance 확인을 통과한 실제 TL 감사에서 권역별 distinct traveler/trip은 각각 2,560/2,560이었고 traveler 모두 한 trip을 가졌다 (multi-trip share 0%). 현재 표본에서는 trip split도 traveler를 나누지 않아 traveler leakage 관점에서 구조적으로 동등하지만, 미래의 반복 traveler에 안전하도록 기본 계약은 `(region, TRAVELER_ID)` group split으로 유지한다. seed `issue80-v1`, validation 비율 0.2의 group split은 권역마다 2,048 train / 512 validation traveler와 trip을 배정했고 traveler overlap은 0이었다. Partition-label disagreement는 서로 다른 hash key의 deterministic assignment 간 label 차이일 뿐 leakage metric가 아니다. I3 재계산은 inner-train TL interaction만 사용한다. I4 inner-train 이벤트 재계산 함수는 구현·테스트 완료했고, Issue #82 runner는 이를 full inner-train feature materialization에 연결했다.
+- **학습·내부 검증 분리:** 네 권역의 실제 TL에서 각각 여행자 2,560명과 여행 2,560건이 확인됐으며, 이번 표본에서는 한 여행자당 여행이 하나였다. 여행자 기준으로 **학습 2,048명 / 내부 검증 512명**을 분리했고 동일 여행자가 양쪽에 포함되지 않았다. 나중에 여러 번 여행한 사람이 들어와도 누수를 막기 위해 구분 기준은 `(region, TRAVELER_ID)`로 유지한다. 재현 시드 `issue80-v1`, 검증 비율 0.2를 사용했다. 장소 인기도와 과거 방문 유형 특징(I3/I4)은 **내부 학습 여행자의 기록만으로 다시 계산**하며 내부 검증 데이터를 섞지 않는다.
 
 > 이 문서는 코호트·라벨의 의미와 승인된 분석 집계를 설명한다. 실제 세 Parquet 출력 이름, TL/VL→`train`/`validation` 변환, 모든 출력 컬럼의 null·타입·역할 규칙은 [표준 학습 데이터셋 스키마](training-dataset-schema.md)를 기준으로 한다. 여기서 언급하는 대문자 AI Hub 컬럼은 원천 필드 이름이다.
 
@@ -47,9 +47,9 @@
 
 ### 다음 행동
 
-이 문서로 확정된 **학습 데이터 구성 및 특성/라벨 계약(`scripts/recommendation/training_data_contract.py`)**을 후속 순위 모델링 및 후보 평가 실험의 공통 입력 계층으로 사용한다. 다음 실행 단계는 #82의 TL inner-validation ranking 실험이다. 미매칭 TourAPI 후보까지 실제로 점수를 매기는 서빙 모델을 학습하기 전에는 (1) 카테고리 교차 매핑표(crosswalk) 정의, (2) canonical I2의 실제 AI Hub coverage/conflict/provenance 감사, (3) 미매칭 후보의 인기도 콜드 스타트 기본값(prior) 프로토콜을 별도로 확정한다. 과거 `SGG_CD` 결측 75.52% 수치는 #71 당시 raw/legacy 위치 근거의 역사적 감사값이며 현재 canonical I2 coverage를 뜻하지 않는다.
+이 문서의 관측 단위·원본 필드 매핑은 학습 데이터 변환의 기반으로 재사용한다. **다만 다음 모델 평가에 바로 이 코호트나 후보 범위를 적용하지 않는다.** 장소 특징과 추천 가능한 제품 범위를 다시 정의한 다음 같은 학습·검증 기준에서 적합도 모델을 평가한다. 미매칭 TourAPI 후보까지 실제로 점수를 매기는 서빙 모델을 학습하기 전에는 (1) 카테고리 교차 매핑표(crosswalk) 정의, (2) canonical I2의 실제 AI Hub coverage/conflict/provenance 감사, (3) 미매칭 후보의 인기도 콜드 스타트 기본값(prior) 프로토콜을 별도로 확정한다. 과거 `SGG_CD` 결측 75.52% 수치는 #71 당시 raw/legacy 위치 근거의 역사적 감사값이며 현재 canonical I2 coverage를 뜻하지 않는다.
 
-## Issue #81 현재 I2 계약
+## 장소의 표준 행정 위치(I2) 계약
 
 새 데이터셋 스키마 v2는 AI Hub POI Master의 유일 POI inventory를 item table에 포함한다. 이 inventory의 정적 category와 행정구역 근거가 있으면 TL에서 관측되지 않은 아이템도 후보가 될 수 있다. 상호작용 관측 아이템은 기존처럼 유지하고, Master에 없는 관측 아이템에는 추정된 정적 location을 부여하지 않는다.
 
