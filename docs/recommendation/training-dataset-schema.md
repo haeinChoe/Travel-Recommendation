@@ -1,11 +1,11 @@
-# 표준 학습 데이터셋 스키마 (Issue #77)
+# 표준 학습 데이터셋 스키마
 
-> **문서 상태 (2026-10-28):** 이 문서는 변환기가 만드는 Parquet 출력의 기술 schema 계약을 설명한다. 상위 문제와 v2 결정 상태는 [problem-definition-v2.md](problem-definition-v2.md)를 따른다. TL→train/VL→validation은 출력 역할 이름이며 모델 선택 split과 VL 사용 시점을 뜻하지 않는다. TL 내부 traveler group split과 공식 VL 최종 holdout을 구분한다.
+> **이 문서를 읽을 때:** 여기서는 여행 문맥, 장소 특징, 관측 방문 관계를 **세 개의 Parquet 파일로 저장하는 방식**을 설명한다. 데이터 변환기가 `TL` 파일을 `train`, `VL` 파일을 `validation`으로 부르는 것은 **출력 폴더의 역할 이름**이지, 개발자가 공식 VL로 모델을 반복 개선해도 된다는 뜻이 아니다. 모델을 고를 때는 TL 안에서 여행자별로 다시 나누고, VL은 최종 설정을 정한 뒤에만 평가한다. 또한 **Master에 존재하는 장소와 실제 추천할 자격이 있는 장소는 다르다.** 현재 추천 문제의 범위는 [기준 문서](problem-definition-v2.md)를 따른다.
 
 
 ## 목적과 현재 계약
 
-이 문서는 추천 학습 변환기가 만드는 세 Parquet 파일의 기준 계약이다. Issue #77에서 AI Hub 원천 표기(TL/VL, 대문자 열 이름)를 내부 출력 스키마와 분리했고, Issue #81에서 I2 행정 위치를 canonicalize하며 전체 고유 POI Master inventory로 정적 특성 범위를 확장했다. 파일 구성은 `trip_context.parquet`, `item_features.parquet`, `trip_item_interaction.parquet` 세 개로 유지한다.
+이 문서는 추천 학습 변환기가 만드는 세 Parquet 파일의 기술 계약이다. AI Hub 원본의 컬럼과 분할 역할을 내부 모델용 컬럼에 대응시키고, **장소 위치는 하나의 원시 시군구 값 대신 출처·해석 상태를 포함한 표준 행정 위치 정보**로 바꿨다. `item_features`는 과거 방문된 장소뿐 아니라 정적 POI Master에서 고유하게 식별되는 장소까지 보관한다. 파일은 `trip_context.parquet`(여행 상황), `item_features.parquet`(장소 특징), `trip_item_interaction.parquet`(관측 방문 관계) 세 개다. **이렇게 저장한 모든 장소를 추천 후보로 사용하라는 뜻은 아니다.**
 
 manifest는 `dataset_type=travel-recommendation-training`, `schema_version=2.0`, `contract_version=2.0`을 기록한다. 이번 버전은 기존 `sgg_code`를 canonical I2 필드로 대체하고, `item_features`를 TL/VL 상호작용에서 관측된 POI뿐 아니라 고유 AI Hub `TN_POI_MASTER` inventory로 확장한 breaking change다. 스키마 버전은 컬럼명·타입·필수성 변경을, 계약 버전은 값의 의미·원천·누수 방지 규칙 변경을 나타낸다.
 
@@ -79,7 +79,7 @@ Parquet null 제약은 변환 검증과 이 문서로 보장한다. “필수”
 
 원천 `TL`/`VL` 역할 표시는 파일 선택과 감사 집계에서만 쓴다. Parquet split 값과 `observed_in_splits`에는 `train`/`validation`만 허용한다. 아이템의 train-derived 값은 TL 입력에서만 만든다. validation을 `train_positive_interaction_count`나 `train_observed_visit_type_codes` 생성에 포함하면 누수다.
 
-### TL 내부 개발 분할과 재계산 (Issue #80)
+### TL 내부 개발 분할과 행동 특징 재계산
 
 표준 Parquet의 `train`/`validation`은 outer TL/VL 역할을 계속 나타낸다. cold-user tuning용 inner split은 canonical 관측 단위인 `(region, TRAVELER_ID, TRAVEL_ID)`에서 `(region, TRAVELER_ID)`를 group key로 삼아 같은 권역 내 같은 여행자의 모든 `TRAVEL_ID`를 한 partition에 배정하며, raw ID와 경로는 메모리 안에서만 사용한다. 원천 계약은 traveler ID의 권역 간 전역 유일성을 보장하지 않으므로 권역을 포함해 식별한다. 분포·split 대상은 canonical 학습 코호트와 맞추기 위해 `TN_TRAVEL`의 유일한 여행 행 중 유일한 `TN_TRAVELLER_MASTER` traveler 행과 연결되는 trip으로 한정한다. `scripts/recommendation/tl_traveler_split.py`는 seed와 validation 비율을 받아 결정론적으로 나누고, 여행자 overlap을 검사한다. 같은 seed로 trip 단위 reference split도 생성해 partition label 불일치 trip 수/비율을 계산하고, trip split에서 여러 partition에 나뉜 traveler 수/비율과 그 traveler의 여행 수/비율을 집계한다. label 불일치는 두 hash 단위가 달라 생기는 결정론적 비교값일 뿐 split 구조의 동등성이나 leakage 측정값을 뜻하지 않는다. 실제 구조 차이는 multi-trip traveler 비율과 trip split의 traveler overlap으로 판단한다. 실측 네 권역에서는 모두 traveler:trip 1:1이고 multi-trip share가 0%였으므로 현재 표본에서 trip split도 traveler를 분할하지 않았다. 다만 반복 traveler가 있는 미래 입력에서도 cold-user leakage를 막도록 기본 계약은 traveler group split으로 둔다. 기본 설정은 seed `issue80-v1`, validation 비율 0.2다.
 
@@ -95,7 +95,7 @@ uv run python scripts/recommendation/tl_traveler_split.py \
 
 이 내부 분할 규칙은 기존 Parquet의 스키마나 값 의미를 바꾸지 않는다. outer-TL 전체에서 계산된 canonical I3/I4는 TL 내부 tuning에 재사용하지 않으며, outer TL→VL 최종 학습에만 사용한다. 네 권역 입력 provenance 확인과 실제 traveler-trip aggregate 및 split 비교를 완료했고, synthetic 회귀·CLI 테스트도 실행했다. 상세 aggregate는 다음 절에 기록한다.
 
-### Issue #80 실제 TL aggregate
+### 실제 학습 데이터(TL)의 여행자별 분할 결과
 
 검증된 네 role binding으로 실행한 결과, 각 권역은 동일한 aggregate를 보였다. 각 권역에 distinct traveler 2,560명과 distinct trip 2,560개가 있었고, traveler trip-count 구간은 1 trip 2,560명, 2 trips 0명, 3+ trips 0명이었다. 평균·중앙값·최대 trips는 각각 1이며 multi-trip traveler share는 0%다.
 
