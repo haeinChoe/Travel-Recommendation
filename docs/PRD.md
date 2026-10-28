@@ -7,7 +7,7 @@
 
 **이 문서가 답하려는 질문:** 어떤 여행 문맥과 장소 정보를 바탕으로 추천 적합도를 학습하고 Top-K 장소를 제안할 것인가?
 
-**현재 기준:** 프로젝트의 최상위 문제와 결정 우선순위는 [추천 문제 정의 v2](recommendation/problem-definition-v2.md) 및 #94를 따른다. 이 PRD는 제품 방향을 설명하며 세부 후보·feature·모델 계약을 새로 확정하지 않는다.
+**현재 방향:** 여행자가 제공한 여행 상황과 장소의 특징을 결합해, 실제 방문 기록으로 학습한 적합도 순서대로 장소를 추천한다. 이 PRD는 사용자가 경험할 기능과 제품 범위를 설명한다. 구체적인 학습·평가 방법과 미결정 사항은 [추천 문제 정의](recommendation/problem-definition-v2.md)에 정리한다.
 
 > **여행자/여행 문맥 특징 + 장소 특징 + 관측 방문 기록으로 여행자-장소 적합도를 학습하고 Top-K를 추천할 수 있는가?**
 
@@ -16,9 +16,9 @@
 - AI Hub POI Master 전체를 제품상 추천 목록으로 보지 않는다. 추천 자격과 요청별 후보 생성은 구분한다.
 - TourAPI KorService2는 제품/서빙용 POI 카탈로그다. AI Hub와 TourAPI 식별자 브리지는 별도 문제다.
 - CatBoost는 모델 후보 중 하나다. 후보 생성은 실제 규모·비용 문제가 확인될 때만 검토한다.
-- 공식 VL은 최종 configuration 잠금 전까지 사용하지 않으며, #83의 최종 holdout으로 둔다.
+- 공식 검증 데이터(VL)는 개발 중 모델을 고르는 데 쓰지 않고, 추천 대상·특징·모델 설정을 확정한 뒤 최종 성능을 확인하는 데 사용한다.
 
-**아직 결정되지 않은 것:** 추천 POI의 제품 범위, 기존 tourism_core 양성 코호트의 v2 적용 여부, AI Hub offline candidate eligibility, #95 feature 채택과 serving parity, #96 로그의 세부 계약, 후보 생성 필요성, 최종 모델/objective/primary metric.
+**아직 결정되지 않은 것:** 추천 대상에 식당·쇼핑·숙박까지 포함할지, 어떤 방문 기록을 학습의 양성 사례로 볼지, 어떤 장소를 추천 후보로 인정할지, 실제 서비스에서 재현 가능한 장소 특징, 행동 로그 수집 범위, 후보 축소 필요성, 최종 모델·평가 기준.
 
 ## 1. Product Overview
 
@@ -89,7 +89,7 @@ Offline 학습·평가와 product serving의 장소 식별자 경계는 유지�
 - Product/serving catalog: TourAPI KorService2 (tourapi-korservice2, contentid)
 - AI Hub ↔ TourAPI: 별도 identity bridge
 
-#69의 Stage 5는 전체 관측 양성 97,640건 중 26,454건(27.09%)을 연결했고, 권역 조건이 적용된 적격 TourAPI 후보 19,051개 중 2,753개(14.45%)에 시드를 제공했다. 이는 해당 보고서의 분모와 매칭 정책을 가진 개선 결과다. #4의 과거 기준값은 역사 기록으로 보존하며 최신 Stage 5 성과를 대체하지 않는다. 상세 내용은 [POI catalog contract](recommendation/poi-catalog-candidate-contract.md)와 [#69 v2 보고서](recommendation/experiments/poi-identity-matching-v2.md)를 따른다.
+서로 다른 데이터의 장소 식별자를 여러 증거로 연결한 결과, 전체 방문 관측 **97,640건 중 26,454건(27.09%)**을 연결했다. 지역 조건을 만족하는 TourAPI 장소 **19,051개 중 2,753개(14.45%)**에 적어도 하나의 방문 신호를 연결했다. 이는 초기 서비스의 장소별 통계를 보완할 수 있음을 보여주지만, 연결되지 않은 장소가 추천 불가능하다는 뜻은 아니다. 계산 범위와 이전 방식 대비 개선 내역은 [장소 카탈로그 계약](recommendation/poi-catalog-candidate-contract.md)과 [식별자 연결 실험 보고서](recommendation/experiments/poi-identity-matching-v2.md)에 기록돼 있다.
 
 ## 4. Goals
 
@@ -235,7 +235,7 @@ Offline 학습·평가와 product serving의 장소 식별자 경계는 유지�
 
 - Product/serving 관광지 카탈로그 v1은 TourAPI KorService2를 사용하며 서비스 식별자는 (tourapi-korservice2, contentid)다.
 - AI Hub의 (region, POI_ID)는 다른 식별자 공간이다.
-- AI Hub ↔ TourAPI 연결은 별도 브리지 계약이다. #69의 Stage 5 개선 결과(26,454 / 97,640 관측 양성; 적격 카탈로그 2,753 / 19,051 시드)를 보존하고, #4의 구 기준 수치로 대체하지 않는다.
+- AI Hub ↔ TourAPI 연결은 별도 작업이다. 방문 관측 97,640건 중 26,454건과, 서비스용 적격 장소 19,051개 중 2,753개의 연결이 검증됐다. 매칭되지 않은 장소를 학습이나 추천에서 자동 제외하지 않는다.
 - 브리지 coverage는 전체 후보의 추천 자격이나 offline AI Hub 학습 eligibility를 결정하지 않는다.
 - 어떤 유형을 제품이 추천할지는 아직 미결정이다. 상세 카탈로그 사실과 브리지 범위는 [POI catalog contract](recommendation/poi-catalog-candidate-contract.md)를 따른다.
 
@@ -273,7 +273,7 @@ modelVersion     모델 버전 (내부 추적용, 외부 노출 여부는 별도
 
 ### FR-7 Interaction Logging
 
-#96에서 서비스 상호작용 로그의 의미와 최소 수집 신호를 설계한다. AI Hub는 출시 전 초기 학습 데이터이고, 실제 서비스 로그는 운영 이후 장소 행동 feature와 평가 신호를 점차 보완할 수 있다.
+서비스에서 실제로 어떤 장소를 추천했고 사용자가 어떻게 반응했는지 기록할 수 있어야 한다. 출시 전에는 AI Hub 방문 기록을 초기 학습에 이용하고, 출시 후에는 추천 노출·클릭·저장 같은 서비스 행동 기록으로 장소별 통계를 점차 보완한다. 방문 여부 확인과 만족도는 별도 사용자 입력이 필요하다.
 
 - 요청 문맥과 추천 노출(impression)을 구분해 연결한다.
 - 상세 조회/클릭, 저장, 제품에 존재할 때 일정 추가를 기록 후보로 둔다.
@@ -318,10 +318,10 @@ TourAPI KorService2 (tourapi-korservice2, contentid)
  -> 적합도 점수화와 Top-K
 
 AI Hub ↔ TourAPI
- -> #69에서 검증·개선한 별도 식별자 브리지
+ -> 이름·주소·위치 증거를 이용해 검증한 별도 식별자 연결
 ~~~
 
-#69 Stage 5 보고서 결과는 전체 관측 양성 97,640건 중 26,454건(27.09%) matched, 권역이 제한된 적격 catalog 19,051개 중 2,753개(14.45%)에 seed가 연결된 것이다. #4의 과거 수치는 과거 snapshot/scope를 가진 baseline으로 역사 문서에 보존한다. 최신 Stage 5 결과를 과거 baseline 수치로 덮지 않으며, 두 결과의 분모·시점·scope를 섞어 비교하지 않는다.
+현재 검증된 여러 단계의 장소 연결 규칙을 적용하면 방문 관측 97,640건 가운데 26,454건(27.09%)을 TourAPI의 장소와 연결할 수 있다. 지역 조건을 적용한 서비스용 적격 장소 19,051개 가운데 2,753개(14.45%)는 이렇게 연결된 방문 이력을 하나 이상 갖는다. 이 수치들은 **방문 행 기준**과 **고유 장소 기준**이라는 서로 다른 분모를 사용한다. 예전 단순 연결 방식과의 비교는 동일 분모를 확인한 뒤에만 해석한다.
 
 - AI Hub 학습 관측치 자격은 TourAPI 매칭 여부와 별개로 판단한다.
 - TourAPI 카탈로그 coverage를 AI Hub 관측 양성 coverage와 같다고 해석하지 않는다.
@@ -343,7 +343,7 @@ optional post-visit feedback
 
 실제 Parquet 출력 형식과 field contract는 [standard training dataset schema](recommendation/training-dataset-schema.md)를 따른다. 그 문서에서 TL→train/VL→validation이라고 부르는 것은 변환 출력의 source-role 이름이다. 이는 모델 선택에서 공식 VL을 tuning에 쓰도록 허용하는 뜻이 아니다.
 
-온라인 feature의 serving parity와 v2 label/candidate 적용 여부는 상위 [추천 문제 정의 v2](recommendation/problem-definition-v2.md) 및 후속 #95/#96에서 확인한다.
+온라인 서비스에 같은 의미로 공급할 수 있는 특징과 실제 학습에 쓸 방문 기록의 범위는 아직 검증 중이다. 학습 때만 알 수 있는 값을 서비스 입력으로 요구하지 않으며, 출처와 수집 시점은 [추천 문제 정의](recommendation/problem-definition-v2.md)의 규칙에 따라 확인한다.
 
 ## 10. 추천 평가
 
@@ -353,7 +353,7 @@ optional post-visit feedback
 
 - TL은 개발 데이터다. cold-user 모델 선택은 TL 내부의 (region, TRAVELER_ID) group split으로 inner-train과 inner-validation을 나눈다.
 - 동일 여행자의 여행은 inner split 경계를 넘지 않는다. 행동 집계와 sampling 통계는 inner-train에서만 계산한다.
-- 공식 VL은 configuration 잠금 전까지 tuning에 사용하지 않는 최종 holdout이다. #83에서만 잠금된 후보·feature·model을 평가한다.
+- 공식 VL은 추천 대상·입력 특징·모델 설정을 고정하기 전에는 성능 개선에 이용하지 않는다. 고정된 구성을 마지막에 한 번 평가하는 별도 자료로 보관한다.
 - 데이터 변환 schema에서 TL→train, VL→validation이라고 명명하는 것은 출력 역할이다. 위의 모델 선택 split과 구분한다.
 - 독립적인 추가 test source/protocol은 아직 결정되지 않았다. 이 이름을 공식 VL과 혼동하지 않는다.
 
@@ -515,11 +515,12 @@ AI Hub POI ↔ TourAPI contentid
 
 ### Phase 1 — Recommendation Problem & Evidence
 
-- #97의 단일 추천 문제 정의를 우선 적용한다.
-- #95 POI Rich Feature와 #96 서비스 로그 계약으로 입력 신호와 feature 출처를 검증한다.
-- 제품 범위와 추천 자격을 정한 뒤 간단한 적합도 모델로 다시 평가한다.
-- #82의 기존 full-catalog direct-scoring search는 v2 후보 정책 전까지 보류한다.
-- 공식 VL은 최종 configuration을 잠근 뒤 #83에서 평가한다.
+- 여행자·여행 문맥과 장소 특징으로 적합도를 학습한다는 문제를 [기준 문서](recommendation/problem-definition-v2.md)에 명시한다.
+- 장소 유형·위치·과거 방문자 분포가 실제로 장소를 구별할 수 있는지 확인하고, 서비스에서 각 특징을 얻을 경로를 정한다.
+- 사용자의 추천 요청·노출·클릭·저장 기록이 어떻게 장소 통계로 연결되는지 정의한다.
+- 관광·문화·체험·음식·쇼핑·숙박의 제품 범위를 정한 뒤, 추천 가능한 장소를 대상으로 단순 모델부터 비교한다.
+- 과거의 지역 전체 장소 전수 점수화 실험은 장소 표현과 후보 범위가 정해질 때까지 추가 탐색을 중단한다.
+- 최종 데이터·모델·평가 설정을 확정한 뒤 공식 검증 데이터(VL)를 평가한다.
 
 ### Phase 2 — New Product Foundation
 
@@ -534,7 +535,7 @@ AI Hub POI ↔ TourAPI contentid
 - 확인된 문제·feature·candidate·split contract에서 모델 후보를 비교한다.
 - 후보 수와 end-to-end latency가 요구를 넘는 경우에만 retrieval/candidate generation을 추가한다.
 - offline AI Hub 평가와 TourAPI serving parity를 별도로 검증한다.
-- 결과가 잠긴 뒤 #83에서 official VL을 최종 holdout으로 사용한다.
+- 평가할 모델과 후보 집합을 확정한 뒤에만 공식 검증 데이터(VL)에서 최종 성능을 확인한다.
 
 ### Phase 4 — Feedback Loop
 
@@ -588,13 +589,13 @@ AI Hub POI ↔ TourAPI contentid
 - 추천 가능한 장소의 제품 범위: 관광·문화·체험·레저와 음식·쇼핑·숙박 포함 범위
 - 기존 tourism_core 관측 양성 코호트의 v2 적용 여부
 - AI Hub offline candidate eligibility와 Master/interaction의 identity·coverage 규칙
-- #95에서 채택할 POI static/historical feature 및 서비스 재현 가능성
-- #96 interaction log의 구현 범위와 feedback 신호
+- 장소의 정적 속성(유형·위치)과 과거 방문자 집계를 실제 서비스에서 동일한 의미로 제공할 수 있는지
+- 추천 노출·클릭·저장 로그를 어느 범위까지 수집하고, 방문 확인·만족도 피드백을 어떻게 받을지
 - direct scoring 비용이 후보 생성 계층을 요구하는지
 - 최종 relevance contract, model/objective, primary ranking metric과 K
-- 모델·feature·후보 configuration 잠금 시점과 #83 공식 VL 평가
+- 모델·입력 특징·후보 집합을 언제 최종 확정하고 공식 VL 평가를 수행할지
 
-#69의 TourAPI identity bridge 개선은 완료된 별도 근거다. 오프라인 학습 자격의 선행 조건이 아니며, 최신 수치는 [#69 report](recommendation/experiments/poi-identity-matching-v2.md)에 보존한다.
+AI Hub와 TourAPI의 장소 식별자 연결은 일부 검증이 완료됐지만, 모든 학습 기록이 연결되어야만 적합도 모델을 학습할 수 있는 것은 아니다. 사용된 연결 규칙과 최신 분모별 결과는 [식별자 매칭 실험 보고서](recommendation/experiments/poi-identity-matching-v2.md)를 참고한다.
 
 ### Architecture
 
@@ -625,7 +626,7 @@ AI Hub POI ↔ TourAPI contentid
 유사 여행 추천 제품의 공개 사용자 경험과 이번 프로젝트에 대한 Adopt / Experiment / Defer 판단은 다음 문서에서 관리한다.
 
 - [Travel Recommendation Product Reference Analysis](recommendation/product-reference-analysis.md)
-- Issue #41 — 여행 추천 제품·모델 계약 확정
+- [추천 문제 정의와 모델 설계의 결정 이력](https://github.com/haeinChoe/Travel-Recommendation/issues/41) — 기존 논의의 추적용 자료
 
 제품 조사는 내부 알고리즘을 추측하기 위한 근거가 아니라, 사용자가 제공하는 입력과 서비스가 반환해야 하는 경험을 검증하기 위한 자료로 사용한다.
 
