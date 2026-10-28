@@ -1,5 +1,8 @@
 # POI 카탈로그와 후보 자격 계약
 
+> **문서 상태 (2026-10-28):** 이 문서는 TourAPI 제품 카탈로그와 #69의 개선된 identity bridge 근거를 설명한다. 최신 Stage 5 수치와 해당 분모를 과거 #4 baseline으로 대체하지 않는다. v2 오프라인 추천 문제와 AI Hub candidate eligibility는 [problem-definition-v2.md](problem-definition-v2.md)에서 우선 확인하며, 정적 POI Master 전체를 추천 가능 목록으로 간주하지 않는다.
+
+
 ## 질문과 현재 상태
 
 이 문서는 **제품 서비스에서 어떤 POI를 추천 후보로 인정할지**, 그리고 **AI Hub 오프라인 추천 실험과 TourAPI 제품 카탈로그를 어떤 식별자 경계로 분리할지** 정한다.

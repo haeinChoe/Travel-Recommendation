@@ -1,5 +1,8 @@
 # 표준 학습 데이터셋 스키마 (Issue #77)
 
+> **문서 상태 (2026-10-28):** 이 문서는 변환기가 만드는 Parquet 출력의 기술 schema 계약을 설명한다. 상위 문제와 v2 결정 상태는 [problem-definition-v2.md](problem-definition-v2.md)를 따른다. TL→train/VL→validation은 출력 역할 이름이며 모델 선택 split과 VL 사용 시점을 뜻하지 않는다. TL 내부 traveler group split과 공식 VL 최종 holdout을 구분한다.
+
+
 ## 목적과 현재 계약
 
 이 문서는 추천 학습 변환기가 만드는 세 Parquet 파일의 기준 계약이다. Issue #77에서 AI Hub 원천 표기(TL/VL, 대문자 열 이름)를 내부 출력 스키마와 분리했고, Issue #81에서 I2 행정 위치를 canonicalize하며 전체 고유 POI Master inventory로 정적 특성 범위를 확장했다. 파일 구성은 `trip_context.parquet`, `item_features.parquet`, `trip_item_interaction.parquet` 세 개로 유지한다.

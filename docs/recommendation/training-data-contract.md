@@ -1,5 +1,8 @@
 # 추천 학습 데이터 구성·포함 기준 및 Feature/Label 계약
 
+> **문서 상태 (2026-10-28):** 이 문서는 기존 #17/#45/#69/#71의 AI Hub 관측 단위와 데이터·feature/label 계약 및 감사를 보존한다. 문제의 최상위 정의와 v2 현재 상태는 [problem-definition-v2.md](problem-definition-v2.md)가 기준이다. 아래 과거 tourism_core, candidate/serving-parity 및 feature 결정은 v2 제품 후보 범위나 최종 feature 선택을 자동 확정하지 않는다.
+
+
 - **관련 Issue:** [#17](https://github.com/haeinChoe/Travel-Recommendation/issues/17), [#45](https://github.com/haeinChoe/Travel-Recommendation/issues/45), [#69](https://github.com/haeinChoe/Travel-Recommendation/issues/69), [#71](https://github.com/haeinChoe/Travel-Recommendation/issues/71)
 - **현재 상태:** 아래 실제 데이터 코호트 수치는 Issue #71의 과거 감사 결과다. Issue #81의 canonical administrative location 합성 계약/코드와 full actual-source coverage/conflict 감사는 별개다. Issue #82 corrected 수도권 TL run은 candidate eligibility를 위한 resolved geography 및 validation coverage의 제한된 aggregate를 기록했으며, 전체 source별 conflict/provenance 감사는 수행하지 않았다.
 

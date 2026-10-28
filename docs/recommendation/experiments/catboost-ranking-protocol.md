@@ -1,5 +1,8 @@
 # CatBoost cold-user ranking 실험 프로토콜
 
+> **문서 상태 (2026-10-28):** 이 문서는 #79/#82의 CatBoost v1 prototype, 실험 계획과 측정 기록을 보존한다. [problem-definition-v2.md](../problem-definition-v2.md)가 문제와 현재 우선순위의 기준이다. Candidate Generation은 필요가 확인될 때만 추가하고 CatBoost의 최종 역할은 아직 정하지 않았다. full-catalog search는 현재 보류하며 공식 VL은 configuration 잠금 후 #83에서만 사용한다.
+
+
 **관련 Issue:** #79, #82
 **현재 상태:** PR #88/#89의 과거 full-run은 TN_POI_MASTER 모든 고유 ID에 source-package region을 부여한 잘못된 geography scope였다. Runner는 #81 canonical administrative location과 versioned `poi-catalog-candidate-v1` 정책으로 후보 geography를 분리했다. Corrected 수도권 TL full benchmark는 3,052,797개 후보·432 validation query·1,318,808,304 scored rows에서 total 1,139.035초, runner-scoped scoring 959.962초, peak RSS 3,786 MiB였다. 이 비용을 기준으로, 향후 full-catalog search가 end-to-end 300초 이내가 되면 forward + 정확히 한 번의 backward cleanup pass, broad screen 1 seed/config, 선택된 finalist 3 total seeds를 쓴다. 현재는 scoring이 cutoff를 넘으므로 그 conditional plan의 실행을 보류한다. 다음 checkpoint는 별도의 Candidate Generation → CatBoost reranking 설계와 runtime 재측정이다. VL은 읽지 않았다.
 

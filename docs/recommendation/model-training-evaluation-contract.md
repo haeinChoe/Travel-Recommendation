@@ -1,5 +1,8 @@
 # Cold-user POI ranking 학습·평가 계약
 
+> **문서 상태 (2026-10-28):** 이 문서는 #41/#79~#83의 구체적인 v1 모델·candidate·평가 계약과 실험 이력을 보존한다. v2 최상위 문제 및 현재 미결정은 [problem-definition-v2.md](problem-definition-v2.md)가 기준이다. 특히 AI Hub 전체 direct ranking과 고정 CatBoost 역할은 canonical 문제가 아니며 #82 탐색은 보류 상태다. 공식 VL은 final holdout이며 configuration 잠금 전 사용하지 않는다.
+
+
 **관련 Issue:** #41, #79, #80, #81, #82, #83
 **현재 상태:** #80 traveler split·I3/I4 경계와 #81 I2 계약이 반영됐다. PR #88/#89의 실제 run은 source-package region을 POI geography로 잘못 사용해 corrected baseline이 아니다. #82 runner는 resolved canonical SIDO와 versioned candidate policy로 ProductRegion을 판정한다. Corrected 수도권 TL full benchmark는 1,139.035초 total, runner-scoped scoring 959.962초, 3,786 MiB process peak RSS였다. 과거 source-tagged run과 direct actual-data metric parity/speedup을 주장하지 않으며, corrected geography 안에서 cached-vs-uncached metric parity는 exact다. Scoring이 5분 cutoff를 넘으므로 search는 보류한다. 향후 full-catalog end-to-end runtime이 300초 이하면 forward + 정확히 한 번 backward cleanup, broad screen 1 seed/config, 선택 finalist 3 total seeds를 적용한다. 다음 단계는 Candidate Generation → CatBoost reranking 설계와 재측정이다.
 

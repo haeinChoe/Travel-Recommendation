@@ -86,6 +86,8 @@
 
 ## 상세 지침
 
+- 추천 작업은 [docs/recommendation/problem-definition-v2.md](docs/recommendation/problem-definition-v2.md)를 최상위 문제 정의와 문서 우선순위의 기준으로 읽는다.
+
 - 작업 요청, 권한 단계, 브랜치·커밋·PR 절차는 docs/agent-workflow.md를 따른다.
 - AI Hub 원본 및 파생 데이터 처리 절차는 docs/data/aihub-workflow.md를 따른다.
 - 문서 목록과 역할은 docs/README.md에서 확인한다.
