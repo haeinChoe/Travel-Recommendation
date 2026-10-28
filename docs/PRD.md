@@ -247,7 +247,15 @@ Offline 학습·평가와 product serving의 장소 식별자 경계는 유지�
 - 새 장소나 행동 이력이 희소한 장소도 정적 속성으로 표현할 수 있어야 한다.
 - 특정 model/objective, candidate universe 또는 reranker 역할을 미리 고정하지 않는다.
 - 추천 결과는 저장/선택 등의 후속 행동과 연결할 수 있다. 이미 방문한 장소를 어떻게 처리할지는 제품·평가 규칙에서 별도 결정한다.
-- API는 필요에 따라 itemId, rank, score 노출 정책, 추천 설명, 내부 추적용 modelVersion을 반환할 수 있다.
+- 추천 API는 최소한 다음 반환 정보를 제공할 수 있어야 한다. 제품 요구사항이 축소된 것으로 오해하지 않도록 v1에서 정의한 필수·선택·내부 추적 항목을 유지한다.
+
+```text
+itemId           장소 식별자 (필수)
+rank             추천 순위 (필수)
+score            추천 점수 (외부 노출 여부는 별도 결정)
+reason/features  추천 이유·특징 (선택)
+modelVersion     모델 버전 (내부 추적용, 외부 노출 여부는 별도 결정)
+```
 
 ### FR-5 Reviews
 
