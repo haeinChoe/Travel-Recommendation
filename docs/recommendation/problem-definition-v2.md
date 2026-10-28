@@ -121,6 +121,6 @@ CatBoost는 적합도 학습의 모델 후보 중 하나다. 지금은 이를 fu
 3. [추천 학습 데이터 계약](training-data-contract.md) 및 [학습 데이터셋 스키마](training-dataset-schema.md) — 기존 feature/label 근거와 변환 파일의 기술 스키마; v2 적용 여부는 위 상태표 확인
 4. [학습·평가 계약](model-training-evaluation-contract.md)과 [CatBoost 실험 프로토콜](experiments/catboost-ranking-protocol.md) — 여행 단위 학습·검증, 예전 모델 비교 설정과 지역 전체 점수화의 비용 측정 이력
 5. [제품 카탈로그와 후보 계약](poi-catalog-candidate-contract.md) 및 [장소 식별자 연결 실험](experiments/poi-identity-matching-v2.md) — 서비스용 관광지 목록과 AI Hub 방문 장소를 연결한 실제 근거
-6. 남은 작업은 장소 특징의 구별력 측정 → 서비스 로그 수집 기준 마련 → 추천 가능한 장소 정의 → 모델 재비교 → 최종 평가 순으로 진행한다. 각 작업의 세부 이력과 담당 범위는 아래 추적 링크에서 확인한다.
+6. 남은 작업은 장소 특징의 구별력 측정 → 서비스 로그 수집 기준([서비스 상호작용 로그 계약](service-interaction-log-contract.md)) 마련 → 추천 가능한 장소 정의 → 모델 재비교 → 최종 평가 순으로 진행한다. 각 작업의 세부 이력과 담당 범위는 아래 추적 링크에서 확인한다.
 
 **근거·작업 이력(본문 이해에 필수 아님):** [#41](https://github.com/haeinChoe/Travel-Recommendation/issues/41), [#66](https://github.com/haeinChoe/Travel-Recommendation/issues/66), [#69](https://github.com/haeinChoe/Travel-Recommendation/issues/69), [#82](https://github.com/haeinChoe/Travel-Recommendation/issues/82), [#94](https://github.com/haeinChoe/Travel-Recommendation/issues/94), [#95](https://github.com/haeinChoe/Travel-Recommendation/issues/95), [#96](https://github.com/haeinChoe/Travel-Recommendation/issues/96), [#97](https://github.com/haeinChoe/Travel-Recommendation/issues/97), [#83](https://github.com/haeinChoe/Travel-Recommendation/issues/83).
