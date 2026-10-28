@@ -52,11 +52,13 @@ VL 최종 평가 (#83)
 - **행정구역 특징:** 장소의 정적 위치를 표준화해 시도·시군구·해석 상태를 입력으로 사용한다. 수도권의 후보 포함 여부와 위치 해석 실패는 점검했지만, 네 권역 전체의 위치 출처·충돌·누락 분포는 아직 검증하지 않았다.
 - **행동 파생 특징:** 방문 횟수와 방문 유형은 내부 학습 여행자의 데이터에서만 재계산하도록 검증했다. 내부 검증 여행자의 실제 방문 결과는 입력 특징에 포함하지 않는다.
 - **실험 실행기:** 한 권역의 여행자·여행·방문 이벤트·후보 특징을 받아 여행자 기준으로 나누고, 장소의 인기도와 과거 방문 유형을 학습 집합에서 새로 집계한다. 기존 전체 TL 통계가 내부 검증 데이터에 섞이지 않도록 덮어쓴다.
-- CatBoost runtime dependency는 `pyproject.toml`과 `uv.lock`에서 고정한다. Issue #82 검증 환경은 Python 3.12와 CatBoost 1.2.10을 사용한다.
+- CatBoost 실행 의존성은 `pyproject.toml`과 `uv.lock`에서 고정한다. 실제 검증 환경은 Python 3.12와 CatBoost 1.2.10이었다.
 
-## 다음 행동
+## 지금 이 프로토콜을 어떻게 사용할까?
 
-#80/#81, scorer profiling, corrected actual-TL benchmark, synthetic/bounded parity와 full-run search-cost 계산을 완료했다. PR #88/#89의 과거 full-run은 candidate geography 오류 때문에 corrected baseline을 대체하지 않는다. Corrected default scorer도 16.0분이 걸려 5분 cutoff를 넘는다. 다음 checkpoint는 candidate generation과 CatBoost reranking을 분리하는 설계를 비교하고 전체 검증계약 아래 runtime을 다시 측정하는 것이다. 그 설계 전에는 negative-sampling search를 시작하지 않는다.
+여행자별 데이터 분할, 장소 행정구역 보정, 점수화 실행 시간 측정과 기본 점수·순위 일치 검증은 완료했다. 초기 실험은 원본 파일의 권역을 장소의 실제 위치로 잘못 취급했으며, 보정한 수도권 실행도 **점수화에 약 16분**이 걸려 당시 **5분 예산을 넘었다.**
+
+따라서 아래 **음성 표본 비율 → 특징 그룹 → 학습 목표 → 하이퍼파라미터** 탐색 계획은 지금 실행하지 않는다. 먼저 어떤 장소를 추천할지, 각 장소를 실제로 얼마나 구별할 수 있는지 확인한다. 이후 직접 점수화가 감당되는지 재측정하고, 필요할 경우에만 후보 검색과 순위 모델을 분리한다.
 
 ---
 
@@ -66,7 +68,7 @@ VL 최종 평가 (#83)
 
 - 같은 TL inner split
 - 같은 request grain
-- 같은 ProductRegion hard filter. Issue #82 runner에서는 `canonical_admin_sido_code`를 #81 resolver로 만들고, `poi-catalog-candidate-v1`의 `product_region_to_ldong_regn_cd`를 사용한다. 수도권 후보에는 resolved code가 policy의 수도권 mapping에 포함된 row만 둔다.
+- 같은 제품 지역 후보 조건. 기존 실행기는 정적 장소 정보를 해석한 시도 코드(`canonical_admin_sido_code`)와 버전이 고정된 `poi-catalog-candidate-v1` 지역 매핑을 사용했다. 수도권 후보에는 실제로 해석된 시도 코드가 수도권에 해당하는 장소만 포함했다. **이것은 그 당시 실험의 후보 조건이며 새 추천 자격을 자동 확정하지 않는다.**
 - 같은 candidate universe
 - 같은 positive label 의미
 - 같은 metric implementation과 K
@@ -419,7 +421,7 @@ VL을 보기 전에 다음을 하나의 고정 configuration으로 기록한다.
 
 ## Stage 8 — VL final evaluation과 bootstrap
 
-#83에서는 잠긴 configuration만 공식 VL에 적용한다.
+공식 VL에는 후보·특징·모델 설정을 확정한 뒤의 구성만 적용한다.
 
 VL 결과를 본 뒤 #82로 돌아가 feature, sampling, objective를 다시 선택하면 VL은 holdout이 아니게 되므로 금지한다.
 
@@ -472,7 +474,7 @@ Uniform sampling은 준비된 `catalog.inventory`를 사용하면 후보 목록�
 
 최근 합성 측정값은 위의 **Scoring 최적화 checkpoint** 표에 기록했다. 두 workload 모두 같은 legacy full-frame scorer와 optimized chunk scorer의 metric dictionary가 정확히 같았다. 이 측정은 scorer parity와 frame cap만 검증하며, CatBoost training이나 actual TL 병목·성능을 대신하지 않는다. `tracemalloc` 값은 Python 관리 할당량이고 RSS와 다르다. 300,000개 합성 catalog run의 process peak RSS도 해당 workload 한정 결과이며 actual catalog 규모에 대한 보장이 아니다.
 
-## #79 검증 범위
+## 초기 실험 하네스의 검증 범위
 
 synthetic unit test로 다음을 확인한다.
 
