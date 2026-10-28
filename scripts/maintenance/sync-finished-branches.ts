@@ -202,9 +202,9 @@ function printPlan(primary: string, options: Options): void {
     } else if (worktrees.some((item) => item.branch === `refs/heads/${branch}`)) {
       console.log(`Legacy squash/rebase ${branch}: checked out in a worktree; apply would hold.`);
     } else if (tip.toLowerCase() === sha) {
-      console.log(`Legacy squash/rebase ${branch}: matches verified PR head; eligible for verified PR head CAS deletion.`);
+      console.log(`Legacy squash/rebase ${branch}: local tip matches caller-supplied PR head ${sha} (CLI does not query GitHub; verify MERGED PR headRefOid first); eligible for CAS deletion.`);
     } else {
-      console.log(`Legacy squash/rebase ${branch}: tip does not match verified PR head; apply would hold.`);
+      console.log(`Legacy squash/rebase ${branch}: local tip (${tip}) does not match caller-supplied PR head ${sha}; apply would hold.`);
     }
   }
 }
@@ -227,17 +227,30 @@ function applyPlan(primary: string, options: Options): number {
       console.log("Primary dev sync held: tracked files are dirty in primary dev worktree.");
       devSyncHeld = true;
     } else {
-      const incomingFiles = git(primary, ["diff", "--name-only", devHead, fetchedDev]).split(/\r?\n/).filter(Boolean);
-      const untrackedFiles = git(primary, ["ls-files", "--others", "--exclude-standard"]).split(/\r?\n/).filter(Boolean);
-      const colliding = incomingFiles.find((file) => untrackedFiles.includes(file));
+      const incomingFiles = git(primary, ["diff", "--name-only", "-z", devHead, fetchedDev])
+        .split("\0")
+        .filter(Boolean);
+      const localOtherFiles = git(primary, ["ls-files", "-z", "--others"])
+        .split("\0")
+        .filter(Boolean);
+      const colliding = incomingFiles.find((incoming) =>
+        localOtherFiles.some(
+          (local) => incoming === local || incoming.startsWith(local + "/") || local.startsWith(incoming + "/")
+        )
+      );
       if (colliding) {
-        console.log(`Primary dev sync held: untracked file collides with incoming origin/dev changes (${colliding}).`);
+        console.log(`Primary dev sync held: untracked or ignored file collides with incoming origin/dev changes (${colliding}).`);
         devSyncHeld = true;
       } else {
-        git(primary, ["merge", "--ff-only", fetchedDev]);
-        const updatedHead = git(primary, ["rev-parse", "HEAD"]).trim();
-        if (updatedHead !== fetchedDev) throw new Error("dev fast-forward readback did not match fetched origin dev");
-        console.log(`Primary dev fast-forwarded to ${updatedHead}.`);
+        try {
+          git(primary, ["merge", "--ff-only", "--no-overwrite-ignore", fetchedDev]);
+          const updatedHead = git(primary, ["rev-parse", "HEAD"]).trim();
+          if (updatedHead !== fetchedDev) throw new Error("dev fast-forward readback did not match fetched origin dev");
+          console.log(`Primary dev fast-forwarded to ${updatedHead}.`);
+        } catch {
+          console.log("Primary dev sync held: git merge --ff-only --no-overwrite-ignore refused or failed.");
+          devSyncHeld = true;
+        }
       }
     }
   }
@@ -282,12 +295,12 @@ function applyPlan(primary: string, options: Options): number {
       continue;
     }
     if (tip.toLowerCase() !== sha) {
-      console.log(`Held local branch ${branch}: tip does not match verified PR head ${sha} (current tip: ${tip}).`);
+      console.log(`Held local branch ${branch}: local tip (${tip}) does not match caller-supplied PR head ${sha}.`);
       branchHeld = true;
       continue;
     }
     git(primary, ["update-ref", "-d", `refs/heads/${branch}`, sha]);
-    console.log(`Deleted legacy squash/rebase branch ${branch} at verified PR head ${sha}.`);
+    console.log(`Deleted legacy squash/rebase branch ${branch} via CAS at caller-supplied PR head ${sha} (GitHub MERGED state must be pre-verified by caller).`);
   }
 
   return devSyncHeld || branchHeld ? 1 : 0;

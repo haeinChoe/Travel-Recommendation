@@ -252,9 +252,42 @@ test("apply holds dev sync when untracked file collides with incoming changes, p
 
   const result = runCli(fixture.dev, ["--apply"]);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /untracked file collides with incoming origin\/dev changes/i);
+  assert.match(result.output, /untracked or ignored file collides with incoming origin\/dev changes/i);
   assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
   assert.equal(readFileSync(join(fixture.dev, "remote-update.txt"), "utf8"), "local conflicting content\n");
+});
+
+test("apply holds dev sync when ignored file collides with incoming origin/dev changes, preserving file and cleaning eligible branch", (context) => {
+  const fixture = makeFixture(context);
+  // Set up an eligible branch merged into origin dev
+  const eligibleBranch = "agent/60-eligible-cleanup";
+  pushIssueBranch(fixture, eligibleBranch);
+  mergeBranchIntoRemoteDev(fixture, eligibleBranch);
+  createLocalBranchAtRemoteTip(fixture, eligibleBranch);
+
+  // Fast-forward local dev to include eligibleBranch
+  git(fixture.dev, ["pull", "--ff-only", "origin", "dev"]);
+
+  // Remote dev advances further by adding ignored-collision.local (which is ignored by .gitignore *.local)
+  git(fixture.seed, ["checkout", "dev"]);
+  writeFileSync(join(fixture.seed, "ignored-collision.local"), "remote tracked content\n", "utf8");
+  git(fixture.seed, ["add", "-f", "ignored-collision.local"]);
+  git(fixture.seed, ["commit", "-m", "remote adds tracked ignored-collision.local"]);
+  git(fixture.seed, ["push", "origin", "dev"]);
+
+  // Local primary dev already has ignored file ignored-collision.local
+  writeFileSync(join(fixture.dev, "ignored-collision.local"), "local preserved content\n", "utf8");
+  assert.equal(git(fixture.dev, ["check-ignore", "ignored-collision.local"]), "ignored-collision.local");
+
+  const beforeHead = git(fixture.dev, ["rev-parse", "HEAD"]);
+  const result = runCli(fixture.dev, ["--apply", "--local", eligibleBranch]);
+
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /untracked or ignored file collides with incoming origin\/dev changes \(ignored-collision\.local\)/i);
+  assert.match(result.output, /deleted local branch agent\/60-eligible-cleanup with git branch -d/i);
+  assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
+  assert.equal(readFileSync(join(fixture.dev, "ignored-collision.local"), "utf8"), "local preserved content\n");
+  assert.equal(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${eligibleBranch}`]), "");
 });
 
 test("apply performs partial cleanup deleting eligible branches while holding ineligible branches", (context) => {
@@ -289,16 +322,16 @@ test("apply supports --merged-pr-head CAS deletion and holds on SHA mismatch", (
   const tipSha = pushIssueBranch(fixture, branch);
   createLocalBranchAtRemoteTip(fixture, branch);
 
-  // Plan reports eligible for verified PR head CAS deletion
+  // Plan reports eligible for CAS deletion
   const planMatch = runCli(fixture.dev, ["--merged-pr-head", `${branch}=${tipSha}`]);
   assert.equal(planMatch.status, 0);
-  assert.match(planMatch.output, /matches verified pr head; eligible for verified pr head cas deletion/i);
+  assert.match(planMatch.output, /local tip matches caller-supplied pr head .* eligible for cas deletion/i);
 
   // Plan reports mismatch when SHA does not match
   const wrongSha = "0123456789abcdef0123456789abcdef01234567";
   const planMismatch = runCli(fixture.dev, ["--merged-pr-head", `${branch}=${wrongSha}`]);
   assert.equal(planMismatch.status, 0);
-  assert.match(planMismatch.output, /tip does not match verified pr head; apply would hold/i);
+  assert.match(planMismatch.output, /local tip .* does not match caller-supplied pr head .* apply would hold/i);
 
   // Apply holds on SHA mismatch
   const applyMismatch = runCli(fixture.dev, [
@@ -307,7 +340,7 @@ test("apply supports --merged-pr-head CAS deletion and holds on SHA mismatch", (
     `${branch}=${wrongSha}`,
   ]);
   assert.equal(applyMismatch.status, 1);
-  assert.match(applyMismatch.output, /held local branch agent\/50-squashed: tip does not match verified pr head/i);
+  assert.match(applyMismatch.output, /held local branch agent\/50-squashed: local tip .* does not match caller-supplied pr head/i);
   assert.notEqual(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]), "");
 
   // Apply succeeds on exact SHA match
@@ -317,7 +350,7 @@ test("apply supports --merged-pr-head CAS deletion and holds on SHA mismatch", (
     `${branch}=${tipSha}`,
   ]);
   assert.equal(applyMatch.status, 0);
-  assert.match(applyMatch.output, /deleted legacy squash\/rebase branch agent\/50-squashed at verified pr head/i);
+  assert.match(applyMatch.output, /deleted legacy squash\/rebase branch agent\/50-squashed via cas at caller-supplied pr head/i);
   assert.equal(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]), "");
 });
 

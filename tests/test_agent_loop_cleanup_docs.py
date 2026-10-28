@@ -203,7 +203,7 @@ class CleanupDocumentationTests(unittest.TestCase):
         self.assertIn('"--ff-only"', cli)
         self.assertIn('["fetch", "--no-tags", "--refmap=", "origin", "dev"]', cli)
         self.assertIn('["rev-parse", "--verify", "FETCH_HEAD^{commit}"]', cli)
-        self.assertIn('["merge", "--ff-only", fetchedDev]', cli)
+        self.assertIn('["merge", "--ff-only", "--no-overwrite-ignore", fetchedDev]', cli)
         apply_body = cli.split("function applyPlan(", 1)[1].split("\nfunction main(", 1)[0]
         self.assertNotIn("refs/remotes/origin/dev", apply_body)
         self.assertNotIn("currentOriginDev(", apply_body)
@@ -265,11 +265,15 @@ class CleanupDocumentationTests(unittest.TestCase):
 
         self.assertIn("--merged-pr-head", cli)
         self.assertIn('["update-ref", "-d"', cli)
+        self.assertIn("--no-overwrite-ignore", cli)
         for text in (workflow, agents, reference, skill):
             self.assertIn("--merged-pr-head", text)
         for text in (workflow, agents, reference):
             self.assertIn("git update-ref -d", text)
             self.assertIn("headrefoid", text.casefold())
+            self.assertIn("--no-overwrite-ignore", text)
+            self.assertIn("caller-supplied" if text is reference else "호출자", text.casefold() if text is reference else text)
+            self.assertIn("ignored", text.casefold())
 
         for text in (workflow, agents, reference, skill):
             for cache_dir in (".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"):
