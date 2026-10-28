@@ -12,6 +12,10 @@ from scripts.recommendation.training_data_contract import (
     TripPoiPositive,
     build_trip_poi_positives,
 )
+from scripts.recommendation.tl_traveler_split import (
+    recompute_inner_train_positive_interaction_count,
+    recompute_inner_train_visit_type_codes,
+)
 
 
 def trip_poi(
@@ -96,6 +100,42 @@ class PoiRichFeatureAuditTests(unittest.TestCase):
             "train-trip": context(),
             "validation-trip": context(start_month="12", companion_status="solo"),
         }
+        interactions_before = [
+            {
+                "TRAVEL_ID": pair.travel_id,
+                "POI_ID": pair.poi_id,
+                "observed_positive": 1,
+                "source_split": "TL",
+            }
+            for pair in (train_pair, validation_pair_before)
+        ]
+        interactions_after = [
+            {
+                "TRAVEL_ID": pair.travel_id,
+                "POI_ID": pair.poi_id,
+                "observed_positive": 1,
+                "source_split": "TL",
+            }
+            for pair in (train_pair, validation_pair_after)
+        ]
+        visit_events_before = [
+            {
+                "TRAVEL_ID": pair.travel_id,
+                "POI_ID": pair.poi_id,
+                "VISIT_AREA_TYPE_CD": pair.visit_area_types[0],
+                "source_split": "TL",
+            }
+            for pair in (train_pair, validation_pair_before)
+        ]
+        visit_events_after = [
+            {
+                "TRAVEL_ID": pair.travel_id,
+                "POI_ID": pair.poi_id,
+                "VISIT_AREA_TYPE_CD": pair.visit_area_types[0],
+                "source_split": "TL",
+            }
+            for pair in (train_pair, validation_pair_after)
+        ]
 
         histories_before, _ = build_histories(
             [train_pair, validation_pair_before],
@@ -130,32 +170,61 @@ class PoiRichFeatureAuditTests(unittest.TestCase):
             )
 
         self.assertEqual(feature_row(histories_before), feature_row(histories_after))
+        self.assertEqual(
+            recompute_inner_train_positive_interaction_count(
+                interactions_before, partitions
+            ),
+            recompute_inner_train_positive_interaction_count(
+                interactions_after, partitions
+            ),
+        )
+        self.assertEqual(
+            recompute_inner_train_visit_type_codes(visit_events_before, partitions),
+            recompute_inner_train_visit_type_codes(visit_events_after, partitions),
+        )
 
     def test_repeated_visits_in_one_trip_make_one_trip_poi_support(self) -> None:
         visit_rows = [
             {
-                "TRAVEL_ID": "train-trip",
+                "TRAVEL_ID": trip_id,
                 "VISIT_AREA_ID": visit_id,
                 "POI_ID": "poi-a",
                 "VISIT_AREA_TYPE_CD": "11",
                 "SGG_CD": "11110",
             }
-            for visit_id in ("visit-1", "visit-2")
+            for trip_id, visit_id in (
+                ("train-trip", "visit-1"),
+                ("train-trip", "visit-2"),
+                ("second-trip", "visit-3"),
+            )
         ]
         positives, diagnostics = build_trip_poi_positives(
             visit_rows,
             region="capital",
-            trip_to_traveler={"train-trip": "traveler-train"},
+            trip_to_traveler={
+                "train-trip": "traveler-train",
+                "second-trip": "traveler-train",
+            },
             valid_traveler_ids={"traveler-train"},
         )
 
-        histories, _ = build_histories(positives, {"train-trip": context()})
+        histories, _ = build_histories(
+            positives,
+            {"train-trip": context(), "second-trip": context()},
+        )
 
-        self.assertEqual(len(positives), 1)
-        self.assertEqual(positives[0].repeat_visit_count, 2)
+        self.assertEqual(len(positives), 2)
+        self.assertEqual(
+            {pair.travel_id: pair.repeat_visit_count for pair in positives},
+            {"train-trip": 2, "second-trip": 1},
+        )
         self.assertEqual(diagnostics["within_trip_repeat_extra_events"], 1)
         self.assertEqual(
             histories["all_valid_observed"]["poi-a"].distinct_trip_poi_support,
+            2,
+        )
+        self.assertEqual(
+            len(histories["all_valid_observed"]["poi-a"].traveler_ids),
             1,
         )
 
@@ -178,6 +247,36 @@ class PoiRichFeatureAuditTests(unittest.TestCase):
         self.assertEqual(
             row["all_valid_observed_profile_support"]["start_month"]["valid_trip_poi_support"],
             0,
+        )
+
+    def test_missing_field_response_is_excluded_from_valid_denominator(self) -> None:
+        histories, _ = build_histories(
+            [
+                trip_poi("trip-with-month", "poi-a"),
+                trip_poi("trip-without-month", "poi-a"),
+            ],
+            {
+                "trip-with-month": context(start_month="03"),
+                "trip-without-month": context(start_month=None),
+            },
+        )
+
+        row = build_poi_rich_feature_row(
+            item_id="poi-a",
+            static_item={},
+            all_valid_history=histories["all_valid_observed"].get("poi-a"),
+            tourism_core_history=histories["tourism_core"].get("poi-a"),
+            baseline_i3=0,
+            baseline_i4=(),
+        )
+
+        self.assertEqual(
+            row["all_valid_observed_profile_shares"]["start_month"],
+            {"03": 1.0},
+        )
+        self.assertEqual(
+            row["all_valid_observed_profile_support"]["start_month"]["valid_trip_poi_support"],
+            1,
         )
 
     def test_cold_item_retains_static_features_and_zero_history_support(self) -> None:
