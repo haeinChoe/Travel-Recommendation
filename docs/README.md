@@ -32,10 +32,10 @@
 - [recommendation/README.md](recommendation/README.md) — 추천 문서의 상세 읽기 순서와 현재 해석 원칙
 - [recommendation/training-data-contract.md](recommendation/training-data-contract.md) — AI Hub 학습 데이터·관측 단위·기존 feature/label 계약
 - [recommendation/training-dataset-schema.md](recommendation/training-dataset-schema.md) — 변환기 출력 Parquet의 컬럼과 타입 계약
-- [recommendation/model-training-evaluation-contract.md](recommendation/model-training-evaluation-contract.md) — #41/#82의 모델·후보·평가 실험 계약과 이력
+- [recommendation/model-training-evaluation-contract.md](recommendation/model-training-evaluation-contract.md) — 현재 보류된 지역 전체 후보 점수화 실험의 입력·평가 조건과 측정 기록
 - [recommendation/experiments/catboost-ranking-protocol.md](recommendation/experiments/catboost-ranking-protocol.md) — CatBoost v1 탐색 계획 및 현재 보류 상태
 - [recommendation/poi-catalog-candidate-contract.md](recommendation/poi-catalog-candidate-contract.md) — TourAPI 서비스 카탈로그와 POI 식별 브리지
-- [recommendation/experiments/poi-identity-matching-v2.md](recommendation/experiments/poi-identity-matching-v2.md) — #69 Stage 5 매칭 개선의 범위와 결과
+- [recommendation/experiments/poi-identity-matching-v2.md](recommendation/experiments/poi-identity-matching-v2.md) — 다단계 장소 식별자 연결의 성능·적용 범위·한계
 
 ## 운영·도구 문서
 
