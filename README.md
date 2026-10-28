@@ -1,128 +1,73 @@
 # Travel Recommendation
 
-기존 TravelMate 프로젝트를 현대적인 풀스택 아키텍처와 검증 가능한 추천 시스템으로 재설계하는 프로젝트입니다.
+기존 TravelMate를 현대적인 풀스택 구조로 재설계하고, 여행 문맥과 장소 정보를 이용한 검증 가능한 추천 시스템을 만드는 프로젝트입니다.
 
-## Documents
+## 추천 문제
 
-- [문서 안내와 읽기 순서](docs/README.md)
-- [PRD](docs/PRD.md)
+**여행자/여행 문맥 특징 + 장소 특징 + 관측 방문 기록으로 여행자-장소 적합도를 학습하고 Top-K를 추천할 수 있는가?**
+
+사용자의 장기 방문 이력이 없어도 현재 여행 요청의 문맥으로 추천받을 수 있어야 합니다. 제품 범위, 추천 가능한 장소, feature, label과 평가는 근거를 확인하며 순서대로 잠급니다. 모델과 검색 기술은 문제 정의가 아닙니다.
+
+## 문서
+
+- [추천 문제 정의 v2 — 단일 기준](docs/recommendation/problem-definition-v2.md)
+- [저장소 문서 안내와 읽기 순서](docs/README.md)
+- [제품 요구사항(PRD)](docs/PRD.md)
 - [추천 시스템 문서 읽기 순서](docs/recommendation/README.md)
 - [추천 시스템 용어 사전](docs/recommendation/glossary.md)
 - [사람 중심 문서 작성 가이드](docs/documentation-style-guide.md)
 
-## Goals
+## 현재 어디까지 진행됐나?
 
-- 기존 TravelMate의 핵심 기능과 도메인을 보존하면서 구조를 재설계합니다.
-- 웹과 API는 TypeScript 기반으로 재구축합니다.
-  - Web: Next.js
-  - API: NestJS
-- 추천 엔진은 Python 생태계를 유지하고 API 서비스와 명확히 분리합니다.
-- 추천 품질을 감에 의존하지 않고 공통 데이터셋과 오프라인 평가 지표로 비교합니다.
-- 기존 user-based collaborative filtering 구현을 baseline으로 삼고, Matrix Factorization과 Two-Tower 등으로 단계적으로 고도화합니다.
-- 학습과 실험 결과를 재현할 수 있도록 데이터셋 버전, 파라미터, 지표, 모델 아티팩트를 추적합니다.
+여행자와 여행의 상황을 표현할 수 있는 데이터, 그리고 실제로 방문한 장소의 기록은 확보했습니다. 그러나 **장소 자체의 특징이 부족해 서로 다른 장소를 모델이 거의 같은 장소로 취급하는 것**이 현재 가장 큰 제약입니다.
 
-## Development Tooling
+수도권을 대상으로 한 이전 실험에서는 약 **305만 개의 후보 장소** 가운데 **99.97%**가 사용했던 인기도·과거 방문 유형 특징에서 구별되는 정보를 얻지 못했습니다. 서로 다른 장소에 부여된 특징 조합도 **729종**뿐이었습니다. 따라서 이 후보 목록 전체에 점수를 매기는 실험을 계속 늘려도 장소를 제대로 비교하기 어렵습니다. 이는 CatBoost 자체의 성능이 나쁘다고 입증한 결과는 아닙니다.
 
-- Node.js: 24 LTS (`.nvmrc`, `package.json#engines` 기준)
-- TypeScript: agent tooling과 향후 Web/API 개발의 기본 언어
-- JavaScript module system: ESM (`import` / `export`) 기본. CommonJS (`require`, `module.exports`)는 외부 호환성 제약이 있을 때만 사용
-- Python: 추천 학습·평가·데이터 분석
+**현재 단계:** 모델을 더 복잡하게 만들기 전에 장소를 얼마나 구체적으로 설명할 수 있는지 확인하고, 실제 서비스에서도 같은 의미로 얻을 수 있는 정보인지 검증합니다.
 
-현재 루트 Node 설정은 애플리케이션 스캐폴딩이 아니라 agent/tooling 회귀 테스트를 위한 최소 기반이다. Next.js/NestJS 앱 패키지 구조는 별도 Issue에서 구성한다.
+## 다음 작업 순서
 
-## Planned Architecture
+1. **장소 표현 강화:** 장소 유형·행정구역 같은 정적 정보와 과거 방문자의 여행 목적·동반자·계절 분포 등을 검토합니다. 과거 행동 통계는 학습용 데이터에서만 집계해 평가 정보가 섞이지 않게 합니다.
+2. **서비스 수집 경로 설계:** 추천 요청·노출·클릭·저장 기록을 어떻게 수집할지 정합니다. 방문 확인과 만족도는 사용자가 입력하는 선택 기능으로 구분합니다.
+3. **추천 가능한 장소 정의:** 관광·문화·체험뿐 아니라 음식·쇼핑·숙박을 어디까지 포함할지 결정하고, 실제 추천할 자격이 있는 장소만 구분합니다.
+4. **단순한 모델부터 비교:** 동일한 후보와 평가 조건에서 여행자-장소 적합도를 다시 학습·평가합니다. CatBoost는 비교할 모델 중 하나입니다.
+5. **실제 병목에만 대응:** 장소 수와 요청 처리 시간이 문제일 때만 후보 축소·검색 구조를 검토합니다.
+6. **최종 평가:** 입력 특징, 추천 대상, 모델 설정을 확정한 뒤 별도로 보관한 공식 검증 데이터(VL)에서 마지막으로 평가합니다.
 
-```text
+구현 현황과 결정 근거는 [추천 문제 정의](docs/recommendation/problem-definition-v2.md)에 정리했고, 세부 작업 이력은 관련 GitHub 이슈에서 추적합니다.
+
+## 제품·기술 방향
+
+- Web: Next.js + TypeScript
+- API: NestJS + TypeScript
+- 추천 학습·평가·서비스: Python
+- Product DB: PostgreSQL 후보
+- 실험 추적: MLflow 후보; 필요 시 Optuna 검토
+
+현재 저장소의 루트 Node 설정은 실제 웹·API 애플리케이션보다 개발 도구와 에이전트 검증을 위한 최소 구성입니다. Next.js/NestJS 애플리케이션의 패키지 구조는 아직 확정하지 않았습니다.
+
+~~~text
 Client
-  |
-  v
-Next.js (TypeScript)
-  |
-  v
-NestJS API (TypeScript)
-  |\
-  | +--> Product DB
-  |
-  +----> Recommendation Service (Python)
-             |
-             +--> Offline training / evaluation
-             +--> Model artifacts / experiment tracking
-```
+  → Next.js (TypeScript)
+  → NestJS API (TypeScript)
+       → Product DB
+       → Recommendation Service (Python)
+            → Offline training / evaluation
+            → Model artifacts / experiment tracking
+~~~
 
-추천 서비스가 애플리케이션 DB 스키마에 직접 결합되는 기존 구조는 재검토합니다. 데이터 소유권과 서비스 계약을 먼저 정의한 뒤 구현합니다.
+추천 서비스는 애플리케이션 DB 내부 schema에 직접 결합하지 않습니다. 데이터 소유권과 서비스 계약을 먼저 정의합니다.
 
-## Recommendation Roadmap
+## 데이터 원천
 
-1. 기존 추천 코드와 데이터 파이프라인 복원
-2. AI Hub 국내 여행로그 데이터와 TourAPI 매핑 과정 재구성
-3. 공통 평가 데이터셋 및 시간 기반 train/validation/test split 정의
-4. Popularity baseline
-5. Content-based baseline
-6. Matrix Factorization baseline
-7. Two-Tower retrieval 실험
-8. 후보 생성과 ranking 분리 검토
-9. interaction / recommendation impression logging 설계
-10. 필요 시 sequential recommendation, graph recommendation, LLM augmentation 비교
+- **AI Hub 국내 여행로그:** 서비스 출시 전 초기 학습을 위한 여행 문맥과 관측 방문 기록입니다. 미방문 장소의 노출 또는 불호를 뜻하지 않습니다.
+- **AI Hub POI Master:** 장소 속성 및 정적 inventory의 근거입니다. Master 전체가 자동으로 추천 대상이 되지는 않습니다.
+- **한국관광공사 TourAPI KorService2:** 현재 제품/서빙용 POI 카탈로그이며 식별자는 contentid입니다.
+- **AI Hub ↔ TourAPI 장소 연결:** 서로 다른 데이터의 장소가 같은 실제 장소인지 주소·이름·위치 등 여러 증거로 검증한 결과, 여행-장소 방문 관측 **97,640건 중 26,454건(27.09%)**을 연결했습니다. 이 연결은 초기 장소 통계를 서비스 카탈로그에 옮길 가능성을 보여주지만, 연결되지 않은 장소가 서비스에 없다는 뜻은 아닙니다. [식별자 연결 실험 결과](docs/recommendation/experiments/poi-identity-matching-v2.md)에 분모와 적용 조건을 기록했습니다.
 
-### Initial Offline Metrics
+## 개발 원칙
 
-- Recall@K
-- NDCG@K
-- HitRate@K
-
-정확한 지표와 K 값은 데이터 분포와 제품 요구를 확인한 뒤 결정합니다.
-
-## Data Sources
-
-기존 프로젝트에서 사용했던 것으로 추정되는 주요 소스:
-
-- AI Hub 국내 여행로그 데이터
-  - 여행객 특성
-  - 여행 스타일
-  - 방문 이력
-  - 만족도 및 활동 정보
-- 한국관광공사 TourAPI
-  - 관광지 contentId
-  - 지역/카테고리
-  - 관광지 메타데이터
-
-과거 전처리 과정에서 AI Hub 방문지와 TourAPI 관광지를 매핑했던 흔적을 먼저 복원합니다.
-
-## Experiment Management
-
-추천 모델 실험은 Python에서 진행합니다.
-
-초기 후보:
-
-- PyTorch / scikit-learn
-- MLflow: experiment tracking, metrics, artifacts
-- Optuna: 필요 시 hyperparameter optimization
-
-자동 튜닝보다 먼저 동일 데이터와 동일 평가 조건에서 baseline 간 차이를 확인하는 것을 우선합니다.
-
-## Repository Direction
-
-초기 구조 후보:
-
-```text
-apps/
-  web/                 # Next.js
-  api/                 # NestJS
-recommendation/        # Python training / evaluation / serving
-packages/
-  contracts/           # shared API schemas/types when appropriate
-docs/
-  architecture/
-  migration/
-```
-
-현재 단계에서는 런타임과 패키지 구성을 서둘러 생성하지 않고, 기존 시스템 분석과 아키텍처 결정부터 이슈로 관리합니다.
-
-## Migration Principle
-
-이 프로젝트는 기존 코드를 단순 변환하는 작업이 아닙니다.
-
-- 기존 동작을 먼저 이해하고 계약을 문서화합니다.
-- 서비스 경계를 다시 정의합니다.
-- 추천 알고리즘의 성능은 baseline과 실험으로 증명합니다.
-- 필요한 복잡도만 도입합니다.
+- 기존 기능과 데이터 흐름을 먼저 이해하고 계약을 문서화합니다.
+- 추천 품질은 같은 문제·후보·분할·평가 조건에서 비교합니다.
+- offline AI Hub 결과와 TourAPI 서빙 호환성을 자동으로 동일시하지 않습니다.
+- 필요한 복잡도만 도입하고, 모델·feature·실험 결과를 재현 가능하게 기록합니다.

@@ -1,9 +1,12 @@
 # 추천 학습 데이터 구성·포함 기준 및 Feature/Label 계약
 
-- **관련 Issue:** [#17](https://github.com/haeinChoe/Travel-Recommendation/issues/17), [#45](https://github.com/haeinChoe/Travel-Recommendation/issues/45), [#69](https://github.com/haeinChoe/Travel-Recommendation/issues/69), [#71](https://github.com/haeinChoe/Travel-Recommendation/issues/71)
-- **현재 상태:** 아래 실제 데이터 코호트 수치는 Issue #71의 과거 감사 결과다. Issue #81의 canonical administrative location 합성 계약/코드와 full actual-source coverage/conflict 감사는 별개다. Issue #82 corrected 수도권 TL run은 candidate eligibility를 위한 resolved geography 및 validation coverage의 제한된 aggregate를 기록했으며, 전체 source별 conflict/provenance 감사는 수행하지 않았다.
+> **이 문서의 적용 범위:** AI Hub 방문 기록을 어떤 단위로 합치고 어떤 기록을 학습의 양성으로 다룰지, 원시 식별자와 모델 입력을 어떻게 구분할지를 설명한다. **기존 학습 규칙은 관광 관련 방문만 양성으로 선택했으므로**, 실제로 방문했지만 제외된 식당·카페·쇼핑·숙박과 아예 방문 기록이 없는 장소를 구분해야 한다. 앞으로 서비스가 어떤 장소를 추천할지 아직 정하지 않았기 때문에 이 과거 관광 코호트와 후보 정책이 그대로 적용되는 것은 아니다. [현재 추천 문제 정의](problem-definition-v2.md)를 먼저 읽고, 아래 수치·유형 코드·계산 규칙은 원래 실험의 조건으로 해석한다.
 
-- **TL inner split (Issue #80):** 권역 단위 `(region, TRAVELER_ID)` 결정론적 분할과 privacy-safe 분포 감사 CLI를 추가했다. 네 권역 입력의 provenance 확인을 통과한 실제 TL 감사에서 권역별 distinct traveler/trip은 각각 2,560/2,560이었고 traveler 모두 한 trip을 가졌다 (multi-trip share 0%). 현재 표본에서는 trip split도 traveler를 나누지 않아 traveler leakage 관점에서 구조적으로 동등하지만, 미래의 반복 traveler에 안전하도록 기본 계약은 `(region, TRAVELER_ID)` group split으로 유지한다. seed `issue80-v1`, validation 비율 0.2의 group split은 권역마다 2,048 train / 512 validation traveler와 trip을 배정했고 traveler overlap은 0이었다. Partition-label disagreement는 서로 다른 hash key의 deterministic assignment 간 label 차이일 뿐 leakage metric가 아니다. I3 재계산은 inner-train TL interaction만 사용한다. I4 inner-train 이벤트 재계산 함수는 구현·테스트 완료했고, Issue #82 runner는 이를 full inner-train feature materialization에 연결했다.
+
+- **관련 Issue:** [#17](https://github.com/haeinChoe/Travel-Recommendation/issues/17), [#45](https://github.com/haeinChoe/Travel-Recommendation/issues/45), [#69](https://github.com/haeinChoe/Travel-Recommendation/issues/69), [#71](https://github.com/haeinChoe/Travel-Recommendation/issues/71)
+- **데이터 진단 범위:** 아래 방문 이벤트·여행-장소 관계 건수와 관광 코호트 집계는 기존 데이터 포함 규칙에서 계산했다. 장소의 표준 행정 위치 해석 함수는 마련됐지만, 네 권역 전체에서 출처별 위치 충돌·누락·사용 가능 비율을 상세 검증한 결과는 아니다. 수도권의 보정된 후보 실험은 위치를 해석할 수 있는지와 실제 방문이 후보에 포함되는지만 제한적으로 살펴봤다.
+
+- **학습·내부 검증 분리:** 네 권역의 실제 TL에서 각각 여행자 2,560명과 여행 2,560건이 확인됐으며, 이번 표본에서는 한 여행자당 여행이 하나였다. 여행자 기준으로 **학습 2,048명 / 내부 검증 512명**을 분리했고 동일 여행자가 양쪽에 포함되지 않았다. 나중에 여러 번 여행한 사람이 들어와도 누수를 막기 위해 구분 기준은 `(region, TRAVELER_ID)`로 유지한다. 재현 시드 `issue80-v1`, 검증 비율 0.2를 사용했다. 장소 인기도와 과거 방문 유형 특징(I3/I4)은 **내부 학습 여행자의 기록만으로 다시 계산**하며 내부 검증 데이터를 섞지 않는다.
 
 > 이 문서는 코호트·라벨의 의미와 승인된 분석 집계를 설명한다. 실제 세 Parquet 출력 이름, TL/VL→`train`/`validation` 변환, 모든 출력 컬럼의 null·타입·역할 규칙은 [표준 학습 데이터셋 스키마](training-dataset-schema.md)를 기준으로 한다. 여기서 언급하는 대문자 AI Hub 컬럼은 원천 필드 이름이다.
 
@@ -44,9 +47,9 @@
 
 ### 다음 행동
 
-이 문서로 확정된 **학습 데이터 구성 및 특성/라벨 계약(`scripts/recommendation/training_data_contract.py`)**을 후속 순위 모델링 및 후보 평가 실험의 공통 입력 계층으로 사용한다. 다음 실행 단계는 #82의 TL inner-validation ranking 실험이다. 미매칭 TourAPI 후보까지 실제로 점수를 매기는 서빙 모델을 학습하기 전에는 (1) 카테고리 교차 매핑표(crosswalk) 정의, (2) canonical I2의 실제 AI Hub coverage/conflict/provenance 감사, (3) 미매칭 후보의 인기도 콜드 스타트 기본값(prior) 프로토콜을 별도로 확정한다. 과거 `SGG_CD` 결측 75.52% 수치는 #71 당시 raw/legacy 위치 근거의 역사적 감사값이며 현재 canonical I2 coverage를 뜻하지 않는다.
+이 문서의 관측 단위·원본 필드 매핑은 학습 데이터 변환의 기반으로 재사용한다. **다만 다음 모델 평가에 바로 이 코호트나 후보 범위를 적용하지 않는다.** 장소 특징과 추천 가능한 제품 범위를 다시 정의한 다음 같은 학습·검증 기준에서 적합도 모델을 평가한다. 미매칭 TourAPI 후보까지 실제로 점수를 매기는 서빙 모델을 학습하기 전에는 (1) 카테고리 교차 매핑표(crosswalk) 정의, (2) canonical I2의 실제 AI Hub coverage/conflict/provenance 감사, (3) 미매칭 후보의 인기도 콜드 스타트 기본값(prior) 프로토콜을 별도로 확정한다. 과거 원시 시군구 코드 `SGG_CD`의 결측 **75.52%**는 표준화 전 데이터의 당시 측정값이다. 이를 표준 행정 위치(I2)의 현재 결측률로 읽어서는 안 된다.
 
-## Issue #81 현재 I2 계약
+## 장소의 표준 행정 위치(I2) 계약
 
 새 데이터셋 스키마 v2는 AI Hub POI Master의 유일 POI inventory를 item table에 포함한다. 이 inventory의 정적 category와 행정구역 근거가 있으면 TL에서 관측되지 않은 아이템도 후보가 될 수 있다. 상호작용 관측 아이템은 기존처럼 유지하고, Master에 없는 관측 아이템에는 추정된 정적 location을 부여하지 않는다.
 
@@ -319,7 +322,7 @@ Issue #69의 다단계 식별자 매칭 파이프라인(Stage 5)은 AI Hub 방�
 ### 해석 (Interpretation)
 
 - 일회성 식당·카페·집·상점 방문을 포함한 전체 방문(`all_valid_visits`)에서는 재방문 빈도가 낮고 일회성 장소 비중이 높아 VL 아이템 콜드 스타트 비율이 높게 관측된다(35.99%). 순수 관광 코호트(`tourism_core_cohort`)로 분리하면 관측된 VL 콜드 스타트 비율이 25.35%로 10.64%p 낮아지는 비율 차이가 확인된다. 다만 이러한 분포 변화가 실제 오프라인 순위 모델의 일반화 성능과 지지력(support) 향상으로 이어지는지는 후속 모델링 실험에서 별도로 검증해야 한다.
-- 속성 기반 학습(`f(X_context, X_item)`)은 미매칭 TourAPI 후보를 다루기 위한 필수 조건이다. #71 당시 raw/legacy `SGG_CD` 통합 가용성은 24.48%, `TN_POI_MASTER` 세분류까지 함께 완비된 `rich_complete` 비율은 2.69%였다. 이 수치는 현재 canonical I2의 coverage가 아니며, #81은 static canonicalization 계약과 synthetic 검증까지만 완료했다. 실제 canonical I2 coverage/conflict/provenance 감사와 카테고리 교차 매핑표(crosswalk)가 남아 있으므로, **현 시점에서 곧바로 모든 미매칭 TourAPI 후보에 정밀한 속성 점수를 부여할 수 있다고 주장해서는 안 된다.**
+- **새 장소에 대한 입력 가능성은 별도 검증이 필요하다.** 여행 문맥과 장소 특징으로 적합도를 학습하면 식별자가 직접 연결되지 않은 TourAPI 장소도 점수화할 가능성이 있다. 다만 기존 데이터 감사에서 원시 시군구 코드의 가용률은 **24.48%**, POI 세분류까지 모두 채워진 비율은 **2.69%**였다. 이는 현재 표준 행정구역(I2)의 가용률을 뜻하지 않는다. 정적 위치 해석의 코드·합성 검증은 완료됐지만, 실제 전체 장소의 위치 누락·충돌 감사와 AI Hub↔TourAPI 분류 매핑이 남아 있어 모든 신규 장소를 동일한 정밀도로 점수화할 수 있다고 주장할 수 없다.
 
 ### 결정 (Decisions)
 
@@ -363,7 +366,7 @@ uv run python scripts/recommendation/training_data_contract.py \
 
 ---
 
-## 9. Legacy TravelMate 구조 복원 및 필드 매핑 근거 (Issue #17 보존)
+## 9. 기존 TravelMate 구조 복원 및 필드 매핑 근거(과거 작업 기록)
 
 > 아래 절은 Issue #17에서 수행한 기존 TravelMate 공개 코드(`travelmate-model`, `travelmate-backend`) 구조 복원 및 AI Hub 필드 대응 검토 기록을 역사적 근거로 보존한다.
 

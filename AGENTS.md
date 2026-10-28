@@ -38,6 +38,7 @@
 ## 사람 중심 문서 작성
 
 - 사람이 읽는 문서, Issue, PR은 `docs/documentation-style-guide.md`를 따른다. 작업 로그를 그대로 옮기지 말고 독자가 이전 대화 없이 목적, 현재 상태, 결론, 다음 행동을 이해할 수 있게 작성한다.
+- 문서 본문의 상태·결정·로드맵을 `#이슈번호에서 진행`, `#이슈번호 이후 결정`으로 대신 설명하지 않는다. **무엇을, 왜, 어떤 근거로, 언제까지 보류하는지** 먼저 적고 이슈·PR 번호는 추적 링크로만 덧붙인다.
 - 일반 설명과 결론은 한국어를 우선한다. 코드 식별자, 데이터 컬럼, API 필드, 공식 알고리즘·평가 지표처럼 정확한 원문이 필요한 이름은 유지한다.
 - 전문 용어와 약어는 처음 등장할 때 쉬운 한국어 설명과 원어를 함께 적는다. 추천 시스템 공통 용어는 `docs/recommendation/glossary.md`를 기준으로 한다.
 - 연구·실험 문서는 상세 수치나 재현 명령보다 질문, 상태, 결론, 결정된 것, 미결정, 다음 행동을 먼저 보여준다.
@@ -85,6 +86,8 @@
 - 유지보수 PR은 `.github/PULL_REQUEST_TEMPLATE/maintenance.md`를 사용해 중단된 기존 Issue, 원래 Issue branch, 별도 유지보수 branch와 검증 결과를 연결한다. 병합 후에는 maintenance worktree가 아니라 **원래 중단된 Issue worktree**로 돌아가 그 branch에 `origin/dev`를 merge하여 재개한다. 이미 push된 branch를 rebase하거나 force push하는 것을 기본 동기화 방법으로 사용하지 않는다.
 
 ## 상세 지침
+
+- 추천 작업은 [docs/recommendation/problem-definition-v2.md](docs/recommendation/problem-definition-v2.md)를 최상위 문제 정의와 문서 우선순위의 기준으로 읽는다.
 
 - 작업 요청, 권한 단계, 브랜치·커밋·PR 절차는 docs/agent-workflow.md를 따른다.
 - AI Hub 원본 및 파생 데이터 처리 절차는 docs/data/aihub-workflow.md를 따른다.

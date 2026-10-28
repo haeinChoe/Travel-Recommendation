@@ -1,10 +1,13 @@
 # POI 카탈로그와 후보 자격 계약
 
+> **무엇을 확인했고 무엇이 남았나:** 제품 서비스에 표시할 관광 장소는 한국관광공사 TourAPI의 별도 식별자(`contentid`)로 관리한다. AI Hub 방문 기록과 TourAPI 장소는 원래 같은 식별자를 사용하지 않으므로, 이름·주소·위치 등 증거를 이용해 **일부 장소를 연결하는 다단계 규칙을 검증했다**. 전체 방문 관측 **97,640건 중 26,454건(27.09%)**을 연결했고, 지역 조건을 만족하는 **19,051개 TourAPI 장소 중 2,753개(14.45%)**에 하나 이상의 방문 신호가 연결됐다. 이 성과와 이전 단순 매칭의 분모는 서로 구분해 보존한다. **연결됐다는 이유만으로 추천 자격을 얻거나, 연결되지 않았다고 추천에서 제외되는 것은 아니다.** AI Hub에서 모델을 학습할 때의 장소 후보는 [별도 문제 정의](problem-definition-v2.md)에 따라 판단한다.
+
+
 ## 질문과 현재 상태
 
 이 문서는 **제품 서비스에서 어떤 POI를 추천 후보로 인정할지**, 그리고 **AI Hub 오프라인 추천 실험과 TourAPI 제품 카탈로그를 어떤 식별자 경계로 분리할지** 정한다.
 
-**현재 상태: Issue #69 다단계 매칭 파이프라인(v2) 검증 완료 및 브리지 정책 확정.**
+**현재 상태:** 다단계 장소 연결 규칙의 실험과 검증은 완료됐다. 실제 서비스에서 어떤 유형의 장소를 추천할지, 오프라인 실험에서 어떤 AI Hub 장소를 후보로 인정할지는 별도 결정이 필요하다.
 
 ### 한눈에 보는 결론
 
@@ -125,7 +128,7 @@ The approved TL/VL proxy reproduction ran on 2026-10-16 using all four regions, 
 - Identity match rates depend on the v1 exact-field rule and are not proof of a provider-declared foreign key. Coordinate matching remains disabled.
 - exact aggregate 재실행에서 후보 요청은 모든 권역·TL/VL에서 100% non-empty였지만, 이 결과는 식별자 연결 방식을 통한 positive coverage 추정치를 신뢰 가능하게 만들지 않는다. unresolved는 catalog-outside와 다르므로 TourAPI catalog 부재나 부적합을 입증하지 않는다. 위 canonical 요약이 최종 판정이며, identity heuristic은 종료했다.
 
-## Issue #4 실제 데이터 실험: 정확 집계 재실행 (2026-10-18)
+## 초기 장소 매칭 방식의 실제 데이터 재검증 (2026-10-18)
 
 2026-10-18에 고정된 TourAPI KorService2 v4.4 snapshot과 승인된 AI Hub 2023 네 권역 TL/VL 원본을 다시 읽어 `--exact-aggregates`로 재현했다. snapshot 수집은 반복하지 않았고 API 호출도 하지 않았다. 입력 원본은 read-only이며, 상세 집계와 manifest는 Git-ignored `results/experiments/poi-catalog-v1/actual-data-20261018-diagnostics6/`에 저장했다. 아래 수치는 개인·여행·POI ID, raw row, 좌표, 텍스트, 원본 경로를 포함하지 않는 집계다. 작은 집계도 값이 10 미만이라는 이유로 억제하지 않았다.
 
@@ -744,7 +747,7 @@ Positive-weighted `identity_source_missing`은 **26,884/97,640 (27.53%)**다. Vi
 | jeju-islands / TL | 13,152 | 4,692 (35.68%) | 8,460 (64.32%) | 452 (3.44%) | 338 (74.78%) | 925 (10.93%) | 8,454 (99.93%) | 8,460 (100.00%) | 3,898 (46.08%) |
 | jeju-islands / VL | 2,677 | 726 (27.12%) | 1,951 (72.88%) | 46 (1.72%) | 39 (84.78%) | 197 (10.10%) | 1,948 (99.85%) | 1,951 (100.00%) | 752 (38.54%) |
 
-#### Issue #69를 통한 좌표 호환성 및 다단계 매칭 검증 완료
+#### 좌표 호환성 및 다단계 장소 연결의 검증 결과
 
 Issue #69에서 TourAPI v4.4 정규 스냅샷에 `mapx`, `mapy`, `addr2` 수집을 확장하고, Baseline D의 4,686개 확정 기준점(anchor)을 통해 AI Hub와 TourAPI 간의 좌표계(CRS) 및 거리 분포를 독립 검증했다.
 
@@ -759,7 +762,7 @@ Issue #69에서 TourAPI v4.4 정규 스냅샷에 `mapx`, `mapy`, `addr2` 수집�
 
 
 
-## Issue #69: 5대 비퍼지 다단계 식별자 매칭(v2) 정량 검증 결과
+## 증거 기반 5단계 장소 식별자 연결의 정량 검증 결과
 
 4개 권역(수도권, 동부권, 서부권, 제주도)의 TL/VL 전체 실제 데이터(97,640 observed positives, 45,353개 고유 (region, POI_ID) 쌍, 전역 고유 POI 41,647개)와 TourAPI v4.4 전체 스냅샷(48,589개, 적격 후보 19,051개)에 대해 산출된 정량 집계 결과는 다음과 같다.
 
@@ -893,11 +896,11 @@ AI Hub 2023 여행로그와 TourAPI KorService2 v4.4(2026 현행 행정구역) �
 - 향후 카탈로그 정책 v2에서 음식점(`39`) 및 쇼핑시설(`38`)을 추천 지원 대상으로 포함할지 여부는 비즈니스 카테고리 기획 및 서빙 인덱스 용량 분석을 거쳐 별도 Issue로 검토함.
 
 
-## Issue #82: 수도권 TL inner-validation positive 후보 누락 진단
+## 수도권 내부 검증에서 실제 방문 장소가 후보에서 누락된 이유
 
 **결론: D — 선택한 로컬 POI Master에서 실제 후보 부재가 확인됐고, 그 원인은 미확정이다.** 이번 진단은 수도권 TL inner-validation의 관측 양성과 같은 수도권 `Other` 역할 Master 사이의 키 포함 여부만 다룬다. 선행 기록의 `883/638/245`는 `(TRAVEL_ID, POI_ID)` 쌍 수다. 고유 `POI_ID` 수는 별도로 계산했다.
 
-### Issue #82 candidate geography correction
+### 후보 장소의 실제 행정 위치를 기준으로 한 보정
 
 `CAPITAL_TL` / `CAPITAL_OTHER`는 입력 출처와 관측 코호트의 역할 binding이다. 이 값만으로 POI의 지리적 수도권을 결정하지 않는다. Runner는 #81의 `canonical_admin_sido_code`와 `load_poi_catalog_policy()`가 읽는 versioned `product_region_to_ldong_regn_cd` 단일 정책으로 ProductRegion을 판정한다. 수도권 후보에는 위치가 resolved이고 canonical SIDO code가 해당 정책의 `capital` code 집합에 속하는 Master item만 포함한다. Unresolved 위치와 다른 ProductRegion은 candidate inventory에서 제외한다.
 
