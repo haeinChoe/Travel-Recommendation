@@ -53,15 +53,18 @@ POI score → Top-K ranking
 - conditional seed budget decision: runtime gate가 통과되면 broad search 후보당 1 seed, 선택된 finalist는 그 screen seed를 재사용해 총 3 seeds로 평가한다. 현재는 5분 cutoff를 넘어 실행을 보류한다.
 - **최종 신뢰구간:** 여행/추천 요청 단위를 기본 재표집 대상으로 검토한다. 실제 최종 평가에서 여행자 식별과 데이터 분할 가정이 유지되는지 확인한 뒤 계산 방법을 확정한다.
 
-남은 항목은 설계 누락이 아니라 #82/#83의 실제 실험 결과로 결정하도록 분리한 항목이다.
+아직 선택하지 않은 학습 방식과 최종 평가 방법은 실제 장소 표현·후보 범위가 정리된 뒤 동일 조건에서 실험해 결정한다. 앞선 측정에서 발생한 시간·후보 누락 문제를 해결하지 않은 채 모델 설정만 바꾸지 않는다.
 
-## 다음 행동
+## 현재 구현과 다음 행동
 
-1. #79 완료: 계약과 synthetic experiment harness를 구현했다.
-2. #80 완료: traveler-trip 분포 감사, traveler group split, inner-train I3/I4 재계산 경계를 구현·검증했다.
-3. #81 완료: canonical administrative location(I2) 계약과 synthetic reconciliation을 구현·검증했다.
-4. **#82 진행:** PR #88/#89의 실제 metrics는 source-region-tagged 후보 scope 결과라 corrected geography scope와 직접 비교하지 않는다. Corrected 수도권 TL inner-validation benchmark는 versioned ProductRegion candidate filter 아래 수행했다. Legacy-vs-optimized scorer와 cached item-frame 경로의 exact score/rank/metric parity를 synthetic 및 bounded actual cohort에서 확인했다. Final 432-query run은 959.962초 scoring으로 5분 cutoff를 넘었다. 다음은 candidate generation과 CatBoost reranking 설계를 분리해 검토하고 full contract runtime을 다시 측정하는 것이다. 그 전에는 negative sampling이나 나머지 search를 시작하지 않는다.
-5. configuration을 잠근 뒤 #83에서 처음 VL을 평가하고 bootstrap 신뢰구간을 계산한다.
+1. **학습·평가 준비 완료:** 여행자와 여행별 학습 행을 만들고 순위 모델의 점수와 지표를 비교하는 시험 실행기를 구현했다. 합성 데이터로 기본 동작을 확인했다.
+2. **분할과 누수 방지 완료:** 여행자를 기준으로 학습·내부 검증 데이터를 분리하고, 방문 횟수·방문 유형 통계는 내부 학습 데이터에서만 계산하도록 했다.
+3. **장소 위치 처리의 기본 계약 완료:** 정적 행정구역 정보와 출처·해석 상태를 구분한다. 다만 모든 권역의 실제 위치 누락·충돌은 아직 전수 확인하지 않았다.
+4. **기존 대규모 모델 탐색 중단:** 첫 실행은 장소의 실제 위치 대신 데이터 파일 권역을 사용해 후보 범위가 부정확했다. 이를 보정한 수도권 실험에서도 **432개 내부 검증 요청의 점수화에 959.962초**가 필요해 당시 5분 예산을 넘었다. 점수 계산을 최적화한 경로와 기존 경로가 같은 값을 내는지는 일부 합성·실제 데이터로 확인했지만, **장소 표현과 추천 범위 문제는 해결되지 않았다.**
+5. **다음에는 장소 특징과 추천 후보 자격을 먼저 검증:** 이후 같은 평가 조건에서 간단한 적합도 모델부터 재검증한다. 실제 후보 수·실행 시간이 요구를 초과할 때만 별도 후보 축소 방식을 추가한다.
+6. **최종 평가는 별도로 보관:** 후보·특징·모델 설정이 확정될 때까지 공식 VL을 사용하지 않는다. 마지막 평가에서 여행/추천 요청 단위 신뢰구간을 함께 검토한다.
+
+과거 구현과 실험별 커밋·PR 이력은 관련 실험 프로토콜에 남아 있으며, 위 순서는 **현재 적용할 작업 방향**이다.
 
 ---
 
@@ -237,7 +240,7 @@ I2는 `TC_SGG`의 AI Hub 2023 행정 코드 체계에 맞춘 광역 시도(2자�
 - distance feature
 - TN_GPS_COORD
 
-#81의 administrative location만으로 너무 거칠거나 향후 거리·동선 요구가 생기면 다시 검토한다.
+현재의 시도·시군구 수준 위치 정보가 추천 장소를 구분하기에 너무 거칠거나 거리·동선 기능이 실제로 필요하면 위치 특징을 다시 검토한다.
 
 ## 6. Negative sampling
 
@@ -265,7 +268,7 @@ I2는 `TC_SGG`의 AI Hub 2023 행정 코드 체계에 맞춘 광역 시도(2자�
 - sampling seed를 기록한다.
 - 같은 candidate, positive, seed이면 같은 sample을 만든다.
 - weighted/hard sampling 통계는 inner-train만 사용한다.
-- popularity smoothing 값과 mixed sampling의 uniform 분율은 설정으로 기록한다. prototype 기본값은 각각 `1.0`과 `0.5`이며, #82 결과 전까지 확정된 모델링 결정이 아니다.
+- 인기도 완화 계수와 혼합 음성 표본의 균등 추출 비율은 실험 설정으로 기록한다. 초기 시험값은 각각 `1.0`과 `0.5`였으며, 모델을 최종 선택한 결과가 아니다.
 - final VL metric 계산에서는 negative sampling으로 candidate를 축소하지 않는다.
 
 ## 7. CatBoost objective
@@ -315,7 +318,7 @@ Full-catalog conditional decision은 forward 55개 + 정확히 한 번 backward 
 
 bootstrap은 negative sampling이 아니라 최종 metric의 변동성과 신뢰구간을 추정하는 통계 절차다.
 
-#80 실제 감사 결과는 네 권역 모두 traveler:trip = 1:1, multi-trip traveler = 0%다. 따라서 현재 데이터 기준 #83의 기본 bootstrap 단위는 trip/request다. #83에서는 입력 데이터와 traveler identity 전제가 바뀌지 않았는지만 재확인한다.
+네 권역에서 실제 감사한 표본은 여행자당 여행이 한 개였다. 따라서 현재 데이터에서는 여행/추천 요청 단위를 신뢰구간 재표집의 첫 후보로 삼되, 최종 평가 자료에서도 이 구조가 유지되는지 확인한다. #83에서는 입력 데이터와 traveler identity 전제가 바뀌지 않았는지만 재확인한다.
 
 - 현재 데이터가 유지되면 trip/request bootstrap
 - 향후 반복 traveler가 의미 있게 생기면 traveler-cluster bootstrap으로 전환
@@ -328,7 +331,7 @@ bootstrap은 negative sampling이 아니라 최종 metric의 변동성과 신뢰
 
 따라서 현재 metric은 이 offline ranking 문제의 품질이다. 클릭, 저장, 만족도, 실제 서비스 재사용을 직접 측정하지 않는다.
 
-## 12. #79 코드 범위
+## 12. 초기 순위 모델 실험기의 코드 범위
 
 scripts/recommendation/catboost_ranking_experiment.py는 raw data loader가 아니라 다음 계약 primitive를 제공한다.
 
