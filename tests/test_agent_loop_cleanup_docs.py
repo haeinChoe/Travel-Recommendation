@@ -250,6 +250,45 @@ class CleanupDocumentationTests(unittest.TestCase):
             ]
             self.assertEqual(len(fence_lines) % 2, 0, f"Unbalanced fenced code block in {source}")
 
+    def test_hotfix_policy_and_cli_contract_phrases(self) -> None:
+        workflow = (ROOT / "docs/agent-workflow.md").read_text(encoding="utf-8")
+        agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        reference = self.reference
+        skill = self.skill
+        cli = (ROOT / "scripts/maintenance/sync-finished-branches.ts").read_text(encoding="utf-8")
+
+        for text in (workflow, agents, skill):
+            self.assertIn("--merge", text)
+            self.assertRegex(text.casefold(), r"merge commit|merge commits")
+            self.assertIn("squash", text.casefold())
+            self.assertIn("rebase", text.casefold())
+
+        self.assertIn("--merged-pr-head", cli)
+        self.assertIn('["update-ref", "-d"', cli)
+        for text in (workflow, agents, reference, skill):
+            self.assertIn("--merged-pr-head", text)
+        for text in (workflow, agents, reference):
+            self.assertIn("git update-ref -d", text)
+            self.assertIn("headrefoid", text.casefold())
+
+        for text in (workflow, agents, reference, skill):
+            for cache_dir in (".venv", "node_modules", "__pycache__", ".pytest_cache", ".ruff_cache"):
+                self.assertIn(cache_dir, text)
+            self.assertIn("dist/", text)
+            self.assertIn("build/", text)
+
+        for text in (workflow, agents, reference, skill):
+            self.assertIn("검증됨 → 복사됨 → 복사 후 대조됨 → 원본 처리됨", text)
+        for text in (reference, skill):
+            self.assertIn("verified → copied → verified-after-copy → source-handled", text)
+
+        for text in (workflow, agents, reference, skill):
+            self.assertIn("git status --porcelain=v1 -z --untracked-files=all --ignored=matching", text)
+
+        for text in (workflow, agents, reference, skill):
+            self.assertIn("git worktree remove", text)
+            self.assertIn("--force", text)
+
 
 if __name__ == "__main__":
     unittest.main()

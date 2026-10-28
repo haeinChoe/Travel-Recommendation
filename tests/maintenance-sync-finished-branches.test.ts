@@ -194,61 +194,150 @@ test("apply removes only explicitly named merged local Issue branches and preser
   assert.equal(git(fixture.dev, ["status", "--porcelain=v1", "--untracked-files=all"]), "");
 });
 
-test("apply refuses an unmerged local Issue branch before moving dev or deleting refs", (context) => {
+test("apply holds unmerged local Issue branch while fast-forwarding dev independently", (context) => {
   const fixture = makeFixture(context);
   const branch = "agent/43-open-review";
   const pushedTip = pushIssueBranch(fixture, branch);
   const branchTip = createLocalBranchAtRemoteTip(fixture, branch);
   assert.equal(branchTip, pushedTip);
   const remoteDev = advanceRemoteDev(fixture);
-  const beforeHead = git(fixture.dev, ["rev-parse", "HEAD"]);
   const result = runCli(fixture.dev, ["--apply", "--local", branch]);
 
-  assert.notEqual(result.status, 0);
+  assert.equal(result.status, 1);
   assert.match(result.output, /not merged into origin\/dev/i);
-  assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
-  assert.notEqual(beforeHead, remoteDev);
+  assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), remoteDev);
   assert.notEqual(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]), "");
 });
 
-test("apply refuses dirty dev before fetching or removing anything", (context) => {
+test("apply succeeds on clean branch cleanup when dev already matches remote, even if dev has local changes", (context) => {
   const fixture = makeFixture(context);
   const branch = "agent/42-finished-cleanup";
   pushIssueBranch(fixture, branch);
   mergeBranchIntoRemoteDev(fixture, branch);
   createLocalBranchAtRemoteTip(fixture, branch);
+
+  // First sync dev to remote tip so dev matches remoteDev
+  const syncResult = runCli(fixture.dev, ["--apply"]);
+  assert.equal(syncResult.status, 0);
+
+  // Now introduce dirty tracked change into primary dev
   writeFileSync(join(fixture.dev, "README.md"), "local dirty change\n", "utf8");
-  const beforeHead = git(fixture.dev, ["rev-parse", "HEAD"]);
-  const beforeOriginDev = git(fixture.dev, ["rev-parse", "refs/remotes/origin/dev"]);
 
+  // Since devHead === fetchedDev, dev sync is skipped and branch cleanup succeeds
   const result = runCli(fixture.dev, ["--apply", "--local", branch]);
-
-  assert.notEqual(result.status, 0);
-  assert.match(result.output, /dirty; refusing apply before fetch/i);
-  assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
-  assert.equal(git(fixture.dev, ["rev-parse", "refs/remotes/origin/dev"]), beforeOriginDev);
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /already matches fetched origin dev/i);
+  assert.match(result.output, /deleted local branch agent\/42-finished-cleanup/i);
+  assert.equal(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]), "");
 });
 
-test("apply refuses a branch checked out in another worktree and rejects non-Issue names", (context) => {
+test("apply fast-forwards dev when untracked files do not collide with incoming changes", (context) => {
+  const fixture = makeFixture(context);
+  writeFileSync(join(fixture.dev, "unrelated-untracked.txt"), "unrelated untracked\n", "utf8");
+  const remoteDev = advanceRemoteDev(fixture);
+
+  const result = runCli(fixture.dev, ["--apply"]);
+  assert.equal(result.status, 0, result.output);
+  assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), remoteDev);
+  assert.equal(readFileSync(join(fixture.dev, "unrelated-untracked.txt"), "utf8"), "unrelated untracked\n");
+});
+
+test("apply holds dev sync when untracked file collides with incoming changes, preserving the file", (context) => {
+  const fixture = makeFixture(context);
+  // Remote creates remote-update.txt
+  advanceRemoteDev(fixture);
+  // Local primary dev also creates untracked remote-update.txt with different content
+  writeFileSync(join(fixture.dev, "remote-update.txt"), "local conflicting content\n", "utf8");
+  const beforeHead = git(fixture.dev, ["rev-parse", "HEAD"]);
+
+  const result = runCli(fixture.dev, ["--apply"]);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /untracked file collides with incoming origin\/dev changes/i);
+  assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
+  assert.equal(readFileSync(join(fixture.dev, "remote-update.txt"), "utf8"), "local conflicting content\n");
+});
+
+test("apply performs partial cleanup deleting eligible branches while holding ineligible branches", (context) => {
+  const fixture = makeFixture(context);
+  const eligibleBranch = "agent/42-eligible";
+  pushIssueBranch(fixture, eligibleBranch);
+  mergeBranchIntoRemoteDev(fixture, eligibleBranch);
+  createLocalBranchAtRemoteTip(fixture, eligibleBranch);
+
+  const unmergedBranch = "agent/43-unmerged";
+  pushIssueBranch(fixture, unmergedBranch);
+  createLocalBranchAtRemoteTip(fixture, unmergedBranch);
+
+  const result = runCli(fixture.dev, [
+    "--apply",
+    "--local",
+    eligibleBranch,
+    "--local",
+    unmergedBranch,
+  ]);
+
+  assert.equal(result.status, 1);
+  assert.match(result.output, /deleted local branch agent\/42-eligible/i);
+  assert.match(result.output, /held local branch agent\/43-unmerged/i);
+  assert.equal(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${eligibleBranch}`]), "");
+  assert.notEqual(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${unmergedBranch}`]), "");
+});
+
+test("apply supports --merged-pr-head CAS deletion and holds on SHA mismatch", (context) => {
+  const fixture = makeFixture(context);
+  const branch = "agent/50-squashed";
+  const tipSha = pushIssueBranch(fixture, branch);
+  createLocalBranchAtRemoteTip(fixture, branch);
+
+  // Plan reports eligible for verified PR head CAS deletion
+  const planMatch = runCli(fixture.dev, ["--merged-pr-head", `${branch}=${tipSha}`]);
+  assert.equal(planMatch.status, 0);
+  assert.match(planMatch.output, /matches verified pr head; eligible for verified pr head cas deletion/i);
+
+  // Plan reports mismatch when SHA does not match
+  const wrongSha = "0123456789abcdef0123456789abcdef01234567";
+  const planMismatch = runCli(fixture.dev, ["--merged-pr-head", `${branch}=${wrongSha}`]);
+  assert.equal(planMismatch.status, 0);
+  assert.match(planMismatch.output, /tip does not match verified pr head; apply would hold/i);
+
+  // Apply holds on SHA mismatch
+  const applyMismatch = runCli(fixture.dev, [
+    "--apply",
+    "--merged-pr-head",
+    `${branch}=${wrongSha}`,
+  ]);
+  assert.equal(applyMismatch.status, 1);
+  assert.match(applyMismatch.output, /held local branch agent\/50-squashed: tip does not match verified pr head/i);
+  assert.notEqual(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]), "");
+
+  // Apply succeeds on exact SHA match
+  const applyMatch = runCli(fixture.dev, [
+    "--apply",
+    "--merged-pr-head",
+    `${branch}=${tipSha}`,
+  ]);
+  assert.equal(applyMatch.status, 0);
+  assert.match(applyMatch.output, /deleted legacy squash\/rebase branch agent\/50-squashed at verified pr head/i);
+  assert.equal(gitIfPresent(fixture.dev, ["show-ref", "--verify", `refs/heads/${branch}`]), "");
+});
+
+test("apply holds branch checked out in another worktree while fast-forwarding dev", (context) => {
   const fixture = makeFixture(context);
   const branch = "agent/44-other-worktree";
   const pushedTip = pushIssueBranch(fixture, branch);
-  mergeBranchIntoRemoteDev(fixture, branch);
+  const remoteDev = mergeBranchIntoRemoteDev(fixture, branch);
   const linked = join(fixture.root, "other-worktree");
   const tip = createLocalBranchAtRemoteTip(fixture, branch);
   assert.equal(tip, pushedTip);
   git(fixture.dev, ["worktree", "add", linked, branch]);
 
-  const beforeHead = git(fixture.dev, ["rev-parse", "HEAD"]);
   const checkedOut = runCli(fixture.dev, ["--apply", "--local", branch]);
-  assert.notEqual(checkedOut.status, 0);
+  assert.equal(checkedOut.status, 1);
   assert.match(checkedOut.output, /checked out in a worktree/i);
-  assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
+  assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), remoteDev);
   assert.equal(git(fixture.dev, ["rev-parse", `refs/heads/${branch}`]).length > 0, true);
 
   const protectedName = runCli(fixture.dev, ["--apply", "--local", "dev"]);
   assert.notEqual(protectedName.status, 0);
   assert.match(protectedName.output, /protected branch/i);
-  assert.equal(git(fixture.dev, ["rev-parse", "HEAD"]), beforeHead);
-  assert.ok(tip.length > 0);
 });
