@@ -102,6 +102,13 @@ Keep these as two separate steps:
 
 Do not reverse this order by examining two directories and trying to rediscover their roles from path strings when the role binding is already explicit. A missing `TL_csv` or `VL_csv` token in a capital-region filekey export is not by itself an unresolved role. Likewise, do not invent terms such as an "export marker" unless the repository actually defines that marker.
 
+### Evidence reuse and environment recovery
+
+- Before requiring new per-folder metadata, collect existing **authorized** evidence: selected Issue permissions and role bindings; official dataset/version, terms and codebook; repository provenance/layout validator; and the previous approved run's documented inputs, validation and reproducibility records. A prior successful run is corroborating evidence, **not automatic approval** for different files, changed terms, or expanded scope. Verify current approval/terms and compatibility of the actually bound input before row access.
+- A README, manifest or terms file **inside each raw directory is not a mandatory standalone gate**. If those are absent, cross-check the existing approved documents, source-role binding and repository-defined validator; do not invent a new marker or silently waive a genuinely missing provenance/permission check. If evidence conflicts or required approval cannot be established, block **only that input** and record the exact missing condition.
+- In a non-Herdr Work session, `pwd` not being a Git checkout is not proof that the repository is unavailable. Use the session's authorized workspace/repository mapping or explicitly provided project location to locate and verify the real checkout, without scanning arbitrary homes/drives or modifying another worktree. Never treat a remote GitHub view as a verified local worktree. Check that the intended artifact directory is Git-ignored before writing results.
+- If a fixed TourAPI snapshot cannot be verified, continue independently authorized AI Hub-only measurements and mark TourAPI-dependent measurements unexecuted. Keep all sources, denominators and unknown connections separate; do not invent cross-provider POI identity, grant new data rights, or open official VL as a fallback.
+
 ## Experiment behavior
 
 Prefer the smallest experiment that directly distinguishes the hypotheses under discussion.
