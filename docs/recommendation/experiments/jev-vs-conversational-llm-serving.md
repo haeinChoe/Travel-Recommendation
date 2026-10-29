@@ -237,7 +237,7 @@ JSON parsing이나 JEV response validation에 실패한 요청을 품질 평균�
 endpoint가 준비되면 기본 benchmark는 다음과 같이 실행한다.
 
 ```bash
-python scripts/recommendation/serving_benchmark.py \
+python -m scripts.recommendation.serving_benchmark \
   --fixture-source hf-amazon-llm \
   --requests 24 \
   --history-size 8 \
@@ -256,7 +256,7 @@ python scripts/recommendation/serving_benchmark.py \
 export JEV_API_KEY=...
 export LLM_API_KEY=...
 
-python scripts/recommendation/serving_benchmark.py \
+python -m scripts.recommendation.serving_benchmark \
   --llm-model <LLM_MODEL> \
   --jev-api-key-env JEV_API_KEY \
   --llm-api-key-env LLM_API_KEY
@@ -267,7 +267,7 @@ python scripts/recommendation/serving_benchmark.py \
 synthetic smoke fixture는 다음처럼 선택한다.
 
 ```bash
-python scripts/recommendation/serving_benchmark.py \
+python -m scripts.recommendation.serving_benchmark \
   --fixture-source synthetic \
   --requests 20 \
   --candidates 8 \
