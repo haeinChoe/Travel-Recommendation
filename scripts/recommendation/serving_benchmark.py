@@ -530,7 +530,12 @@ def _percentile(values: Sequence[float], percentile: float) -> float:
 def _endpoint_url(base_url: str, path: str) -> str:
     normalized_base = base_url.rstrip("/")
     if normalized_base.endswith("/v1") and path.startswith("/v1/"):
-        path = path[3:]
+        return f"{normalized_base}{path[3:]}"
+    if (
+        normalized_base.endswith("/v1beta/openai")
+        and path == "/v1/chat/completions"
+    ):
+        return f"{normalized_base}/chat/completions"
     return f"{normalized_base}{path}"
 
 
@@ -588,6 +593,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("hf-amazon-llm", "synthetic"),
         default="hf-amazon-llm",
         help="Benchmark fixture source. Hugging Face sequential recommendation is the default.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("both", "jev", "llm"),
+        default="both",
+        help="Run both backends sequentially, or run only one; use llm for Gemini.",
     )
     parser.add_argument("--requests", type=int, default=24)
     parser.add_argument(
@@ -668,18 +679,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         fixture_metadata["seed"] = args.seed
 
-    jev = JevAdapter(
-        base_url=args.jev_base_url,
-        model=args.jev_model,
-        api_key=_read_optional_secret(args.jev_api_key_env),
-        timeout_s=args.timeout_s,
-    )
-    llm = ConversationalLlmAdapter(
-        base_url=args.llm_base_url,
-        model=args.llm_model,
-        api_key=_read_optional_secret(args.llm_api_key_env),
-        timeout_s=args.timeout_s,
-    )
+    adapters: list[JevAdapter | ConversationalLlmAdapter] = []
+    if args.backend in ("both", "jev"):
+        adapters.append(
+            JevAdapter(
+                base_url=args.jev_base_url,
+                model=args.jev_model,
+                api_key=_read_optional_secret(args.jev_api_key_env),
+                timeout_s=args.timeout_s,
+            )
+        )
+    if args.backend in ("both", "llm"):
+        adapters.append(
+            ConversationalLlmAdapter(
+                base_url=args.llm_base_url,
+                model=args.llm_model,
+                api_key=_read_optional_secret(args.llm_api_key_env),
+                timeout_s=args.timeout_s,
+            )
+        )
 
     report = {
         "benchmark": "jev-vs-conversational-llm-serving",
@@ -695,17 +713,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         "results": [
             benchmark_backend(
-                adapter=jev,
+                adapter=adapter,
                 requests=requests,
                 concurrency=args.concurrency,
                 k=args.k,
-            ),
-            benchmark_backend(
-                adapter=llm,
-                requests=requests,
-                concurrency=args.concurrency,
-                k=args.k,
-            ),
+            )
+            for adapter in adapters
         ],
         "limitations": [
             "The default fixture is an Amazon sequential-recommendation benchmark, not travel-domain ground truth.",
