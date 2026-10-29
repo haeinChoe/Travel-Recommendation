@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from typing import Any, Mapping
+from unittest.mock import patch
 
 from scripts.recommendation.serving_benchmark import (
     Candidate,
@@ -12,6 +15,7 @@ from scripts.recommendation.serving_benchmark import (
     benchmark_backend,
     generate_synthetic_requests,
     hit_rate_at_k,
+    main,
     ndcg_at_k,
     parse_llm_ranking,
     random_quality_baseline,
@@ -165,6 +169,78 @@ class ServingBenchmarkTest(unittest.TestCase):
         call = transport.calls[0]
         self.assertEqual(call["url"], "http://llm.test/v1/chat/completions")
         self.assertEqual(call["payload"]["temperature"], 0)
+
+    def test_gemini_openai_compatibility_base_url(self) -> None:
+        request = generate_synthetic_requests(count=1, candidates_per_request=3, seed=4)[0]
+        ids = [candidate.candidate_id for candidate in request.candidates]
+        transport = FakeTransport(
+            {
+                "choices": [{"message": {"content": json.dumps({"ranking": ids})}}],
+                "usage": {"prompt_tokens": 50, "completion_tokens": 10},
+            }
+        )
+        adapter = ConversationalLlmAdapter(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            model="gemini-3.8-flash",
+            api_key="fake-test-value",
+            transport=transport,
+        )
+        result = adapter.rank(request)
+
+        self.assertEqual(result.ranked_candidate_ids, tuple(ids))
+        self.assertEqual(
+            transport.calls[0]["url"],
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        )
+        self.assertEqual(
+            transport.calls[0]["headers"]["Authorization"],
+            "Bearer fake-test-value",
+        )
+
+    def test_llm_only_does_not_initialize_jev(self) -> None:
+        class FakeLlm:
+            def __init__(self, **kwargs: Any) -> None:
+                self.model = kwargs["model"]
+
+            def rank(self, request: Any) -> RankingResult:
+                return RankingResult(
+                    backend="conversational_llm",
+                    request_id=request.request_id,
+                    ranked_candidate_ids=tuple(
+                        candidate.candidate_id for candidate in request.candidates
+                    ),
+                    latency_ms=1.0,
+                )
+
+        output = StringIO()
+        with (
+            patch(
+                "scripts.recommendation.serving_benchmark.JevAdapter",
+                side_effect=AssertionError("JEV must not be initialized"),
+            ),
+            patch(
+                "scripts.recommendation.serving_benchmark.ConversationalLlmAdapter",
+                FakeLlm,
+            ),
+            redirect_stdout(output),
+        ):
+            rc = main(
+                [
+                    "--backend", "llm",
+                    "--fixture-source", "synthetic",
+                    "--requests", "2",
+                    "--candidates", "3",
+                    "--llm-base-url",
+                    "https://generativelanguage.googleapis.com/v1beta/openai",
+                    "--llm-model", "gemini-3.8-flash",
+                ]
+            )
+
+        report = json.loads(output.getvalue())
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(report["results"]), 1)
+        self.assertEqual(report["results"][0]["backend"], "conversational_llm")
+        self.assertEqual(report["results"][0]["requests"], 2)
 
     def test_quality_metrics_reward_better_order(self) -> None:
         relevance = {"a": 2, "b": 1, "c": 0}
