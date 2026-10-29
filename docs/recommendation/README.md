@@ -13,6 +13,7 @@
 7. [CatBoost ranking 실험 프로토콜](experiments/catboost-ranking-protocol.md) — YetiRank prototype 및 과거 실험 계획을 확인합니다. CatBoost의 최종 역할은 고정되지 않았습니다.
 8. [제품 카탈로그와 후보 계약](poi-catalog-candidate-contract.md) — 실제 서비스에 표시할 장소 카탈로그와 AI Hub 방문 기록을 연결하는 규칙, 양쪽 식별자 차이를 확인합니다.
 9. [다단계 POI 식별자 연결 실험 결과](experiments/poi-identity-matching-v2.md) — Stage 0과 Stage 5를 서로 다른 기준·분모로 확인합니다.
+10. [추천 서비스 상호작용 로그 계약](service-interaction-log-contract.md) — 추천 요청·노출·클릭·저장·선택적 방문 확인·피드백의 최소 의미와 운영 후 장소 특징 갱신 구조를 확인합니다.
 
 ## 관련 실험 문서
 

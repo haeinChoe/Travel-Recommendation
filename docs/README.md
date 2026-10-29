@@ -36,6 +36,7 @@
 - [recommendation/experiments/catboost-ranking-protocol.md](recommendation/experiments/catboost-ranking-protocol.md) — CatBoost v1 탐색 계획 및 현재 보류 상태
 - [recommendation/poi-catalog-candidate-contract.md](recommendation/poi-catalog-candidate-contract.md) — TourAPI 서비스 카탈로그와 POI 식별 브리지
 - [recommendation/experiments/poi-identity-matching-v2.md](recommendation/experiments/poi-identity-matching-v2.md) — 다단계 장소 식별자 연결의 성능·적용 범위·한계
+- [recommendation/service-interaction-log-contract.md](recommendation/service-interaction-log-contract.md) — 서비스 추천 요청·노출·클릭·저장·선택적 방문 확인·피드백의 최소 수집 계약과 장소 특징 갱신 구조
 
 ## 운영·도구 문서
 
