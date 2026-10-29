@@ -274,6 +274,75 @@ python scripts/recommendation/serving_benchmark.py \
   --llm-model <LLM_MODEL>
 ```
 
+## 9.1. Rocky Linux 로컬에서 Gemini만 실행
+
+2026-10-29 기준 공식 Google AI Developers 문서의 OpenAI 호환 API는
+`https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`를 사용한다.
+모델 예시는 `gemini-3.8-flash`이며, 모델별 접근 권한 및 사용량 제한은 API 키의 프로젝트 설정에 따라 달라질 수 있다.
+
+Gemini 단독 평가를 위해 `--backend llm` 옵션을 추가했다. 이 옵션으로 실행하면
+JEV 어댑터를 초기화하지 않고 Gemini만 호출한다. 이전 `--backend both` 기본값은 보존한다.
+
+Rocky Linux에서 저장소 루트로 이동한 뒤 Python 3.12 환경을 사용한다.
+`pyproject.toml`의 Python 요구사항은 `>=3.12,<3.13`이다.
+테스트와 실제 데이터 로딩에 필요한 `duckdb`를 설치한다.
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install "duckdb>=1.5.6"
+python -m unittest tests.test_serving_benchmark tests.test_hf_amazon_benchmark -v
+```
+
+**비밀키는 명령행 인자로 전달하지 않는다.** 로컬 Bash 세션에 입력한다.
+
+```bash
+read -rsp "Gemini API Key: " GEMINI_API_KEY
+echo
+export GEMINI_API_KEY
+test -n "$GEMINI_API_KEY" && echo "Gemini API key is set"
+```
+
+같은 셸에서 먼저 실제 모델 요청 3건으로 연결을 확인한다.
+
+```bash
+python -m scripts.recommendation.serving_benchmark \
+  --backend llm \
+  --fixture-source hf-amazon-llm \
+  --requests 3 \
+  --concurrency 1 \
+  --llm-base-url https://generativelanguage.googleapis.com/v1beta/openai \
+  --llm-model gemini-3.8-flash \
+  --llm-api-key-env GEMINI_API_KEY \
+  > results/issue-90/gemini-smoke.json
+```
+
+첫 실행 전에는 `mkdir -p results/issue-90`로 출력 디렉터리를 만든다.
+처음 실행 시 Hugging Face의 3개 Parquet 파일은 별도로 Git에서 제외된
+`results/issue-90/hf-amazon-llm/`에 다운로드된다.
+
+성공률·오류 유형을 확인한 다음 같은 데이터 출처로 24건을 실행한다.
+
+```bash
+python -m scripts.recommendation.serving_benchmark \
+  --backend llm \
+  --requests 24 \
+  --concurrency 1 \
+  --llm-base-url https://generativelanguage.googleapis.com/v1beta/openai \
+  --llm-model gemini-3.8-flash \
+  --llm-api-key-env GEMINI_API_KEY \
+  > results/issue-90/gemini-24.json
+```
+
+`python -m` 형식을 쓰는 이유는 저장소 루트의 `scripts.recommendation` 패키지를
+안정적으로 찾기 위해서다. 결과 JSON의 `results`는 Gemini 하나만 포함하며,
+기존 random baseline과 품질·서빙 지표는 유지된다.
+
+실제 Gemini API 호출은 비용과 할당량을 사용할 수 있으므로 로컬 실행 단계에서만 수행한다.
+Codex도 해당 환경변수를 상속하므로 키 값을 로그, 프롬프트, 저장소 파일에 출력하지 않아야 한다.
+
+---
+
 ## 10. 결과 JSON
 
 결과에는 다음을 포함한다.
